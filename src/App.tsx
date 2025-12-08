@@ -6,6 +6,7 @@ import React, {
   useMemo,
   useState,
   Suspense,
+  lazy,
   type PropsWithChildren,
 } from "react";
 import {
@@ -24,20 +25,21 @@ import { useProfile } from "@/hooks/useProfile";
 
 
 // Pages (statically imported to avoid missing dynamic chunks on GH Pages)
-import BrowsePage from "./pages/Browse";
-import CreateGroup from "./pages/CreateGroup";
-import GroupDetail from "./pages/GroupDetail";
-import Groups from "./pages/Groups";
-import Profile from "./pages/Profile";
-import ProfileCreation from "./pages/ProfileCreation";
-import GroupsByGame from "./pages/groups/GroupsByGame";
-import MyGroups from "./pages/groups/MyGroups";
-import Onboarding from "./pages/Onboarding";
-import JoinByCode from "./pages/JoinByCode";
-import NotificationsPage from "./pages/Notifications";
-import Chats from "./pages/Chats";
-import Legal from "./pages/Legal";
-import AuthCallback from "./pages/AuthCallback";
+const BrowsePage = lazy(() => import("./pages/Browse"));
+const CreateGroup = lazy(() => import("./pages/CreateGroup"));
+const GroupDetail = lazy(() => import("./pages/GroupDetail"));
+const Groups = lazy(() => import("./pages/Groups"));
+const Profile = lazy(() => import("./pages/Profile"));
+const ProfileCreation = lazy(() => import("./pages/ProfileCreation"));
+const GroupsByGame = lazy(() => import("./pages/groups/GroupsByGame"));
+const MyGroups = lazy(() => import("./pages/groups/MyGroups"));
+const Onboarding = lazy(() => import("./pages/Onboarding"));
+const JoinByCode = lazy(() => import("./pages/JoinByCode"));
+const NotificationsPage = lazy(() => import("./pages/Notifications"));
+const Chats = lazy(() => import("./pages/Chats"));
+const Legal = lazy(() => import("./pages/Legal"));
+const AuthCallback = lazy(() => import("./pages/AuthCallback"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 /* =========================
    Auth (single source)
@@ -287,6 +289,7 @@ export default function App() {
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="/profile" element={<Profile />} />
                   <Route path="/profile/:userId" element={<Profile />} />
+                  <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/create" element={<CreateGroup />} />
                   <Route path="/group/:id" element={<GroupDetail />} />
                   <Route path="/groups/game/:game" element={<GroupsByGame />} />

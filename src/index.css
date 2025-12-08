@@ -71,6 +71,11 @@ img { max-width: 100%; height: auto; display: block; }
 /* Keyframes (kept from previous) */
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0.3; } 50% { transform: scale(1.1); opacity: 0.5; } }
+@keyframes pageFade {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.page-transition { animation: pageFade 0.24s ease; }
 
 /* Respect device safe areas for bottom navs/CTAs */
 .safe-area-bottom { padding-bottom: env(safe-area-inset-bottom); }

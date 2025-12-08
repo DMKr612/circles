@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { X, Upload, Sparkles, Moon, Sun, MonitorSmartphone, Bell } from "lucide-react";
+import { CATEGORIES, GAME_LIST } from "@/lib/constants";
 // @ts-ignore: package ships without TS types in this setup
 import { City } from 'country-state-city';
 // FIX: Use a relative path from `components/` to `src/lib/`
@@ -13,9 +15,10 @@ interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (data: { name: string, avatarUrl: string | null }) => void;
+  variant?: "modal" | "page";
 }
 
-export default function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
+export default function SettingsModal({ isOpen, onClose, onSave, variant = "modal" }: SettingsModalProps) {
   const { user } = useAuth();
   const uid = user?.id || null;
   
@@ -38,6 +41,14 @@ export default function SettingsModal({ isOpen, onClose, onSave }: SettingsModal
   // All German cities from country-state-city, deduped + sorted
   const [deCities, setDeCities] = useState<string[]>([]);
   const [citiesLoaded, setCitiesLoaded] = useState(false);
+  const isPage = variant === "page";
+  const interestSuggestions = useMemo(() => {
+    const items = [
+      ...CATEGORIES.filter(c => c !== "All"),
+      ...GAME_LIST.map(g => g.name)
+    ].map(s => s.trim()).filter(Boolean);
+    return Array.from(new Set(items)).sort((a, b) => a.localeCompare(b));
+  }, []);
 
   // Helper to get device/browser timezone
   function deviceTZ(): string {
@@ -104,6 +115,10 @@ export default function SettingsModal({ isOpen, onClose, onSave }: SettingsModal
     })();
     
   }, [isOpen, onClose, uid, user?.email]);
+
+  useEffect(() => {
+    if (isOpen || isPage) applyTheme(sTheme);
+  }, [sTheme, isOpen, isPage]);
 
   function applyTheme(theme: 'system'|'light'|'dark') {
     const root = document.documentElement;
@@ -189,161 +204,199 @@ export default function SettingsModal({ isOpen, onClose, onSave }: SettingsModal
     }
   }
   
-  if (!isOpen) return null;
+  if (!isOpen && !isPage) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40">
+    <div className={isPage ? "min-h-screen bg-gradient-to-b from-neutral-50 via-white to-neutral-100 px-4 py-6" : "fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm px-4"}>
       <form
         onSubmit={saveSettings}
-        className="w-[560px] max-w-[92vw] rounded-2xl border border-black/10 bg-white p-5 shadow-xl"
+        className={`${isPage ? "mx-auto" : ""} w-[620px] max-w-[94vw] rounded-3xl border border-white/40 bg-white/90 shadow-[0_20px_80px_rgba(0,0,0,0.18)] backdrop-blur-xl p-6 space-y-5`}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <div className="text-base font-semibold text-neutral-900">Edit Profile</div>
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-xl font-bold text-neutral-900 flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-emerald-500" /> Edit Profile
+            </div>
+            <p className="text-sm text-neutral-500">Freshen up your details, theme, and notifications.</p>
+          </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-black/10 px-2 py-1 text-sm"
+            className={`grid h-9 w-9 place-items-center rounded-full border ${isPage ? "border-neutral-200 bg-white text-neutral-500 hover:text-neutral-800" : "border-neutral-200 bg-white text-neutral-500 hover:text-neutral-800 hover:border-neutral-300"}`}
           >
-            Close
+            <X className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="space-y-3">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-neutral-800">Name</label>
-            <input
-              value={sName}
-              onChange={(e) => setSName(e.target.value)}
-              className="w-full rounded-md border border-black/10 px-3 py-2 text-sm"
-              placeholder="Your name"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-neutral-800">Avatar</label>
-            <div className="flex items-center gap-3">
-              <div className="h-10 w-10 rounded-full bg-neutral-200 grid place-items-center overflow-hidden">
-                {avatarUrl ? <img src={avatarUrl} alt="" className="h-10 w-10 object-cover" /> : <span className="text-xs">{initials}</span>}
-              </div>
-              <input type="file" accept="image/*" onChange={onAvatarChange} className="text-sm" />
-              {avatarUploading && <span className="text-xs text-neutral-600">Uploading…</span>}
+        {/* Profile + Avatar */}
+        <div className="grid gap-4 rounded-2xl border border-neutral-100 bg-white/80 p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="h-12 w-12 rounded-full bg-gradient-to-br from-emerald-100 to-blue-100 border border-white shadow-inner overflow-hidden grid place-items-center text-sm font-bold text-emerald-700">
+              {avatarUrl ? <img src={avatarUrl} className="h-full w-full object-cover" /> : initials}
+            </div>
+            <div className="flex flex-1 items-center gap-2">
+              <input
+                value={sName}
+                onChange={(e) => setSName(e.target.value)}
+                className="flex-1 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-medium shadow-inner focus:border-neutral-300 focus:outline-none"
+                placeholder="Your name"
+                required
+              />
+              <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-700 hover:border-neutral-300">
+                <Upload className="h-4 w-4" />
+                Change
+                <input type="file" accept="image/*" onChange={onAvatarChange} className="hidden" />
+              </label>
+              {avatarUploading && <span className="text-xs text-neutral-500">Uploading…</span>}
             </div>
           </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-neutral-800">City</label>
-            <input
-              value={sCity}
-              onChange={(e) => setSCity(e.target.value)}
-              onFocus={loadCities} // Load cities on focus
-              onBlur={() => { if (!sTimezone || sTimezone === "UTC") setSTimezone(deviceTZ()); }}
-              className="w-full rounded-md border border-black/10 px-3 py-2 text-sm"
-              placeholder="Start typing… e.g., Berlin"
-              list="cities-de"
-              required
-            />
-            <datalist id="cities-de">
-              {deCities.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
-            <div className="mt-1 text-[11px] text-neutral-500">
-              Choose your city. This powers “My city” filters in Browse.
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-neutral-500">City</label>
+              <input
+                value={sCity}
+                onChange={(e) => setSCity(e.target.value)}
+                onFocus={loadCities}
+                onBlur={() => { if (!sTimezone || sTimezone === "UTC") setSTimezone(deviceTZ()); }}
+                className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-300 focus:outline-none"
+                placeholder="Start typing… e.g., Berlin"
+                list="cities-de"
+                required
+              />
+              <datalist id="cities-de">
+                {deCities.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-neutral-500">Timezone</label>
+              <input
+                value={sTimezone}
+                onChange={(e) => setSTimezone(e.target.value)}
+                className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-300 focus:outline-none"
+                placeholder="e.g., Europe/Berlin"
+              />
             </div>
           </div>
-
           <div>
-            <label className="mb-1 block text-sm font-medium text-neutral-800">Timezone</label>
-            <input
-              value={sTimezone}
-              onChange={(e) => setSTimezone(e.target.value)}
-              className="w-full rounded-md border border-black/10 px-3 py-2 text-sm"
-              placeholder="e.g., Europe/Berlin"
-            />
-            <div className="mt-1 text-[11px] text-neutral-500">
-              Auto-fills from your device when you set City. You can still override manually.
-            </div>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-neutral-800">Interests</label>
+            <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-neutral-500">Interests</label>
             <input
               value={sInterests}
               onChange={(e) => setSInterests(e.target.value)}
-              className="w-full rounded-md border border-black/10 px-3 py-2 text-sm"
+              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-300 focus:outline-none"
               placeholder="comma, separated, tags"
             />
-            <div className="mt-1 text-[11px] text-neutral-500">Saved as tags in your profile.</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {interestSuggestions.slice(0, 14).map((tag) => (
+                <button
+                  type="button"
+                  key={tag}
+                  onClick={() => {
+                    const existing = sInterests.split(",").map(s => s.trim()).filter(Boolean);
+                    if (existing.includes(tag)) return;
+                    const next = [...existing, tag].join(", ");
+                    setSInterests(next);
+                  }}
+                  className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-xs font-semibold text-neutral-700 hover:border-neutral-300 hover:bg-white"
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div>
-          <label className="mb-1 block text-sm font-medium text-neutral-800">Theme</label>
-          <select
-            value={sTheme}
-            onChange={(e) => setSTheme(e.target.value as 'system'|'light'|'dark')}
-            className="w-full rounded-md border border-black/10 px-3 py-2 text-sm"
-          >
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-          <div className="mt-1 text-[11px] text-neutral-500">Light/Dark applies after save.</div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <input
-            id="emailNotifs"
-            type="checkbox"
-            checked={emailNotifs}
-            onChange={(e) => setEmailNotifs(e.target.checked)}
-            className="h-4 w-4 rounded border-black/20"
-          />
-          <label htmlFor="emailNotifs" className="text-sm text-neutral-800">Email notifications</label>
-        </div>
-        <div className="flex items-center gap-2">
-          <input
-            id="pushNotifs"
-            type="checkbox"
-            checked={pushNotifs}
-            onChange={(e) => setPushNotifs(e.target.checked)}
-            className="h-4 w-4 rounded border-black/20"
-          />
-          <label htmlFor="pushNotifs" className="text-sm text-neutral-800">Push notifications</label>
-        </div>
-        <div className="flex items-center justify-between gap-2">
+        {/* Theme & privacy */}
+        <div className="grid gap-4 rounded-2xl border border-neutral-100 bg-white/80 p-4 shadow-sm sm:grid-cols-2">
           <div>
-            <div className="text-sm font-medium text-neutral-800">Allow profile ratings</div>
-            <div className="text-[11px] text-neutral-500">Others can rate you when enabled.</div>
+            <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-neutral-500">
+              <Sparkles className="h-4 w-4 text-amber-500" /> Theme
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { key: "system", label: "System", icon: <MonitorSmartphone className="h-4 w-4" /> },
+                { key: "light", label: "Light", icon: <Sun className="h-4 w-4" /> },
+                { key: "dark", label: "Dark", icon: <Moon className="h-4 w-4" /> },
+              ].map(opt => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setSTheme(opt.key as any)}
+                  className={`flex flex-col items-center gap-1 rounded-xl border px-3 py-2 text-sm font-semibold transition-all ${
+                    sTheme === opt.key ? "border-black bg-neutral-900 text-white shadow-md" : "border-neutral-200 bg-white text-neutral-700 hover:border-neutral-300"
+                  }`}
+                >
+                  {opt.icon}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => saveAllowRatings(!allowRatings)}
-            className={`h-7 w-12 rounded-full ${allowRatings ? 'bg-emerald-600' : 'bg-neutral-300'} relative`}
-            aria-pressed={allowRatings}
-          >
-            <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white transition ${allowRatings ? 'right-0.5' : 'left-0.5'}`} />
-          </button>
+
+          <div className="flex items-center justify-between rounded-xl border border-neutral-200 bg-white px-3 py-3">
+            <div>
+              <div className="text-sm font-semibold text-neutral-900">Allow profile ratings</div>
+              <div className="text-[11px] text-neutral-500">Others can rate you when enabled.</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => saveAllowRatings(!allowRatings)}
+              className={`relative h-8 w-14 rounded-full transition ${allowRatings ? 'bg-emerald-500' : 'bg-neutral-300'}`}
+              aria-pressed={allowRatings}
+            >
+              <span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition ${allowRatings ? 'right-1' : 'left-1'}`} />
+            </button>
+          </div>
         </div>
+
+        {/* Notifications */}
+        <div className="rounded-2xl border border-neutral-100 bg-white/80 p-4 shadow-sm">
+          <div className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-neutral-500">
+            <Bell className="h-4 w-4 text-emerald-500" /> Notifications
+          </div>
+          <div className="space-y-2">
+            <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-800 shadow-inner">
+              <input
+                id="emailNotifs"
+                type="checkbox"
+                checked={emailNotifs}
+                onChange={(e) => setEmailNotifs(e.target.checked)}
+                className="h-4 w-4 rounded border-neutral-400"
+              />
+              Email notifications
+            </label>
+            <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-800 shadow-inner">
+              <input
+                id="pushNotifs"
+                type="checkbox"
+                checked={pushNotifs}
+                onChange={(e) => setPushNotifs(e.target.checked)}
+                className="h-4 w-4 rounded border-neutral-400"
+              />
+              Push notifications
+            </label>
+          </div>
+        </div>
+
         {settingsMsg && (
-          <div className={`mt-3 rounded-md border px-3 py-2 text-sm ${settingsMsg === 'Saved.' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+          <div className={`mt-1 rounded-xl border px-3 py-2 text-sm ${settingsMsg === 'Saved.' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
             {settingsMsg}
           </div>
         )}
 
-        <div className="mt-4 flex items-center justify-end gap-2">
+        <div className="flex items-center justify-end gap-3 pt-1">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm"
+            className="rounded-xl border border-neutral-200 bg-white px-4 py-2 text-sm font-semibold text-neutral-700 hover:border-neutral-300"
           >
             Cancel
           </button>
           <button
             type="submit"
             disabled={settingsSaving}
-            className={`rounded-md px-3 py-1.5 text-sm text-white ${settingsSaving ? "bg-neutral-400" : "bg-emerald-600 hover:bg-emerald-700"}`}
+            className={`rounded-xl px-5 py-2 text-sm font-bold text-white shadow-md transition ${settingsSaving ? "bg-neutral-400" : "bg-emerald-600 hover:bg-emerald-700"}`}
           >
             {settingsSaving ? "Saving…" : "Save"}
           </button>

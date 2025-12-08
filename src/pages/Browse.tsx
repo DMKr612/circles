@@ -2,8 +2,8 @@ import { Link, useSearchParams } from "react-router-dom";
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { CATEGORIES, GAME_LIST } from "@/lib/constants";
+import { Search, Users, Tag, MapPin, Globe, Loader2 } from "lucide-react";
 import type { BrowseGroupRow } from "@/types";
-import { Search, Users, Tag, ArrowLeft, Globe, MapPin, ChevronDown, ChevronUp } from "lucide-react";
 
 type MomentCard = {
   id: string;
@@ -24,21 +24,21 @@ type MomentCard = {
 
 export default function BrowsePage() {
   const [params, setParams] = useSearchParams();
-  const groupId = params.get("id");
-  const code = params.get("code");
   const [q, setQ] = useState<string>(params.get("q") ?? "");
+  const [debouncedQ, setDebouncedQ] = useState<string>(params.get("q") ?? "");
   const [cat, setCat] = useState<typeof CATEGORIES[number]>(
     (params.get("category") as typeof CATEGORIES[number]) ?? "All"
   );
   const [tab, setTab] = useState<"discover" | "moments">("discover");
+  const [slide, setSlide] = useState<0 | 1>(0);
 
-  // Dropdown state for Recent Groups (default open)
-  const [recentGroupsOpen, setRecentGroupsOpen] = useState(true); 
+  const [nearGroups, setNearGroups] = useState<BrowseGroupRow[]>([]);
+  const [nearLoading, setNearLoading] = useState(false);
+  const [radiusKm, setRadiusKm] = useState<number>(10);
+  const [geoStatus, setGeoStatus] = useState<"idle" | "pending" | "granted" | "denied">("idle");
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [geoPaused, setGeoPaused] = useState(false);
 
-  const [groups, setGroups] = useState<BrowseGroupRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [reloadTick, setReloadTick] = useState(0);
-  
   // Stats
   const [groupCountByGame, setGroupCountByGame] = useState<Record<string, number>>({});
   const [memberCountByGame, setMemberCountByGame] = useState<Record<string, number>>({});
@@ -64,12 +64,12 @@ export default function BrowsePage() {
     if (cat && cat !== "All") next.set("category", cat); else next.delete("category");
     if (q) next.set("q", q); else next.delete("q");
     if (next.toString() !== params.toString()) setParams(next, { replace: true });
-  }, [q, cat, groupId, code]);
+  }, [q, cat]);
 
-  // Detect Code
-  const codeFromQ = useMemo(() => {
-    const s = (q || "").trim().replace(/[^A-Za-z0-9]/g, "");
-    return /^[A-Za-z0-9]{6,16}$/.test(s) ? s.toUpperCase() : null;
+  // Debounce search to avoid unnecessary filtering work
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 220);
+    return () => clearTimeout(t);
   }, [q]);
 
   // Load User City (for the dropdown label)
@@ -83,62 +83,79 @@ export default function BrowsePage() {
     })();
   }, []);
 
-  // Load Groups (Search by code/ID/recent)
-  useEffect(() => {
-    let mounted = true;
-    async function load() {
-      try {
-        setLoading(true);
-        setGroups([]);
-        
-        // 1. Search by Code
-        if (code || codeFromQ) {
-            const raw = (code || codeFromQ)!;
-            const cleaned = raw.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-            const { data, error } = await supabase
-                .from("groups")
-                .select("id, title, description, city, category, game, capacity, created_at, code")
-                .or(`code.eq.${cleaned},id.eq.${raw}`) // check code OR uuid
-                .maybeSingle();
-            
-            if (!error && data) {
-                if (mounted) setGroups([data]);
-                setLoading(false);
-                // If a specific group is found via code/search, auto-open the dropdown
-                setRecentGroupsOpen(true);
-                return;
-            }
-        }
+  const requestLocation = () => {
+    if (!("geolocation" in navigator)) {
+      setGeoStatus("denied");
+      return;
+    }
+    setGeoStatus("pending");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoStatus("granted");
+      },
+      () => setGeoStatus("denied"),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  };
 
-        // 2. Browse Recent
+  // Auto-request once when user switches to Nearby
+  useEffect(() => {
+    if (tab !== "discover" || slide !== 1 || geoPaused) return;
+    if (geoStatus === "idle") requestLocation();
+  }, [tab, slide, geoStatus, geoPaused]);
+
+  // When returning to "All groups", stop location tracking and clear nearby list
+  useEffect(() => {
+    if (slide !== 0) return;
+    setCoords(null);
+    setGeoStatus("idle");
+    setGeoPaused(true);
+    setNearGroups([]);
+  }, [slide]);
+
+  // If permission is denied, ensure everything is off
+  useEffect(() => {
+    if (geoStatus !== "denied") return;
+    setCoords(null);
+    setNearGroups([]);
+    setGeoPaused(true);
+  }, [geoStatus]);
+
+  const fallbackCity = userCity || "Freiburg";
+
+  // Load Nearby (city-based fallback; radius widens to all groups if increased)
+  useEffect(() => {
+    if (tab !== "discover" || slide !== 1) return;
+    let cancelled = false;
+    (async () => {
+      setNearLoading(true);
+      try {
         let query = supabase
           .from("groups")
           .select("id, title, description, city, category, game, capacity, created_at, code")
           .order("created_at", { ascending: false })
           .limit(50);
 
-        // Apply Category Filter
-        if (cat && cat !== "All") {
-           query = query.eq("category", cat.toLowerCase());
-        }
-        
-        if (q && !codeFromQ) {
-           query = query.ilike("title", `%${q}%`);
+        // If user has a city and radius is small, constrain to that city (fallback proximity)
+        if (radiusKm <= 20) {
+          query = query.eq("city", fallbackCity);
         }
 
-        const { data } = await query;
-        if (mounted) setGroups(data || []);
-      } catch (e) {
-        console.warn(e);
+        const { data, error } = await query;
+        if (cancelled) return;
+        if (error) {
+          console.error(error);
+          setNearGroups([]);
+        } else {
+          setNearGroups(data || []);
+        }
       } finally {
-        if (mounted) setLoading(false);
+        if (!cancelled) setNearLoading(false);
       }
-    }
-    load();
-    return () => { mounted = false; };
-  }, [cat, q, code, codeFromQ, reloadTick]);
-
-  // Load Stats
+    })();
+    return () => { cancelled = true; };
+  }, [tab, slide, userCity, radiusKm]);
   // Load Stats
   useEffect(() => {
     let mounted = true;
@@ -179,6 +196,33 @@ export default function BrowsePage() {
     return () => { mounted = false; };
   }, []);
 
+  // Online now (unique users with live locations updated in last 5 minutes)
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      const { data, error } = await supabase.rpc("count_online_users", { p_since: since });
+      if (!cancelled) {
+        if (error) {
+          console.warn("online count fallback", error.message);
+          const { data: rows } = await supabase
+            .from("group_live_locations")
+            .select("user_id")
+            .gte("updated_at", since);
+          if (rows) {
+            const uniq = new Set((rows as any[]).map(r => r.user_id).filter(Boolean));
+            setTotalOnlineLive(uniq.size);
+          }
+        } else if (typeof data === "number") {
+          setTotalOnlineLive(data);
+        }
+      }
+    };
+    load();
+    const id = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   useEffect(() => {
     if (tab !== "moments") return;
     let mounted = true;
@@ -188,13 +232,13 @@ export default function BrowsePage() {
         .from("group_moments")
         .select("id, photo_url, caption, verified, min_view_level, created_at, group_id, groups(title, city)")
         .order("created_at", { ascending: false })
-        .limit(30);
+        .limit(20);
       if (!mounted) return;
       if (!error) setMoments((data as MomentCard[]) ?? []);
       setMomentsLoading(false);
     })();
     return () => { mounted = false; };
-  }, [tab, reloadTick]);
+  }, [tab]);
 
   async function reportMoment(m: MomentCard) {
     const { data: auth } = await supabase.auth.getUser();
@@ -216,9 +260,15 @@ export default function BrowsePage() {
   // Filter games for the dropdown based on search/category
   const filteredGames = useMemo(() => {
     const byCat = cat === "All" ? GAME_LIST : GAME_LIST.filter(g => g.tag === cat);
-    if (!q) return byCat;
-    return byCat.filter(g => g.name.toLowerCase().includes(q.toLowerCase()));
-  }, [q, cat]);
+    const mapped = byCat.map((g) => ({
+      ...g,
+      groups: groupCountByGame[g.id] || 0,
+      members: memberCountByGame[g.id] || 0
+    }));
+    mapped.sort((a, b) => (b.members - a.members) || (b.groups - a.groups) || a.name.localeCompare(b.name));
+    if (!debouncedQ) return mapped;
+    return mapped.filter(g => g.name.toLowerCase().includes(debouncedQ.toLowerCase()));
+  }, [debouncedQ, cat, groupCountByGame, memberCountByGame]);
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-8 pb-32">
@@ -235,9 +285,11 @@ export default function BrowsePage() {
               </span>
               {totalOnlineLive} Online Now
            </div>
-           <button onClick={() => setShowReq(true)} className="text-sm font-semibold text-neutral-500 hover:text-black underline">
-              Request Game
-           </button>
+           <div className="flex items-center gap-2">
+             <button onClick={() => setShowReq(true)} className="text-sm font-semibold text-neutral-500 hover:text-black underline">
+                Request Game
+             </button>
+           </div>
         </div>
       </div>
 
@@ -270,7 +322,7 @@ export default function BrowsePage() {
               return (
                 <div key={m.id} className="overflow-hidden rounded-2xl border border-neutral-100 bg-white shadow-sm">
                   <div className="relative">
-                    <img src={m.photo_url} className="h-56 w-full object-cover" />
+                    <img src={m.photo_url} className="h-56 w-full object-cover" loading="lazy" />
                     <div className="absolute top-3 left-3 rounded-full bg-black/70 text-white text-[10px] font-bold px-2 py-1">
                       {m.verified ? "Verified meetup" : "Unverified"} • {m.id.slice(0, 8)}
                     </div>
@@ -305,7 +357,7 @@ export default function BrowsePage() {
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="Search groups, or invite codes..."
+                placeholder="Search games or categories..."
                 className="w-full h-11 rounded-xl border border-neutral-200 bg-white pl-11 pr-4 text-sm shadow-sm outline-none focus:border-black focus:ring-1 focus:ring-black transition-all placeholder:text-neutral-400"
               />
             </div>
@@ -327,121 +379,158 @@ export default function BrowsePage() {
             </div>
           </div>
 
-          {/* SECTION: Recent Groups (Collapsible Dropdown Style) */}
-          <div className="mb-8">
-              <button 
-                onClick={() => setRecentGroupsOpen(!recentGroupsOpen)}
-                className="w-full flex items-center justify-between bg-neutral-50 border border-neutral-200 rounded-2xl p-4 shadow-sm hover:bg-neutral-100 transition-all active:scale-[0.99]"
-              >
-                 <div className="flex items-center gap-3">
-                     <div className="h-10 w-10 flex items-center justify-center bg-white rounded-full text-emerald-600 shadow-sm">
-                        <MapPin className="h-5 w-5" />
-                     </div>
-                     <div className="text-left">
-                         <div className="text-xs font-bold text-neutral-400 uppercase tracking-wide">Location</div>
-                         <div className="text-base font-bold text-neutral-900 flex items-center gap-2">
-                            {userCity ? `${userCity} & Nearby` : "All Locations"}
-                            {codeFromQ && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">Filtered</span>}
-                         </div>
-                     </div>
-                 </div>
-                 <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-neutral-400">{groups.length} found</span>
-                    {recentGroupsOpen ? <ChevronUp className="text-neutral-400" /> : <ChevronDown className="text-neutral-400" />}
-                 </div>
-              </button>
-
-              {/* Groups List Content */}
-              {recentGroupsOpen && (
-                  <div className="mt-4 animate-in slide-in-from-top-4 duration-300">
-                      {loading ? (
-                         <div className="space-y-3">
-                             {[1,2,3].map(i => <div key={i} className="h-24 w-full rounded-2xl bg-white animate-pulse shadow-sm" />)}
-                         </div>
-                      ) : groups.length === 0 ? (
-                         <div className="py-12 text-center rounded-3xl bg-neutral-50 border-2 border-dashed border-neutral-200">
-                            <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm mb-3 text-2xl">
-                               🔍
-                            </div>
-                            <h3 className="text-lg font-bold text-neutral-900">No groups found</h3>
-                            <p className="text-sm text-neutral-500 max-w-xs mx-auto mt-1 px-4">
-                                Try adjusting your search or filters.
-                            </p>
-                            <Link to="/create" className="mt-4 inline-block rounded-full bg-black px-6 py-2 text-sm font-bold text-white shadow-lg hover:bg-neutral-800 active:scale-95 transition-all">
-                                Create New Group
-                            </Link>
-                         </div>
-                      ) : (
-                         <div className="grid gap-3">
-                           {groups.map(g => (
-                             <Link to={`/group/${g.id}`} key={g.id} className="block group">
-                                <div className="relative overflow-hidden rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm transition-all hover:shadow-md hover:border-neutral-200 active:scale-[0.99]">
-                                   <div className="flex justify-between items-start">
-                                      <div className="flex-1 min-w-0 pr-4">
-                                         <h3 className="font-bold text-neutral-900 text-base truncate">{g.title}</h3>
-                                         <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-neutral-500 font-medium">
-                                            <span className="capitalize text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-bold">{g.game || g.category}</span>
-                                            <span className="flex items-center gap-0.5">
-                                               {g.city ? <MapPin className="h-3 w-3"/> : <Globe className="h-3 w-3"/>}
-                                               {g.city || "Online"}
-                                            </span>
-                                         </div>
-                                      </div>
-                                      <div className="h-8 w-8 flex-shrink-0 rounded-full bg-neutral-50 flex items-center justify-center text-neutral-300 group-hover:bg-black group-hover:text-white transition-colors">
-                                         <ArrowLeft className="h-4 w-4 rotate-180" />
-                                      </div>
-                                   </div>
-                                   {g.description && (
-                                      <p className="mt-3 text-sm text-neutral-600 line-clamp-2 leading-relaxed">{g.description}</p>
-                                   )}
-                                   {g.code && (
-                                       <div className="mt-3 pt-3 border-t border-neutral-50 flex items-center gap-2">
-                                           <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Invite Code</span>
-                                           <span className="font-mono text-xs font-bold text-neutral-700 bg-neutral-100 px-1.5 py-0.5 rounded">{g.code}</span>
-                                       </div>
-                                   )}
-                                </div>
-                             </Link>
-                           ))}
-                         </div>
-                      )}
-                  </div>
-              )}
+          {/* Slides: All vs Nearby */}
+          <div className="mb-4 flex items-center gap-2">
+            <button
+              onClick={() => setSlide(0)}
+              className={`rounded-full px-4 py-2 text-sm font-semibold border transition-colors ${slide === 0 ? "bg-black text-white border-black" : "bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300"}`}
+            >
+              All groups
+            </button>
+            <button
+              onClick={() => setSlide(1)}
+              className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-semibold border transition-colors ${slide === 1 ? "bg-black text-white border-black" : "bg-white text-neutral-700 border-neutral-200 hover:border-neutral-300"}`}
+            >
+              Nearby
+              <span
+                className={`h-2.5 w-2.5 rounded-full border ${geoStatus === "granted" ? "bg-emerald-500 border-emerald-600" : geoStatus === "pending" ? "bg-amber-400 border-amber-500" : "bg-rose-500 border-rose-600"}`}
+                title={geoStatus === "granted" ? "Location on" : geoStatus === "pending" ? "Locating..." : "Location off"}
+              />
+            </button>
           </div>
 
-          {/* SECTION: Games Grid */}
-          <section>
-            <h2 className="text-lg font-bold text-neutral-900 mb-4">Browse by Category</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {filteredGames.map(g => (
-                 <Link to={`/groups/game/${g.id}`} key={g.id} className="block group">
-                    <div className="flex items-center p-4 bg-white rounded-2xl border border-neutral-100 shadow-sm transition-all hover:shadow-md hover:border-neutral-200 active:scale-[0.98]">
-                       <div className="h-14 w-14 flex items-center justify-center text-3xl bg-neutral-50 rounded-2xl mr-4 shadow-inner ring-1 ring-black/5">
-                          {g.image}
-                       </div>
-                       <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between">
-                             <h3 className="font-bold text-neutral-900 truncate">{g.name}</h3>
-                             <span className="text-[10px] font-bold bg-neutral-100 text-neutral-500 px-1.5 py-0.5 rounded uppercase tracking-wide">
-                                {g.tag}
-                             </span>
-                          </div>
-                          <p className="text-xs text-neutral-500 truncate mt-0.5">{g.blurb}</p>
-                          <div className="flex items-center gap-3 mt-2 text-[11px] font-medium text-neutral-400">
-                             <span className="flex items-center gap-1"><Users className="h-3 w-3" /> {memberCountByGame[g.id] || 0}</span>
-                             <span className="flex items-center gap-1"><Tag className="h-3 w-3" /> {groupCountByGame[g.id] || 0} groups</span>
-                          </div>
-                       </div>
-                    </div>
-                 </Link>
-              ))}
-            </div>
-            {filteredGames.length === 0 && (
-                <div className="py-12 text-center text-neutral-500">
-                    No games found. Try a different search.
+          {slide === 1 && (
+            <div className="mb-5 rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-neutral-900">Nearby groups</div>
+                <div className="text-xs text-neutral-500">
+                  {userCity ? `Using ${userCity}${coords ? " + GPS" : ""} · ${radiusKm} km` : `Using ${fallbackCity} · ${radiusKm} km (set your city for accuracy)`}
                 </div>
-            )}
-          </section>
+              </div>
+              <button
+                onClick={() => {
+                  if (geoStatus === "granted" || geoStatus === "pending") {
+                    setCoords(null);
+                    setGeoStatus("idle");
+                    setNearGroups([]);
+                    setGeoPaused(true);
+                  } else {
+                    setGeoPaused(false);
+                    requestLocation();
+                  }
+                }}
+                className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:border-neutral-300"
+              >
+                {geoStatus === "granted"
+                  ? "Location on — turn off"
+                  : geoStatus === "pending"
+                    ? "Locating..."
+                    : "Use my location"}
+              </button>
+            </div>
+              <div>
+                <label className="text-xs font-medium text-neutral-500">Radius: {radiusKm} km</label>
+                <input
+                  type="range"
+                  min={5}
+                  max={50}
+                  step={5}
+                  value={radiusKm}
+                  onChange={(e) => setRadiusKm(Number(e.target.value))}
+                  className="w-full accent-black"
+                />
+                <p className="text-[11px] text-neutral-500 mt-1">
+                  {radiusKm <= 20 && userCity ? `Showing circles in ${userCity}` : "Showing wider results"}
+                </p>
+                {geoStatus === "denied" && (
+                  <p className="text-[11px] text-rose-600 mt-1">
+                    Location permission blocked. Enable it in your browser to filter by GPS.
+                  </p>
+                )}
+              </div>
+              <div className="space-y-3">
+                {nearLoading && (
+                  <div className="flex items-center gap-2 text-sm text-neutral-500">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading nearby circles…
+                  </div>
+                )}
+                {!nearLoading && nearGroups.length === 0 && (
+                  <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-500">
+                    No nearby circles yet. Try increasing the radius.
+                  </div>
+                )}
+                {!nearLoading && nearGroups.length > 0 && (
+                  <div className="grid gap-3">
+                    {nearGroups.map(g => (
+                      <Link to={`/group/${g.id}`} key={g.id} className="block group">
+                        <div className="relative overflow-hidden rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm transition-all hover:shadow-md hover:border-neutral-200 active:scale-[0.99]">
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1 min-w-0 pr-4">
+                              <h3 className="font-bold text-neutral-900 text-base truncate">{g.title}</h3>
+                              <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-neutral-500 font-medium">
+                                <span className="capitalize text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md font-bold">{g.game || g.category}</span>
+                                <span className="flex items-center gap-1">
+                                  {g.city ? <MapPin className="h-3 w-3" /> : <Globe className="h-3 w-3" />}
+                                  {g.city || "Online"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          {g.description && (
+                            <p className="mt-3 text-sm text-neutral-600 line-clamp-2 leading-relaxed">{g.description}</p>
+                          )}
+                          {g.code && (
+                            <div className="mt-3 pt-3 border-t border-neutral-50 flex items-center gap-2">
+                              <span className="text-[10px] font-bold text-neutral-400 uppercase tracking-wider">Invite Code</span>
+                              <span className="font-mono text-xs font-bold text-neutral-700 bg-neutral-100 px-1.5 py-0.5 rounded">{g.code}</span>
+                            </div>
+                          )}
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* SECTION: Games Grid (hidden on Nearby) */}
+          {slide === 0 && (
+            <section>
+              <h2 className="text-lg font-bold text-neutral-900 mb-4">Browse by Category</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {filteredGames.map(g => (
+                   <Link to={`/groups/game/${g.id}`} key={g.id} className="block group">
+                      <div className="flex items-center p-5 rounded-2xl border border-neutral-100 bg-gradient-to-r from-white via-neutral-50 to-white shadow-sm transition-all hover:shadow-lg hover:-translate-y-0.5 hover:border-neutral-200 active:scale-[0.98]">
+                         <div className="h-14 w-14 flex items-center justify-center text-3xl rounded-2xl mr-4 shadow-inner ring-2 ring-black/5 bg-white">
+                            {g.image}
+                         </div>
+                         <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                               <h3 className="font-extrabold text-neutral-900 truncate">{g.name}</h3>
+                               <span className="text-[10px] font-bold bg-neutral-900 text-white px-2 py-0.5 rounded-full uppercase tracking-wide">
+                                  {g.tag}
+                               </span>
+                            </div>
+                            <p className="text-xs text-neutral-600 truncate mt-1">{g.blurb}</p>
+                            <div className="flex items-center gap-3 mt-2 text-[11px] font-semibold text-neutral-500">
+                               <span className="flex items-center gap-1"><Users className="h-3 w-3" /> {memberCountByGame[g.id] || 0}</span>
+                               <span className="flex items-center gap-1"><Tag className="h-3 w-3" /> {groupCountByGame[g.id] || 0} groups</span>
+                            </div>
+                         </div>
+                      </div>
+                   </Link>
+                ))}
+              </div>
+              {filteredGames.length === 0 && (
+                  <div className="py-12 text-center text-neutral-500">
+                      No games found. Try a different search.
+                  </div>
+              )}
+            </section>
+          )}
         </>
       )}
 

@@ -1,9 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Message } from "@/types";
 import { useAuth } from "@/App";
 import { useGroupPresence } from "@/hooks/useGroupPresence";
 import { MapPin, MoreHorizontal, Paperclip, Send, X, Smile, Reply, Loader2 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 type Profile = { user_id: string; id?: string; name: string | null; avatar_url?: string | null };
 type Member = { user_id: string; name: string | null; avatar_url?: string | null };
@@ -46,6 +47,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
   // base state
   const [myProfile, setMyProfile] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
+  const [dismissedPollMsgs, setDismissedPollMsgs] = useState<Set<string>>(new Set());
 
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Map<string, Record<string, string[]>>>(new Map());
@@ -71,6 +73,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
 
   // Auth hook for user info
   const { user: authUser } = useAuth();
@@ -191,6 +194,27 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
 
     return () => { aborted = true; };
   }, [groupId, pageSize]);
+
+  const activePollBanner = useMemo(() => {
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (dismissedPollMsgs.has(m.id)) continue;
+      const match = m.content?.match(/^\[POLL:([^\]]+)\]\s*(.+)$/);
+      if (match) {
+        return { id: m.id, pollId: match[1], title: match[2].trim() };
+      }
+    }
+    return null;
+  }, [msgs, dismissedPollMsgs]);
+
+  function dismissPollBanner(id: string) {
+    setDismissedPollMsgs((prev) => new Set(prev).add(id));
+  }
+
+  function handlePollClick(banner: { id: string; pollId: string }) {
+    dismissPollBanner(banner.id);
+    navigate(`/group/${groupId}#poll`);
+  }
 
   // Load group members
   useEffect(() => {
@@ -851,6 +875,27 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
 
       {/* Input Area */}
       <div className="border-t border-neutral-100 bg-white p-3 sm:p-4">
+        {activePollBanner && (
+          <div className="mb-3 flex items-center gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-3 py-2 shadow-sm">
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-semibold text-emerald-700">New poll</div>
+              <div className="truncate text-sm font-bold text-neutral-900">{activePollBanner.title}</div>
+            </div>
+            <button
+              onClick={() => handlePollClick(activePollBanner)}
+              className="rounded-full bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 transition-colors"
+            >
+              Vote
+            </button>
+            <button
+              onClick={() => dismissPollBanner(activePollBanner.id)}
+              className="grid h-7 w-7 place-items-center rounded-full bg-white text-neutral-400 hover:text-neutral-700 border border-neutral-200"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
         {replyTo && (
           <div className="mb-2 flex items-center justify-between rounded-lg bg-neutral-50 border border-neutral-100 px-3 py-2 text-xs">
             <div className="flex items-center gap-2">

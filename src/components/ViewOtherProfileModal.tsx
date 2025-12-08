@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { Users, Calendar, MessageSquare, UserPlus, UserCheck, UserMinus, X, AlertTriangle, Unlock } from "lucide-react";
+import { Users, MessageSquare, UserPlus, UserCheck, UserMinus, X, AlertTriangle, Unlock } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const toast = (msg: string) => alert(msg);
@@ -23,10 +23,10 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
   const [viewRatingAvg, setViewRatingAvg] = useState<number>(0);
   const [viewRatingCount, setViewRatingCount] = useState<number>(0);
 
-  const [totalGroups, setTotalGroups] = useState<number>(0);
   const [mutualGroupsCount, setMutualGroupsCount] = useState<number>(0);
   const [mutualGroupNames, setMutualGroupNames] = useState<string[]>([]);
-  const [targetGroupNames, setTargetGroupNames] = useState<string[]>([]);
+  const [targetFriendCount, setTargetFriendCount] = useState<number>(0);
+  const [mutualFriendsCount, setMutualFriendsCount] = useState<number>(0);
 
   const [myRating, setMyRating] = useState<number>(0);
   const [rateBusy, setRateBusy] = useState(false);
@@ -87,30 +87,19 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
       }
       setViewFriendStatus(st);
 
+      // Mutual groups (preview)
       const { data: targetGroups } = await supabase
         .from("group_members")
         .select("group_id")
         .eq("user_id", viewUserId)
         .eq("status", "active");
-
       const targetGroupIds = (targetGroups || []).map((r: any) => r.group_id);
-      setTotalGroups(targetGroupIds.length);
-
-      if (targetGroupIds.length > 0) {
-        const { data: tgDetails } = await supabase
-          .from("groups")
-          .select("title")
-          .in("id", targetGroupIds)
-          .limit(12);
-        setTargetGroupNames((tgDetails || []).map((g: any) => g.title));
-      } else setTargetGroupNames([]);
 
       const { data: myGroups } = await supabase
         .from("group_members")
         .select("group_id")
         .eq("user_id", uid)
         .eq("status", "active");
-
       const myGroupIds = new Set((myGroups || []).map((r: any) => r.group_id));
 
       const mutualIds = targetGroupIds.filter(gid => myGroupIds.has(gid));
@@ -124,6 +113,24 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
           .limit(3);
         setMutualGroupNames((mutualDetails || []).map((g: any) => g.title));
       } else setMutualGroupNames([]);
+
+      // Friend counts and mutual friends
+      const { data: myFriends } = await supabase
+        .from("friendships")
+        .select("user_id_a,user_id_b,status")
+        .or(`and(user_id_a.eq.${uid},status.eq.accepted),and(user_id_b.eq.${uid},status.eq.accepted)`);
+      const myFriendIds = new Set(
+        (myFriends || []).map((f: any) => (f.user_id_a === uid ? f.user_id_b : f.user_id_a))
+      );
+
+      const { data: targetFriends } = await supabase
+        .from("friendships")
+        .select("user_id_a,user_id_b,status")
+        .or(`and(user_id_a.eq.${viewUserId},status.eq.accepted),and(user_id_b.eq.${viewUserId},status.eq.accepted)`);
+
+      const targetIds = (targetFriends || []).map((f: any) => (f.user_id_a === viewUserId ? f.user_id_b : f.user_id_a));
+      setTargetFriendCount(targetIds.length);
+      setMutualFriendsCount(targetIds.filter(id => myFriendIds.has(id)).length);
     }
 
     loadData();
@@ -266,39 +273,23 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-3 mb-6">
-          <div className="p-3 rounded-xl bg-neutral-50 text-center">
-            <div className="text-xl font-bold">{totalGroups}</div>
-            <div className="text-[10px] uppercase font-bold text-neutral-500 mt-1 flex items-center justify-center gap-1">
-              <Calendar className="h-3 w-3" /> Groups Joined
-            </div>
-          </div>
-
+        <div className="grid grid-cols-3 gap-3 mb-6">
           <div className="p-3 rounded-xl bg-blue-50 text-center">
-            <div className="text-xl font-bold text-blue-600">{mutualGroupsCount}</div>
-            <div className="text-[10px] uppercase font-bold text-blue-400 mt-1 flex items-center justify-center gap-1">
+            <div className="text-xl font-bold text-blue-700">{mutualGroupsCount}</div>
+            <div className="text-[10px] uppercase font-bold text-blue-500 mt-1 flex items-center justify-center gap-1">
               <Users className="h-3 w-3" /> Mutual Groups
             </div>
           </div>
-        </div>
 
-        {/* All Groups They Joined */}
-        <div className="mb-6 bg-neutral-50 rounded-xl p-3 border border-neutral-100">
-          <div className="text-[10px] font-bold text-neutral-400 uppercase mb-2">
-            Groups they joined:
+          <div className="p-3 rounded-xl bg-emerald-50 text-center">
+            <div className="text-xl font-bold text-emerald-700">{mutualFriendsCount}</div>
+            <div className="text-[10px] uppercase font-bold text-emerald-500 mt-1">Mutual Friends</div>
           </div>
 
-          {targetGroupNames.length === 0 ? (
-            <div className="text-xs text-neutral-400">No groups found.</div>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {targetGroupNames.map((name, i) => (
-                <span key={i} className="px-2 py-0.5 bg-white border border-neutral-200 rounded-md text-xs font-medium text-neutral-700">
-                  {name}
-                </span>
-              ))}
-            </div>
-          )}
+          <div className="p-3 rounded-xl bg-neutral-900 text-center text-white">
+            <div className="text-xl font-bold">{targetFriendCount}</div>
+            <div className="text-[10px] uppercase font-bold text-neutral-200 mt-1">Friends</div>
+          </div>
         </div>
 
         {/* Mutual Groups List (Small Preview) */}

@@ -4,6 +4,7 @@ import { Compass, MessageSquare, Users, Bell, User } from "lucide-react";
 export default function Layout() {
   const location = useLocation();
   const active = location.pathname;
+  const hideNav = active.startsWith("/settings");
 
   const isActive = (path: string) =>
     active === path || active.startsWith(`${path}/`);
@@ -27,39 +28,43 @@ export default function Layout() {
 
       {/* Main content wrapper with generous padding for the nav */}
       <div className="relative z-10 pb-[calc(120px+env(safe-area-inset-bottom))]">
-        <Outlet />
+        <div key={active} className="page-transition">
+          <Outlet />
+        </div>
       </div>
 
       {/* Bottom Navigation Bar */}
-      <nav className="fixed bottom-4 left-0 right-0 z-[100] px-4 pb-[env(safe-area-inset-bottom)]">
-        <div className="mx-auto max-w-xl rounded-[28px] border border-white/70 bg-white/80 backdrop-blur-2xl shadow-[0_10px_50px_rgba(15,23,42,0.12)]">
-          <div className="flex h-[74px] items-center justify-around px-2">
-            {links.map(({ to, label, icon: Icon }) => {
-              const activeTab = isActive(to);
-              return (
-                <Link
-                  key={to}
-                  to={to}
-                  className="group flex flex-col items-center gap-1 text-[11px] font-medium text-slate-500 transition-all duration-150"
-                >
-                  <span
-                    className={`grid h-11 w-11 place-items-center rounded-2xl border transition-all duration-200 ${
-                      activeTab
-                        ? "border-transparent bg-gradient-to-br from-indigo-500 via-purple-500 to-teal-400 text-white shadow-lg shadow-indigo-500/30"
-                        : "border-white/70 bg-white/70 text-slate-600 hover:text-slate-900"
-                    }`}
+      {!hideNav && (
+        <nav className="fixed bottom-4 left-0 right-0 z-[100] px-4 pb-[env(safe-area-inset-bottom)]">
+          <div className="mx-auto max-w-xl rounded-[28px] border border-white/70 bg-white/80 backdrop-blur-2xl shadow-[0_10px_50px_rgba(15,23,42,0.12)]">
+            <div className="flex h-[74px] items-center justify-around px-2">
+              {links.map(({ to, label, icon: Icon }) => {
+                const activeTab = isActive(to);
+                return (
+                  <Link
+                    key={to}
+                    to={to}
+                    className="group flex flex-col items-center gap-1 text-[11px] font-medium text-slate-500 transition-all duration-150"
                   >
-                    <Icon className="h-5 w-5" />
-                  </span>
-                  <span className={activeTab ? "text-slate-900" : "text-slate-500 group-hover:text-slate-800"}>
-                    {label}
-                  </span>
-                </Link>
-              );
-            })}
+                    <span
+                      className={`grid h-11 w-11 place-items-center rounded-2xl border transition-all duration-200 ${
+                        activeTab
+                          ? "border-transparent bg-gradient-to-br from-indigo-500 via-purple-500 to-teal-400 text-white shadow-lg shadow-indigo-500/30 animate-pulse"
+                          : "border-white/70 bg-white/70 text-slate-600 hover:text-slate-900 hover:shadow-md hover:-translate-y-0.5"
+                      }`}
+                    >
+                      <Icon className="h-5 w-5" />
+                    </span>
+                    <span className={activeTab ? "text-slate-900" : "text-slate-500 group-hover:text-slate-800"}>
+                      {label}
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      </nav>
+        </nav>
+      )}
     </div>
   );
 }

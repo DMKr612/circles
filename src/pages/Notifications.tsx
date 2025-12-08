@@ -1,8 +1,21 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
-import { ChevronDown, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail } from "lucide-react";
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail, Users, X } from "lucide-react";
 import { useAuth } from "@/App";
+
+type CalendarEntry = {
+  id: string;
+  groupId: string;
+  groupTitle: string;
+  title: string;
+  startsAt: string;
+  phase: "planned" | "confirmed";
+  pollId?: string;
+  optionId?: string;
+  participants: number;
+  votes: number;
+};
 
 export default function NotificationsPage() {
   const navigate = useNavigate();
@@ -19,6 +32,18 @@ export default function NotificationsPage() {
 
   // UI State
   const [showOlder, setShowOlder] = useState(false);
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarEntries, setCalendarEntries] = useState<CalendarEntry[]>([]);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => {
+    const d = new Date();
+    d.setDate(1);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [showUpcoming, setShowUpcoming] = useState(true);
 
   useEffect(() => {
     if (!user) return;
@@ -102,6 +127,138 @@ export default function NotificationsPage() {
 
     loadData();
   }, [user]);
+
+  const loadCalendar = useCallback(async () => {
+    if (!user) return;
+    setCalendarLoading(true);
+    setCalendarError(null);
+    try {
+      const { data: memberships, error: memberErr } = await supabase
+        .from("group_members" as any)
+        .select("group_id, status, groups(title)")
+        .eq("user_id", user.id)
+        .in("status", ["active", "accepted"]);
+      if (memberErr) throw memberErr;
+
+      const groupIds = (memberships || []).map((m: any) => m.group_id);
+      const groupNames: Record<string, string> = {};
+      (memberships || []).forEach((m: any) => {
+        if (m?.group_id) groupNames[m.group_id] = m.groups?.title || "Group";
+      });
+
+      if (!groupIds.length) {
+        setCalendarEntries([]);
+        return;
+      }
+
+      const { data: pollsData, error: pollsErr } = await supabase
+        .from("group_polls" as any)
+        .select("id, group_id, title, status, created_at, closes_at, groups(title), group_poll_options(id, label, starts_at, place, created_at)")
+        .in("group_id", groupIds)
+        .order("created_at", { ascending: false })
+        .limit(120);
+      if (pollsErr) throw pollsErr;
+
+      const pollIds = (pollsData || []).map((p: any) => p.id).filter(Boolean);
+      let votesData: any[] = [];
+      if (pollIds.length) {
+        const { data: voteRows, error: voteErr } = await supabase
+          .from("group_votes" as any)
+          .select("poll_id, option_id, user_id")
+          .in("poll_id", pollIds);
+        if (voteErr) throw voteErr;
+        votesData = voteRows || [];
+      }
+
+      const { data: eventsData, error: eventErr } = await supabase
+        .from("group_events" as any)
+        .select("id, group_id, poll_id, option_id, title, starts_at, place, created_at, groups(title)")
+        .in("group_id", groupIds)
+        .order("starts_at", { ascending: true });
+      if (eventErr) throw eventErr;
+
+      const votesByOption: Record<string, number> = {};
+      const participantsByPoll: Record<string, Set<string>> = {};
+      votesData.forEach((v: any) => {
+        if (!v?.poll_id || !v?.option_id || !v?.user_id) return;
+        votesByOption[v.option_id] = (votesByOption[v.option_id] || 0) + 1;
+        if (!participantsByPoll[v.poll_id]) participantsByPoll[v.poll_id] = new Set<string>();
+        participantsByPoll[v.poll_id].add(v.user_id);
+      });
+
+      const eventByPoll = new Map<string, any>();
+      (eventsData || []).forEach((ev: any) => {
+        if (ev?.poll_id) eventByPoll.set(ev.poll_id, ev);
+      });
+
+      const items: CalendarEntry[] = [];
+
+      (pollsData || []).forEach((poll: any) => {
+        const participants = participantsByPoll[poll.id]?.size ?? 0;
+        const pollEvent = eventByPoll.get(poll.id);
+        const selectedOption = pollEvent?.option_id || null;
+
+        (poll.group_poll_options || []).forEach((opt: any) => {
+          if (!opt?.starts_at) return;
+          if (pollEvent && selectedOption && opt.id !== selectedOption) return; // only keep winning slot once confirmed
+          const votes = votesByOption[opt.id] ?? 0;
+          items.push({
+            id: `${poll.id}-${opt.id}`,
+            groupId: poll.group_id,
+            groupTitle: poll.groups?.title || groupNames[poll.group_id] || "Group",
+            title: poll.title || opt.label,
+            startsAt: opt.starts_at,
+            phase: pollEvent && selectedOption === opt.id ? "confirmed" : "planned",
+            pollId: poll.id,
+            optionId: opt.id,
+            participants,
+            votes
+          });
+        });
+      });
+
+      (eventsData || []).forEach((ev: any) => {
+        if (!ev?.starts_at) return;
+        if (ev.poll_id && items.some((i) => i.pollId === ev.poll_id)) return;
+        items.push({
+          id: `event-${ev.id}`,
+          groupId: ev.group_id,
+          groupTitle: ev.groups?.title || groupNames[ev.group_id] || "Group",
+          title: ev.title || "Group Event",
+          startsAt: ev.starts_at,
+          phase: "confirmed",
+          pollId: ev.poll_id || undefined,
+          optionId: ev.option_id || undefined,
+          participants: ev.poll_id && participantsByPoll[ev.poll_id] ? participantsByPoll[ev.poll_id].size : 0,
+          votes: ev.option_id ? votesByOption[ev.option_id] ?? 0 : 0
+        });
+      });
+
+      items.sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+      setCalendarEntries(items);
+    } catch (e: any) {
+      console.error("Failed to load calendar", e);
+      setCalendarError(e.message || "Calendar could not be loaded");
+    } finally {
+      setCalendarLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    loadCalendar();
+  }, [user, loadCalendar]);
+
+  useEffect(() => {
+    if (calendarOpen) {
+      const today = new Date();
+      setSelectedDate(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`);
+    }
+  }, [calendarOpen]);
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const keyFromDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const keyFromISO = (iso: string) => keyFromDate(new Date(iso));
 
   // --- Process Data (Grouping & Sorting) ---
 
@@ -198,6 +355,91 @@ export default function NotificationsPage() {
 
     return { recent, older };
   }, [friendReqs, invites, polls, messages, votes]);
+
+  const upcomingEntries = useMemo(() => {
+    const now = Date.now();
+    return calendarEntries
+      .filter((c) => new Date(c.startsAt).getTime() >= now)
+      .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+  }, [calendarEntries]);
+
+  const pastEntries = useMemo(() => {
+    const now = Date.now();
+    return calendarEntries
+      .filter((c) => new Date(c.startsAt).getTime() < now)
+      .sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime());
+  }, [calendarEntries]);
+
+  const eventsByDay = useMemo(() => {
+    const map: Record<string, CalendarEntry[]> = {};
+    calendarEntries.forEach((c) => {
+      const key = keyFromDate(new Date(c.startsAt));
+      if (!map[key]) map[key] = [];
+      map[key].push(c);
+    });
+    Object.values(map).forEach((list) => list.sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime()));
+    return map;
+  }, [calendarEntries]);
+
+  const monthDays = useMemo(() => {
+    const first = new Date(calendarMonth);
+    const startOffset = (first.getDay() + 6) % 7; // Monday as first day
+    const start = new Date(first);
+    start.setDate(1 - startOffset);
+    const days: { date: Date; key: string; inMonth: boolean }[] = [];
+    for (let i = 0; i < 42; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      days.push({ date: d, key: keyFromDate(d), inMonth: d.getMonth() === first.getMonth() });
+    }
+    return days;
+  }, [calendarMonth]);
+
+  const selectedDayEvents = useMemo(() => {
+    if (!selectedDate) return [];
+    return eventsByDay[selectedDate] || [];
+  }, [eventsByDay, selectedDate]);
+
+  const todayKey = keyFromDate(new Date());
+  const monthLabel = calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const weekdayLabels = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
+  const changeMonth = (delta: number) => {
+    setCalendarMonth((prev) => {
+      const next = new Date(prev);
+      next.setMonth(prev.getMonth() + delta);
+      next.setDate(1);
+      next.setHours(0, 0, 0, 0);
+      return next;
+    });
+  };
+
+  const resetToCurrentMonth = () => {
+    const now = new Date();
+    const first = new Date(now.getFullYear(), now.getMonth(), 1);
+    setCalendarMonth(first);
+    setSelectedDate(keyFromDate(now));
+  };
+
+  const visibleUpcoming = useMemo(() => {
+    if (!selectedDate) return upcomingEntries;
+    return upcomingEntries.filter((e) => keyFromISO(e.startsAt) !== selectedDate);
+  }, [upcomingEntries, selectedDate]);
+
+  function timeUntil(startIso: string) {
+    const now = Date.now();
+    const t = new Date(startIso).getTime();
+    const diff = t - now;
+    if (diff <= 0) return "Starts now";
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return `in ${mins}m`;
+    const hours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (hours < 24) return `in ${hours}h ${remMins}m`;
+    const days = Math.floor(hours / 24);
+    const remH = hours % 24;
+    return `in ${days}d ${remH}h`;
+  }
 
   // --- Handlers ---
 
@@ -310,7 +552,53 @@ export default function NotificationsPage() {
 
         {/* Time Column */}
         <div className="text-[10px] text-neutral-400 whitespace-nowrap self-start">
-           {isRecent ? e.date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : e.date.toLocaleDateString()}
+       {isRecent ? e.date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : e.date.toLocaleDateString()}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCalendarEntry = (entry: CalendarEntry, nowMs: number) => {
+    const date = new Date(entry.startsAt);
+    const isPast = date.getTime() < nowMs;
+    const colorBar = entry.phase === "confirmed" ? "bg-emerald-500" : "bg-sky-500";
+    const badgeClass =
+      entry.phase === "confirmed"
+        ? "border-emerald-100 bg-emerald-50 text-emerald-700"
+        : "border-sky-100 bg-sky-50 text-sky-700";
+
+    return (
+      <div
+        key={entry.id}
+        onClick={() => navigate(`/group/${entry.groupId}`)}
+        className="relative overflow-hidden rounded-2xl border border-neutral-100 bg-white/95 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-lg cursor-pointer"
+      >
+        <div className={`absolute inset-y-0 left-0 w-1 ${colorBar}`} />
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex-1 space-y-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">{entry.groupTitle}</div>
+            <div className="text-base font-bold text-neutral-900">{entry.title}</div>
+            <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-600">
+              <Calendar className="h-4 w-4" />
+              <span>{date.toLocaleDateString()} • {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              {isPast && (
+                <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-neutral-500">
+                  Past
+                </span>
+              )}
+            </div>
+            <div className="flex gap-4 text-[12px] text-neutral-600">
+              <span className="flex items-center gap-1">
+                <Users className="h-3.5 w-3.5" /> {entry.participants} Teilnahme{entry.participants === 1 ? "" : "n"}
+              </span>
+              <span className="flex items-center gap-1">
+                <CheckSquare className="h-3.5 w-3.5" /> {entry.votes} Stimme{entry.votes === 1 ? "" : "n"}
+              </span>
+            </div>
+          </div>
+          <span className={`flex items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-bold ${badgeClass}`}>
+            {entry.phase === "confirmed" ? "Confirmed" : "Poll open"}
+          </span>
         </div>
       </div>
     );
@@ -325,7 +613,19 @@ export default function NotificationsPage() {
 
   return (
     <div className="mx-auto w-full max-w-xl px-4 py-8 pb-32">
-      <h1 className="text-2xl font-extrabold text-neutral-900 mb-6">Activity</h1>
+      <div className="mb-6 flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-extrabold text-neutral-900">Activity</h1>
+        <button
+          onClick={() => {
+            setCalendarOpen(true);
+            if (!calendarEntries.length) loadCalendar();
+          }}
+          className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-bold text-neutral-800 shadow-sm transition-all hover:-translate-y-[1px] hover:shadow-md"
+        >
+          <Calendar className="h-4 w-4" />
+          Calendar
+        </button>
+      </div>
 
       {isEmpty && (
         <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -361,6 +661,181 @@ export default function NotificationsPage() {
               {older.map(renderEvent)}
             </div>
           )}
+        </div>
+      )}
+
+      {calendarOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4 py-6">
+          <div className="relative w-full max-w-4xl rounded-3xl bg-white p-6 shadow-2xl">
+            <button
+              onClick={() => setCalendarOpen(false)}
+              className="absolute right-3 top-3 rounded-full p-2 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <div className="mb-4">
+              <div className="text-lg font-bold text-neutral-900">Activity Calendar</div>
+              <p className="text-sm text-neutral-500">Poll suggestions (blue) and confirmed dates (green) at a glance.</p>
+            </div>
+
+            {calendarError && (
+              <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+                {calendarError}
+              </div>
+            )}
+
+            {calendarLoading ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-10 text-neutral-500">
+                <div className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-700" />
+                Kalender wird geladen...
+              </div>
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+                <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => changeMonth(-1)}
+                        className="rounded-full border border-neutral-200 bg-white p-2 text-neutral-600 hover:bg-neutral-100"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <div className="text-lg font-bold text-neutral-900">{monthLabel}</div>
+                      <button
+                        onClick={() => changeMonth(1)}
+                        className="rounded-full border border-neutral-200 bg-white p-2 text-neutral-600 hover:bg-neutral-100"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] font-semibold text-neutral-500">
+                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-500" /> Poll open</span>
+                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Confirmed</span>
+                    </div>
+                    <button
+                      onClick={resetToCurrentMonth}
+                      className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-bold text-neutral-700 hover:bg-neutral-100"
+                    >
+                      Today
+                    </button>
+                  </div>
+
+                  <div className="mb-2 grid grid-cols-7 text-center text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                    {weekdayLabels.map((w) => (
+                      <div key={w} className="py-1">{w}</div>
+                    ))}
+                  </div>
+
+                  <div className="grid grid-cols-7 gap-2">
+                    {monthDays.map(({ date, key, inMonth }) => {
+                      const dayEvents = eventsByDay[key] || [];
+                      const isToday = key === todayKey;
+                      const isSelected = selectedDate === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => setSelectedDate(key)}
+                          className={`min-h-[88px] rounded-xl border bg-white p-2 text-left transition-all ${
+                            inMonth ? "border-neutral-200" : "border-neutral-100 text-neutral-400"
+                          } ${isSelected ? "ring-2 ring-neutral-900 border-neutral-300" : "hover:border-neutral-300"} ${isToday ? "shadow-[inset_0_0_0_1px_rgba(0,0,0,0.08)]" : ""}`}
+                        >
+                          <div className="mb-1 flex items-center justify-between text-xs font-semibold">
+                            <span className={`${inMonth ? "text-neutral-900" : "text-neutral-400"}`}>{date.getDate()}</span>
+                            {isToday && <span className="rounded-full bg-neutral-900 px-2 py-[2px] text-[10px] font-bold text-white">Heute</span>}
+                          </div>
+                          <div className="space-y-1">
+                            {dayEvents.slice(0, 3).map((ev) => (
+                              <div key={ev.id} className="flex items-center gap-1 rounded-lg bg-neutral-50 px-2 py-1 text-[11px] font-semibold text-neutral-700">
+                                <span className={`h-2 w-2 rounded-full ${ev.phase === "confirmed" ? "bg-emerald-500" : "bg-sky-500"}`} />
+                                <span className="truncate">{ev.title}</span>
+                              </div>
+                            ))}
+                            {dayEvents.length > 3 && (
+                              <div className="text-[10px] font-semibold text-neutral-500">+{dayEvents.length - 3} mehr</div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-4">
+                  <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-neutral-800">Selected Day</h3>
+                      {selectedDate && (
+                        <span className="text-xs font-semibold text-neutral-500">
+                          {new Date(`${selectedDate}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-3">
+                      {selectedDayEvents.length
+                        ? selectedDayEvents.map((entry) => renderCalendarEntry(entry, Date.now()))
+                        : <p className="text-sm text-neutral-500">Choose a date to see details.</p>}
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold text-neutral-800">Upcoming</h3>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setShowUpcoming((v) => !v)}
+                        className="text-xs font-semibold text-neutral-500 hover:text-neutral-800"
+                      >
+                        {showUpcoming ? "Hide" : "Show"}
+                      </button>
+                      <button
+                        onClick={loadCalendar}
+                        className="text-xs font-semibold text-neutral-500 hover:text-neutral-800"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                    {showUpcoming && (
+                      <div className="space-y-2 max-h-[360px] overflow-auto pr-1">
+                        {visibleUpcoming.length
+                          ? visibleUpcoming.map((entry) => (
+                              <div
+                                key={`up-${entry.id}`}
+                                onClick={() => navigate(`/group/${entry.groupId}`)}
+                                className="flex items-center justify-between rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-800 hover:border-neutral-300"
+                              >
+                                <div className="min-w-0">
+                                  <div className="font-semibold truncate">{entry.title}</div>
+                                  <div className="text-[11px] text-neutral-500 truncate">
+                                    {new Date(entry.startsAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                                    {" • "}
+                                    {timeUntil(entry.startsAt)}
+                                  </div>
+                                </div>
+                                <span className={`ml-2 h-2 w-2 rounded-full ${entry.phase === "confirmed" ? "bg-emerald-500" : "bg-sky-500"}`} />
+                              </div>
+                            ))
+                          : <p className="text-sm text-neutral-500">No scheduled activities.</p>}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-neutral-800">Past</h3>
+                      <span className="text-xs font-semibold text-neutral-500">{pastEntries.length}</span>
+                    </div>
+                    <div className="space-y-2 max-h-[240px] overflow-auto pr-1">
+                      {pastEntries.length
+                        ? pastEntries.slice(0, 12).map((entry) => renderCalendarEntry(entry, Date.now()))
+                        : <p className="text-sm text-neutral-500">Nothing yet.</p>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

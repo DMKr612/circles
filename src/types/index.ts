@@ -69,6 +69,7 @@ export type Poll = {
   status: string;
   closes_at: string | null;
   created_by: string;
+  late_voter_ids?: string[] | null;
 };
 
 export type PollOption = {

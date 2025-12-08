@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useLocation } from "react-router-dom";
 import { useProfile } from "../hooks/useProfile";
 import { useAuth } from "@/App";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
+import { X, List } from "lucide-react";
 
 // Demo stubs for toast calls (prevents red lines if Toaster is removed)
 const success = (m?: string) => console.log("[ok]", m || "");
@@ -177,6 +178,53 @@ export default function Profile() {
     })();
   }, [uid]);
 
+  // Game stats (events in circles I'm a member of)
+  useEffect(() => {
+    if (!uid) return;
+    let cancelled = false;
+    (async () => {
+      const { data: memberships, error: mErr } = await supabase
+        .from("group_members")
+        .select("group_id, groups(game)")
+        .eq("user_id", uid)
+        .in("status", ["active", "accepted"]);
+      if (cancelled || mErr) return;
+
+      const groupIds = (memberships || []).map((m: any) => m.group_id);
+      const gameByGroup: Record<string, string> = {};
+      (memberships || []).forEach((m: any) => {
+        if (m.group_id) gameByGroup[m.group_id] = m.groups?.game || "Unknown";
+      });
+
+      if (!groupIds.length) {
+        if (!cancelled) { setGamesTotal(0); setGameStats([]); }
+        return;
+      }
+
+      const { data: events, error: eErr } = await supabase
+        .from("group_events")
+        .select("id, group_id")
+        .in("group_id", groupIds);
+      if (cancelled || eErr) return;
+
+      const counts: Record<string, number> = {};
+      (events || []).forEach((ev: any) => {
+        const g = gameByGroup[ev.group_id] || "Unknown";
+        counts[g] = (counts[g] || 0) + 1;
+      });
+
+      const stats: GameStat[] = Object.entries(counts)
+        .map(([game, count]) => ({ game, count }))
+        .sort((a, b) => b.count - a.count || a.game.localeCompare(b.game));
+
+      if (!cancelled) {
+        setGamesTotal(events?.length || 0);
+        setGameStats(stats);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [uid]);
+
   // --- UI State ---
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
@@ -225,6 +273,15 @@ export default function Profile() {
   const [friends, setFriends] = useState<FriendShipRow[]>([]);
   const [friendProfiles, setFriendProfiles] =
     useState<Map<string, { name: string; avatar_url: string | null }>>(new Map());
+  const [friendsModalOpen, setFriendsModalOpen] = useState(false);
+
+  const friendAvatars = useMemo(() => {
+    return friends.slice(0, 10).map((fr) => {
+      const fid = fr.user_id_a === uid ? fr.user_id_b : fr.user_id_a;
+      const prof = friendProfiles.get(fid);
+      return { id: fid, name: prof?.name || fid.slice(0, 6), avatar: prof?.avatar_url ?? null };
+    });
+  }, [friends, friendProfiles, uid]);
 
   // --- Notifications ---
   const [incomingRequests, setIncomingRequests] = useState<any[]>([]); // Using 'any' to match original
@@ -312,6 +369,10 @@ export default function Profile() {
     return ids.size;
   }, [groupFilter, groupsCreated, groupsJoined, createdPreview, joinedPreview]);
 
+  const followingCount = useMemo(() => friends.filter(f => f.requested_by === uid).length, [friends, uid]);
+  const followersCount = useMemo(() => friends.filter(f => f.requested_by !== uid).length, [friends, uid]);
+  const voteWeight = useMemo(() => Math.max(0, followingCount + followersCount * 0.25), [followingCount, followersCount]);
+
   // Build friend options (accepted friends) for autocomplete (removed)
   // Resolve display for current DM target (removed)
   // const unreadThreads = useMemo(() => threads.filter(t => t.unread), [threads]); (removed)
@@ -352,7 +413,7 @@ export default function Profile() {
     (async () => {
       const { data: frs, error: frErr } = await supabase
         .from("friendships")
-        .select("id,user_id_a,user_id_b,status")
+        .select("id,user_id_a,user_id_b,status,requested_by")
         .or(`and(user_id_a.eq.${uid},status.eq.accepted),and(user_id_b.eq.${uid},status.eq.accepted)`);
 
       if (frErr) console.error("Friend load error:", frErr);
@@ -731,45 +792,119 @@ export default function Profile() {
             <div className="flex-1">
               <div className="text-lg font-semibold text-neutral-900">{headerName}</div>
               <div
-                className="mt-1 flex items-center gap-3 text-sm text-neutral-700"
+                className="mt-1 flex items-center gap-2 text-sm text-neutral-800"
                 title={`${(headerRatingAvg ?? 0).toFixed(1)} / 6 from ${headerRatingCount ?? 0} ratings`}
               >
-                <span className="inline-flex items-center gap-1">
+                <span className="inline-flex items-center gap-1 text-lg leading-none">
                   {Array.from({ length: 6 }).map((_, i) => (
                     <span key={i}>
                       {i < Math.round(headerRatingAvg || 0) ? '★' : '☆'}
                     </span>
                   ))}
-                  <span className="ml-1 text-xs text-neutral-500">
-                    ({headerRatingCount || 0})
-                  </span>
+                </span>
+                <span className="text-xs font-semibold text-neutral-700">
+                  {(headerRatingAvg || 0).toFixed(1)}/6
+                </span>
+                <span className="text-[11px] text-neutral-500">
+                  • {headerRatingCount || 0} rating{(headerRatingCount || 0) === 1 ? "" : "s"}
                 </span>
                 {viewingOther && (
                   <button onClick={() => openProfileView(routeUserId!)} className="text-xs text-emerald-700 hover:underline">Rate</button>
                 )}
               </div>
-              {!viewingOther && <div className="text-sm text-neutral-600">{user?.email}</div>}
               {!viewingOther && (
                 <div className="mt-2 flex items-center gap-2">
                   <button
-                    onClick={() => setSettingsOpen(true)}
+                    onClick={() => navigate("/settings")}
                     className="ml-2 rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm hover:bg-black/[0.04]"
                   >
                     Settings
+                  </button>
+                  <button
+                    onClick={logout}
+                    className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-semibold text-red-700 hover:bg-red-100"
+                  >
+                    Log out
                   </button>
                 </div>
               )}
             </div>
           </div>
           {/* --- Stats Section --- */}
-          <div className="grid grid-cols-3 gap-4">
-            <StatCard label="Groups Created" value={groupsCreated} onClick={() => navigate('/groups?filter=created')} />
-            <StatCard label="Groups Joined" value={groupsJoined} onClick={() => navigate('/groups?filter=joined')} />
-            <StatCard label="Games Played" value={gamesTotal} />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+              <div className="text-xs font-semibold text-neutral-500 uppercase mb-2">Circles</div>
+              <div className="flex items-end gap-4">
+                <button onClick={() => navigate('/groups?filter=created')} className="group flex-1 text-left">
+                  <div className="text-3xl font-extrabold text-neutral-900">{groupsCreated}</div>
+                  <div className="text-sm text-neutral-500 group-hover:text-neutral-800">Created</div>
+                </button>
+                <button onClick={() => navigate('/groups?filter=joined')} className="group flex-1 text-left">
+                  <div className="text-3xl font-extrabold text-neutral-900">{groupsJoined}</div>
+                  <div className="text-sm text-neutral-500 group-hover:text-neutral-800">Joined</div>
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-xs font-semibold text-neutral-500 uppercase">Friends</div>
+                  <div className="text-[11px] text-neutral-500">
+                    Following {followingCount} • Followers {followersCount}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setFriendsModalOpen(true)}
+                  className="inline-flex items-center justify-center h-8 w-8 rounded-full border border-neutral-200 bg-white hover:bg-neutral-100 text-neutral-600"
+                  title="Open friends"
+                >
+                  <List className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex -space-x-2 py-1">
+                {friendAvatars.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => openProfileView(f.id)}
+                    className="h-11 w-11 rounded-full ring-2 ring-white bg-gradient-to-br from-pink-500 to-amber-400 p-[2px]"
+                  >
+                    <div className="h-full w-full rounded-full bg-white overflow-hidden">
+                      {f.avatar ? (
+                        <img src={f.avatar} alt={f.name} className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="h-full w-full grid place-items-center text-xs font-bold text-neutral-700 bg-neutral-100">
+                          {f.name.slice(0,2).toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                ))}
+                {friendAvatars.length === 0 && (
+                  <div className="text-sm text-neutral-500">No friends yet</div>
+                )}
+              </div>
+              <div className="text-[11px] text-neutral-500 mt-1">Tap a bubble to view profile.</div>
+            </div>
+
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-xs font-semibold text-neutral-500 uppercase">Games Played</div>
+                  <div className="text-3xl font-extrabold text-neutral-900">{gamesTotal}</div>
+                </div>
+                {gameStats[0] && (
+                  <span className="rounded-full bg-neutral-900 text-white text-[11px] px-2 py-1 font-semibold">
+                    Top: {gameStats[0].game}
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-neutral-500">Counts confirmed events in your circles.</div>
+            </div>
           </div>
 
           {/* --- Game Stats --- */}
-          <Card title="Game Activity" count={gameStats.length} empty="No game history yet.">
+          <Card title="Game Activity" count={gameStats.length} empty="No game history yet (events in your circles).">
             {gameStats.map(gs => (
               <li key={gs.game} className="flex justify-between py-2">
                 <span className="font-medium text-neutral-900">{gs.game}</span>
@@ -778,25 +913,6 @@ export default function Profile() {
             ))}
           </Card>
 
-          {/* --- Friends List --- */}
-          <Card title="Friends" count={friends.length} empty="No friends yet.">
-            {friends.map(fr => {
-              const fid = fr.user_id_a === uid ? fr.user_id_b : fr.user_id_a;
-              const prof = friendProfiles.get(fid);
-              return (
-                <FriendRow
-                  key={fid}
-                  _otherId={fid}
-                  name={prof?.name || fid.slice(0,6)}
-                  avatarUrl={prof?.avatar_url ?? null}
-                  lastBody=""
-                  lastAt={new Date().toISOString()}
-                  unread={false}
-                  onView={() => openProfileView(fid)}
-                />
-              );
-            })}
-          </Card>
         </div>
         {/* --- DM Sidebar --- */}
         {/* DM Floating Button */}
@@ -959,31 +1075,35 @@ export default function Profile() {
 
             </div>
 
-            <div className="shrink-0 px-5 py-3 border-t border-black/10 space-y-3">
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSettingsOpen(false)}
-                  className="rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={settingsSaving}
-                  className={`rounded-md px-3 py-1.5 text-sm text-white ${settingsSaving ? "bg-neutral-400" : "bg-emerald-600 hover:bg-emerald-700"}`}
-                >
-                  {settingsSaving ? "Saving…" : "Save"}
-                </button>
+            <div className="shrink-0 px-5 py-3 border-t border-black/10">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="text-sm text-neutral-500">Need a break?</div>
+                  <button
+                    type="button"
+                    onClick={logout}
+                    className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-semibold text-red-700 hover:bg-red-100"
+                  >
+                    Log out
+                  </button>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(false)}
+                    className="rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={settingsSaving}
+                    className={`rounded-md px-3 py-1.5 text-sm text-white ${settingsSaving ? "bg-neutral-400" : "bg-emerald-600 hover:bg-emerald-700"}`}
+                  >
+                    {settingsSaving ? "Saving…" : "Save"}
+                  </button>
+                </div>
               </div>
-
-              <button
-                type="button"
-                onClick={logout}
-                className="w-full rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 hover:bg-red-100"
-              >
-                Sign Out
-              </button>
             </div>
 
           </form>
@@ -1041,6 +1161,58 @@ function SharedGroups({ me, other }: { me: string; other: string }) {
           <Link to={`/group/${g.group_id}`} className="text-emerald-700 hover:underline text-[11px]">Open</Link>
         </div>
       ))}
+    </div>
+  );
+}
+
+function FriendsModal({
+  open,
+  onClose,
+  items,
+  onView
+}: {
+  open: boolean;
+  onClose: () => void;
+  items: Array<{ id: string; name: string; avatar?: string | null }>;
+  onView: (id: string) => void;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-4">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-neutral-200 max-h-[80vh] overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-100">
+          <div className="text-sm font-semibold text-neutral-900">Friends</div>
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="divide-y divide-neutral-100 max-h-[70vh] overflow-y-auto">
+          {items.map((f) => (
+            <button
+              key={f.id}
+              onClick={() => { onView(f.id); onClose(); }}
+              className="flex w-full items-center gap-3 px-4 py-3 hover:bg-neutral-50 text-left"
+            >
+              <div className="h-11 w-11 rounded-full bg-neutral-100 overflow-hidden">
+                {f.avatar ? (
+                  <img src={f.avatar} className="h-full w-full object-cover" />
+                ) : (
+                  <div className="h-full w-full grid place-items-center text-sm font-bold text-neutral-700">
+                    {f.name.slice(0,2).toUpperCase()}
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-neutral-900">{f.name}</div>
+                <div className="text-xs text-neutral-500">View profile</div>
+              </div>
+            </button>
+          ))}
+          {items.length === 0 && (
+            <div className="px-4 py-6 text-center text-sm text-neutral-500">No friends yet.</div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

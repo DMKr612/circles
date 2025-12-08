@@ -16,6 +16,14 @@ interface MemberDisplay extends GroupMember {
   avatar_url: string | null;
 }
 
+type DraftPollOption = {
+  label: string;
+  starts_at: string;
+  place?: string;
+};
+
+type PollWithLate = Poll & { late_voter_ids?: string[] | null };
+
 export default function GroupDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -46,12 +54,14 @@ export default function GroupDetail() {
   const [copied, setCopied] = useState(false);
 
   // Voting State
-  const [poll, setPoll] = useState<Poll | null>(null);
+  const [poll, setPoll] = useState<PollWithLate | null>(null);
   const [options, setOptions] = useState<PollOption[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [memberCount, setMemberCount] = useState<number>(0);
   const [votedCount, setVotedCount] = useState<number>(0);
   const [votingBusy, setVotingBusy] = useState<string | null>(null);
+  const [pollFocus, setPollFocus] = useState(false);
+  const [pollReloadKey, setPollReloadKey] = useState(0);
   
   const [members, setMembers] = useState<MemberDisplay[]>([]);
   const [isMember, setIsMember] = useState(false);
@@ -65,15 +75,29 @@ export default function GroupDetail() {
   const [momentBusy, setMomentBusy] = useState(false);
   const [momentMsg, setMomentMsg] = useState<string | null>(null);
   const [ownershipBusy, setOwnershipBusy] = useState<string | null>(null);
+  const [lateGrantBusy, setLateGrantBusy] = useState<string | null>(null);
   const { isTogether } = useGroupPresence(id, isMember ? me ?? undefined : undefined);
   const togetherNow = useMemo(() => members.some((m) => isTogether(m.user_id)), [members, isTogether]);
   const momentInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const supportEmail = import.meta.env.VITE_SUPPORT_EMAIL || "support@circles.app";
 
+  // Focus poll when arriving from chat link (#poll)
+  useEffect(() => {
+    if (location.hash === "#poll") {
+      setPollFocus(true);
+      const el = document.getElementById("poll-section");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      setPollFocus(false);
+    }
+  }, [location.hash]);
+
   // New Poll Form
   const [newTitle, setNewTitle] = useState("Schedule");
-  const [newOptions, setNewOptions] = useState(""); 
+  const [newOptions, setNewOptions] = useState<DraftPollOption[]>([
+    { label: "", starts_at: "" }
+  ]); 
   const [pollDuration, setPollDuration] = useState("24h");
   const [customEndDate, setCustomEndDate] = useState("");
 
@@ -82,6 +106,15 @@ export default function GroupDetail() {
     if (!poll?.closes_at) return false;
     return new Date(poll.closes_at) < new Date();
   }, [poll]);
+  const lateVoterIds = useMemo(() => {
+    if (!poll) return [];
+    const arr = (poll as any).late_voter_ids;
+    return Array.isArray(arr) ? (arr as string[]) : [];
+  }, [poll]);
+  const lateVoteAllowed = useMemo(() => {
+    if (!me) return false;
+    return lateVoterIds.includes(me);
+  }, [lateVoterIds, me]);
 
   function getPollStatusLabel(status: string, closesAt: string | null) {
     if (status === 'closed') return "Voting Closed";
@@ -111,6 +144,13 @@ export default function GroupDetail() {
     return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
   }
 
+  function exitPollFocus() {
+    setPollFocus(false);
+    if (location.hash === "#poll") {
+      nav(`/group/${id}`, { replace: true });
+    }
+  }
+
   function downloadCalendar(ev: GroupEvent) {
     const start = ev.starts_at ? new Date(ev.starts_at) : new Date();
     const end = new Date(start.getTime() + 60 * 60 * 1000);
@@ -137,6 +177,32 @@ export default function GroupDetail() {
     a.download = `${ev.title || "event"}.ics`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  const emptyDraftOption: DraftPollOption = { label: "", starts_at: "" };
+
+  function updateDraftOption(idx: number, field: keyof DraftPollOption, value: string) {
+    setNewOptions(prev => {
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], [field]: value };
+      return copy;
+    });
+  }
+
+  function addDraftOption() {
+    setNewOptions(prev => [...prev, { ...emptyDraftOption }]);
+  }
+
+  function duplicateLastOption() {
+    setNewOptions(prev => {
+      if (!prev.length) return [{ ...emptyDraftOption }];
+      const last = prev[prev.length - 1];
+      return [...prev, { ...last }];
+    });
+  }
+
+  function removeDraftOption(idx: number) {
+    setNewOptions(prev => (prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx)));
   }
 
   // --- Effects ---
@@ -235,7 +301,15 @@ export default function GroupDetail() {
   useEffect(() => {
     let gone = false;
     (async () => {
-      if (!group?.id) return;
+      if (!group?.id || (!isMember && !isHost)) {
+        if (!gone) {
+          setPoll(null);
+          setOptions([]);
+          setCounts({});
+          setVotedCount(0);
+        }
+        return;
+      }
       
       const { data: polls } = await supabase
         .from("group_polls").select("*")
@@ -244,7 +318,7 @@ export default function GroupDetail() {
         .limit(1);
         
       if (gone) return;
-      const cur = (polls && polls[0]) as Poll | undefined;
+      const cur = (polls && polls[0]) as PollWithLate | undefined;
       setPoll(cur || null);
       if (!cur) { setOptions([]); setCounts({}); setVotedCount(0); return; }
 
@@ -264,7 +338,21 @@ export default function GroupDetail() {
       setVotedCount(voterSet.size);
     })();
     return () => { gone = true; };
-  }, [group?.id]);
+  }, [group?.id, isMember, isHost, pollReloadKey]);
+
+  // Realtime updates for poll changes (e.g., late vote grants)
+  useEffect(() => {
+    if (!poll?.id) return;
+    const channel = supabase
+      .channel(`poll:${poll.id}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'group_polls', filter: `id=eq.${poll.id}` }, (payload) => {
+        const next = payload.new as PollWithLate;
+        setPoll(prev => prev && prev.id === next.id ? { ...prev, ...next } : next);
+        setPollReloadKey((k) => k + 1);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [poll?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -329,6 +417,7 @@ export default function GroupDetail() {
     setMyMembership({ ...(payload as any), created_at: new Date().toISOString() });
     setMemberCount(prev => prev + (isMember ? 0 : 1));
     setJoinedCount((c) => Math.min(MAX_GROUPS, c + (isMember ? 0 : 1)));
+    setPollReloadKey((k) => k + 1);
   }
 
   async function leaveGroup() {
@@ -368,6 +457,41 @@ export default function GroupDetail() {
       role: m.user_id === nextHostId ? 'host' : (m.role === 'host' ? 'member' : m.role)
     })));
     setOwnershipBusy(null);
+  }
+
+  async function grantLateVoteChance(userId: string) {
+    if (!group || !poll || poll.status !== 'closed' || !isHost) return;
+    if (!window.confirm("Allow this member to cast a late vote on the closed poll?")) return;
+    setMsg(null);
+    setLateGrantBusy(userId);
+    try {
+      const existing = Array.isArray(poll.late_voter_ids) ? (poll.late_voter_ids as string[]) : [];
+      if (existing.includes(userId)) { setLateGrantBusy(null); return; }
+      const updated = [...existing, userId];
+      const { data, error } = await supabase
+        .from("group_polls")
+        .update({ late_voter_ids: updated })
+        .eq("id", poll.id)
+        .select("*")
+        .maybeSingle();
+      if (error) throw error;
+      if (data) {
+        setPoll(data as PollWithLate);
+      } else {
+        setPoll(prev => prev ? { ...prev, late_voter_ids: updated } : prev);
+      }
+      setMsg("Late vote granted. Let them know they can now cast a vote.");
+      setPollReloadKey((k) => k + 1);
+    } catch (e: any) {
+      const raw = e?.message || "";
+      if (raw.toLowerCase().includes("late_voter_ids")) {
+        setMsg("Database missing late_voter_ids on group_polls. Apply the latest schema and try again.");
+      } else {
+        setMsg(raw || "Could not grant a late vote.");
+      }
+    } finally {
+      setLateGrantBusy(null);
+    }
   }
 
   async function copyGroupCode() {
@@ -498,8 +622,19 @@ export default function GroupDetail() {
         closesAt = now.toISOString();
     }
 
-    const labels = (newOptions || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean).slice(0, 20);
-    if (!labels.some(l => l.toLowerCase() === 'not coming')) labels.push("Not Coming");
+    const normalizedOptions = newOptions
+      .map((opt) => ({
+        label: (opt.label || "").trim(),
+        starts_at: opt.starts_at ? new Date(opt.starts_at).toISOString() : "",
+        place: (opt.place || "").trim() || null
+      }))
+      .filter((opt) => opt.label && opt.starts_at)
+      .slice(0, 20);
+
+    if (!normalizedOptions.length) {
+      setMsg("Please add at least one option with date and time.");
+      return;
+    }
 
     const { data: created, error: pErr } = await supabase
       .from("group_polls")
@@ -521,8 +656,16 @@ export default function GroupDetail() {
 
     let hadError = false;
     let createdOptions: PollOption[] = [];
-    if (labels.length) {
-      const rows = labels.map(label => ({ poll_id: created.id, label }));
+    if (normalizedOptions.length) {
+      const rows = [
+        ...normalizedOptions.map((opt) => ({
+          poll_id: created.id,
+          label: opt.label,
+          starts_at: opt.starts_at,
+          place: opt.place
+        })),
+        { poll_id: created.id, label: "Not Coming", starts_at: null, place: null }
+      ];
       const { data: optRows, error: optError } = await supabase
         .from("group_poll_options")
         .insert(rows)
@@ -542,11 +685,13 @@ export default function GroupDetail() {
     setPoll({ 
         id: created.id, group_id: group.id, 
         title: newTitle, status: "open", 
-        closes_at: closesAt, created_by: auth.user.id 
+        closes_at: closesAt, created_by: auth.user.id,
+        late_voter_ids: []
     });
     setOptions(createdOptions);
     setCounts({});
     setVotedCount(0);
+    setNewOptions([{ ...emptyDraftOption }]);
 
     try {
       const recipients = members.map((m) => m.user_id).filter((uid) => uid !== auth.user.id);
@@ -592,11 +737,22 @@ export default function GroupDetail() {
     }
   }
 
+  function normalizeVoteError(e: any): string {
+    const raw = e?.message || "";
+    if (raw.toLowerCase().includes("row-level security")) return "Join the group to vote.";
+    if (raw.toLowerCase().includes("option does not belong to poll")) return "This option is no longer valid for the poll.";
+    if (raw.toLowerCase().includes("not_authenticated")) return "Please sign in to vote.";
+    return raw || "Could not save vote.";
+  }
+
   async function castVote(optionId: string) {
-    if (!poll || isPollExpired || poll.status === "closed") return;
+    if (!poll) return;
+    const hasLatePass = lateVoteAllowed && poll.status === "closed";
+    if (!isMember) { setMsg("Join the circle to vote."); return; }
+    if (!hasLatePass && (isPollExpired || poll.status === "closed")) return;
     setVotingBusy(optionId);
     const { data: auth } = await supabase.auth.getUser();
-    if (!auth?.user) { nav("/login"); return; }
+    if (!auth?.user) { setMsg("Please sign in to vote."); nav("/login"); return; }
 
     const { error } = await supabase.from("group_votes").upsert(
         { poll_id: poll.id, option_id: optionId, user_id: auth.user.id },
@@ -605,7 +761,7 @@ export default function GroupDetail() {
     
     if (error) {
         console.error(error);
-        setMsg("Failed to save vote");
+        setMsg(normalizeVoteError(error));
         setVotingBusy(null);
         return;
     }
@@ -625,9 +781,20 @@ export default function GroupDetail() {
   if (loading) return <div className="p-20 flex justify-center"><div className="animate-spin h-8 w-8 border-2 border-neutral-300 border-t-black rounded-full"/></div>;
   if (!group) return <div className="p-10 text-center">Group not found.</div>;
 
+  const canVote = isMember && (
+    (poll?.status === "open" && !isPollExpired) ||
+    (poll?.status === "closed" && lateVoteAllowed)
+  );
+
   return (
     <>
-      <div className={"transition-all duration-300 min-h-screen bg-[#FDFBF7] pb-24 " + (chatOpen && !chatFull ? "lg:mr-[min(92vw,520px)]" : "")}>
+      {pollFocus && poll && (
+        <div
+          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
+          onClick={exitPollFocus}
+        />
+      )}
+      <div className={"relative z-0 transition-all duration-300 min-h-screen bg-[#FDFBF7] pb-24 " + (chatOpen && !chatFull ? "lg:mr-[min(92vw,520px)]" : "")}>
         
         {/* HERO HEADER */}
         <div className="bg-white border-b border-neutral-200 pt-8 pb-6 px-4 shadow-sm relative overflow-hidden">
@@ -874,7 +1041,11 @@ export default function GroupDetail() {
             <div className="space-y-6">
                 
                 {/* --- VOTING SECTION --- */}
-                <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+                <div
+                  id="poll-section"
+                  className={`bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm transition-all ${pollFocus ? "relative z-40 ring-2 ring-emerald-200 shadow-2xl scale-[1.01]" : ""}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-base font-bold text-neutral-900 flex items-center gap-2">
                            Polls & Events
@@ -883,6 +1054,11 @@ export default function GroupDetail() {
                             <button onClick={() => { setMsg(null); setCreateOpen(true); }} className="p-1.5 bg-neutral-50 rounded-full text-neutral-600 shadow-sm hover:scale-105 active:scale-95 transition-all border border-neutral-200 hover:bg-white hover:border-neutral-300">
                                 <Plus className="h-4 w-4" />
                             </button>
+                        )}
+                        {!isMember && (
+                          <div className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-full px-3 py-1">
+                            Join the circle to vote
+                          </div>
                         )}
                     </div>
 
@@ -895,8 +1071,13 @@ export default function GroupDetail() {
                         <div className="animate-in slide-in-from-bottom-2 duration-500">
                             <div className="flex justify-between items-start mb-3">
                                 <h3 className="font-bold text-neutral-900">{poll.title}</h3>
-                                <div className={`text-[10px] font-bold px-2 py-1 rounded-full border ${poll.status === 'closed' ? 'bg-neutral-200 text-neutral-600 border-neutral-300' : isPollExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
-                                    {getPollStatusLabel(poll.status, poll.closes_at)}
+                                <div className="flex flex-col items-end gap-1">
+                                  <div className={`text-[10px] font-bold px-2 py-1 rounded-full border ${poll.status === 'closed' ? 'bg-neutral-200 text-neutral-600 border-neutral-300' : isPollExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
+                                      {getPollStatusLabel(poll.status, poll.closes_at)}
+                                  </div>
+                                  {lateVoteAllowed && poll.status === 'closed' && (
+                                    <span className="text-[11px] font-semibold text-emerald-700">Host gave you a late vote</span>
+                                  )}
                                 </div>
                             </div>
 
@@ -914,13 +1095,25 @@ export default function GroupDetail() {
                                               style={{ width: `${pct}%` }} 
                                             />
                                             <div className="relative flex items-center justify-between p-2.5 rounded-lg border border-neutral-100 hover:border-neutral-200 transition-colors">
-                                                <span className="text-sm font-medium text-neutral-800 z-10">{o.label}</span>
+                                                <div className="z-10 flex flex-col gap-0.5">
+                                                  <span className="text-sm font-medium text-neutral-800">{o.label}</span>
+                                                  {o.starts_at && (
+                                                    <span className="text-[11px] text-neutral-500 flex items-center gap-1">
+                                                      <Clock className="h-3 w-3" />
+                                                      {formatDateTime(o.starts_at)}
+                                                    </span>
+                                                  )}
+                                                  {o.place && (
+                                                    <span className="text-[11px] text-neutral-500">{o.place}</span>
+                                                  )}
+                                                </div>
                                                 <div className="flex items-center gap-3 z-10">
                                                     <span className="text-xs font-bold text-neutral-600">{total}</span>
-                                                    {poll.status === 'open' && !isPollExpired && (
+                                                    {canVote && (
                                                         <button 
                                                             onClick={() => castVote(o.id)}
-                                                            className={`h-6 w-6 rounded-full flex items-center justify-center border transition-all hover:scale-110 active:scale-95 ${votingBusy === o.id ? 'bg-black border-black text-white' : 'bg-white border-neutral-200 text-neutral-600'}`}
+                                                            disabled={!canVote}
+                                                            className={`h-6 w-6 rounded-full flex items-center justify-center border transition-all ${votingBusy === o.id ? 'bg-black border-black text-white' : 'bg-white border-neutral-200 text-neutral-600 hover:scale-110 active:scale-95'}`}
                                                         >
                                                             {votingBusy === o.id ? <div className="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full" /> : <Check className="h-3 w-3" />}
                                                         </button>
@@ -1039,9 +1232,61 @@ export default function GroupDetail() {
                 </div>
 
                 <div>
-                    <label className="block text-xs font-bold text-neutral-400 uppercase mb-1.5">Options (one per line)</label>
-                    <textarea value={newOptions} onChange={e => setNewOptions(e.target.value)} className="w-full border border-neutral-200 rounded-xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-black outline-none min-h-[100px]" placeholder={"Saturday 20:00\nSunday 14:00"} />
-                    <p className="text-[10px] text-neutral-400 mt-1 italic text-right">"Not Coming" added automatically.</p>
+                    <label className="block text-xs font-bold text-neutral-400 uppercase mb-1.5">Options (with date & time)</label>
+                    <div className="space-y-3">
+                      {newOptions.map((opt, idx) => (
+                        <div key={idx} className="rounded-xl border border-neutral-200 bg-neutral-50 p-3">
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="text-[11px] font-semibold text-neutral-500 uppercase">Option {idx + 1}</span>
+                            {newOptions.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeDraftOption(idx)}
+                                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-red-500 hover:bg-red-50"
+                              >
+                                <Trash2 className="h-3 w-3" /> Remove
+                              </button>
+                            )}
+                          </div>
+                          <input
+                            value={opt.label}
+                            onChange={(e) => updateDraftOption(idx, "label", e.target.value)}
+                            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-black"
+                            placeholder="Activity name"
+                          />
+                          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <input
+                              type="datetime-local"
+                              value={opt.starts_at}
+                              onChange={(e) => updateDraftOption(idx, "starts_at", e.target.value)}
+                              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-black"
+                              placeholder="Date & time"
+                            />
+                            <input
+                              value={opt.place || ""}
+                              onChange={(e) => updateDraftOption(idx, "place", e.target.value)}
+                              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:ring-2 focus:ring-black"
+                              placeholder="Location (optional)"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={addDraftOption}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-neutral-300 px-4 py-2 text-sm font-bold text-neutral-700 hover:border-neutral-400 hover:bg-neutral-50"
+                      >
+                        <Plus className="h-4 w-4" /> Add blank option
+                      </button>
+                      <button
+                        type="button"
+                        onClick={duplicateLastOption}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-2 text-sm font-bold text-neutral-700 hover:border-neutral-300"
+                      >
+                        <Plus className="h-4 w-4" /> Copy previous option
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-neutral-400 mt-1 italic text-right">Date & time required. "Not Coming" is added automatically.</p>
                 </div>
                 
                 <div className="flex justify-end gap-3 pt-2">
@@ -1063,15 +1308,17 @@ export default function GroupDetail() {
             </div>
             
             <div className="flex-1 overflow-y-auto pr-2 space-y-2">
-               {members.map((m) => (
+               {members.map((m) => {
+                 const lateGranted = Array.isArray(poll?.late_voter_ids) ? (poll?.late_voter_ids as string[]).includes(m.user_id) : false;
+                 return (
                  <div
-  key={m.user_id}
-  onClick={() => {
-    setSelectedUserId(m.user_id);
-    setShowProfileModal(true);
-  }}
-  className="flex items-center justify-between p-2 rounded-xl hover:bg-neutral-50 transition-colors cursor-pointer"
->
+                   key={m.user_id}
+                   onClick={() => {
+                     setSelectedUserId(m.user_id);
+                     setShowProfileModal(true);
+                   }}
+                   className="flex items-center justify-between p-2 rounded-xl hover:bg-neutral-50 transition-colors cursor-pointer"
+                 >
                     <div className="flex items-center gap-3">
                        <div className="h-10 w-10 rounded-full bg-neutral-200 flex items-center justify-center overflow-hidden">
                           {m.avatar_url ? (
@@ -1099,7 +1346,7 @@ export default function GroupDetail() {
                              {m.role === 'owner' && (
                                <div className="text-[10px] text-amber-600 font-bold uppercase tracking-wide">Owner</div>
                              )}
-                             {m.role !== 'host' && m.role !== 'owner' && (
+                            {m.role !== 'host' && m.role !== 'owner' && (
                                <div className="text-xs text-neutral-500 capitalize">{m.role}</div>
                              )}
                            </>
@@ -1107,16 +1354,28 @@ export default function GroupDetail() {
                        </div>
                     </div>
                     {isHost && m.user_id !== group.host_id && (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); transferHost(m.user_id); }}
-                        className="text-[10px] font-bold text-amber-700 border border-amber-200 px-2 py-1 rounded-lg hover:bg-amber-50 disabled:opacity-50"
-                        disabled={ownershipBusy === m.user_id}
-                      >
-                        {ownershipBusy === m.user_id ? "..." : "Pass Torch"}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); transferHost(m.user_id); }}
+                          className="text-[10px] font-bold text-amber-700 border border-amber-200 px-2 py-1 rounded-lg hover:bg-amber-50 disabled:opacity-50"
+                          disabled={ownershipBusy === m.user_id}
+                        >
+                          {ownershipBusy === m.user_id ? "..." : "Pass Torch"}
+                        </button>
+                        {poll && poll.status === 'closed' && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); grantLateVoteChance(m.user_id); }}
+                            className="text-[10px] font-bold text-emerald-700 border border-emerald-200 px-2 py-1 rounded-lg hover:bg-emerald-50 disabled:opacity-50"
+                            disabled={lateGrantBusy === m.user_id || lateGranted}
+                          >
+                            { lateGranted ? "Vote Granted" : lateGrantBusy === m.user_id ? "..." : "Vote Chance" }
+                          </button>
+                        )}
+                      </div>
                     )}
                  </div>
-               ))}
+               );
+               })}
             </div>
           </div>
         </div>
