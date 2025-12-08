@@ -426,7 +426,7 @@ export default function Chats() {
     };
 
     return (
-      <div className="fixed inset-0 z-50 pb-20 md:pb-0 md:static md:inset-auto md:flex-1 bg-white flex flex-col h-full">
+      <div className="fixed inset-0 z-50 pb-0 md:static md:inset-auto md:flex-1 bg-white flex flex-col h-full">
         {/* Header */}
         <div className="h-[72px] border-b border-neutral-200 flex items-center px-4 gap-4 bg-white/95 backdrop-blur-sm shrink-0 shadow-sm z-20">
           <button onClick={() => setSelected(null)} className="md:hidden p-2 -ml-2 rounded-full hover:bg-neutral-100 transition-colors">
@@ -469,9 +469,9 @@ export default function Chats() {
         {/* Content Area */}
         <div className="flex-1 overflow-hidden relative bg-neutral-50"> 
           {/* Background Pattern */}
-          <div className="absolute inset-0 opacity-[0.03] pointer-events-none" 
-               style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23000000' fill-opacity='1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='1'/%3E%3C/g%3E%3C/svg%3E")` }}>
-          </div>
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" 
+             style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23000000' fill-opacity='1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='1'/%3E%3C/g%3E%3C/svg%3E")` }}>
+        </div>
 
           {selected.type === 'group' ? (
             <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Spinner /></div>}>

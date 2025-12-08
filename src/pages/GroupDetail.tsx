@@ -88,6 +88,8 @@ export default function GroupDetail() {
       setPollFocus(true);
       const el = document.getElementById("poll-section");
       if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      const t = setTimeout(() => setPollFocus(false), 2000);
+      return () => clearTimeout(t);
     } else {
       setPollFocus(false);
     }
@@ -788,12 +790,6 @@ export default function GroupDetail() {
 
   return (
     <>
-      {pollFocus && poll && (
-        <div
-          className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm"
-          onClick={exitPollFocus}
-        />
-      )}
       <div className={"relative z-0 transition-all duration-300 min-h-screen bg-[#FDFBF7] pb-24 " + (chatOpen && !chatFull ? "lg:mr-[min(92vw,520px)]" : "")}>
         
         {/* HERO HEADER */}
@@ -1195,8 +1191,8 @@ export default function GroupDetail() {
 
       {/* Create Vote Modal */}
       {createOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-2xl ring-1 ring-black/5">
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-2xl ring-1 ring-black/5 max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center mb-5">
                 <h3 className="text-xl font-bold text-neutral-900">New Vote</h3>
                 <button onClick={() => setCreateOpen(false)} className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"><X className="h-5 w-5" /></button>
@@ -1210,7 +1206,7 @@ export default function GroupDetail() {
               </div>
             )}
             
-            <div className="space-y-4">
+            <div className="space-y-4 flex-1 overflow-y-auto pr-1 pb-6">
                 <div>
                     <label className="block text-xs font-bold text-neutral-400 uppercase mb-1.5">Topic</label>
                     <input value={newTitle} onChange={e => setNewTitle(e.target.value)} className="w-full border border-neutral-200 rounded-xl px-4 py-3 text-sm font-medium focus:ring-2 focus:ring-black outline-none transition-all" placeholder="e.g. When to play?" />
@@ -1303,21 +1299,23 @@ export default function GroupDetail() {
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
             <div className="flex justify-between items-center mb-4 shrink-0">
-                <h3 className="text-xl font-bold text-neutral-900">Members ({members.length})</h3>
-                <button onClick={() => setMembersOpen(false)} className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"><X className="h-5 w-5" /></button>
+               <h3 className="text-xl font-bold text-neutral-900">Members ({members.length})</h3>
+               <button onClick={() => setMembersOpen(false)} className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"><X className="h-5 w-5" /></button>
             </div>
             
             <div className="flex-1 overflow-y-auto pr-2 space-y-2">
                {members.map((m) => {
                  const lateGranted = Array.isArray(poll?.late_voter_ids) ? (poll?.late_voter_ids as string[]).includes(m.user_id) : false;
+                 const isMe = m.user_id === me;
                  return (
                  <div
                    key={m.user_id}
                    onClick={() => {
+                     if (isMe) return;
                      setSelectedUserId(m.user_id);
                      setShowProfileModal(true);
                    }}
-                   className="flex items-center justify-between p-2 rounded-xl hover:bg-neutral-50 transition-colors cursor-pointer"
+                   className={`flex items-center justify-between p-2 rounded-xl transition-colors ${isMe ? "cursor-default bg-neutral-50/60" : "hover:bg-neutral-50 cursor-pointer"}`}
                  >
                     <div className="flex items-center gap-3">
                        <div className="h-10 w-10 rounded-full bg-neutral-200 flex items-center justify-center overflow-hidden">
@@ -1329,6 +1327,9 @@ export default function GroupDetail() {
                        </div>
                        <div>
                          <div className="text-sm font-bold text-neutral-900">{m.name || "User"}</div>
+                         {isMe && (
+                           <div className="text-[11px] font-semibold text-emerald-600">You</div>
+                         )}
 
                          {isTogether(m.user_id) ? (
                            <div className="flex items-center gap-1 mt-0.5 animate-in fade-in slide-in-from-left-1">
@@ -1353,7 +1354,7 @@ export default function GroupDetail() {
                          )}
                        </div>
                     </div>
-                    {isHost && m.user_id !== group.host_id && (
+                    {isHost && m.user_id !== group.host_id && !isMe && (
                       <div className="flex items-center gap-2">
                         <button
                           onClick={(e) => { e.stopPropagation(); transferHost(m.user_id); }}

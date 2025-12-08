@@ -26,8 +26,8 @@ export default function Layout() {
         <div className="absolute bottom-[-4rem] left-[-2rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,#b8ffec,transparent_55%)] opacity-40 blur-3xl" />
       </div>
 
-      {/* Main content wrapper with generous padding for the nav */}
-      <div className="relative z-10 pb-[calc(120px+env(safe-area-inset-bottom))]">
+      {/* Main content wrapper with padding just enough for the nav */}
+      <div className="relative z-10 pb-[calc(80px+env(safe-area-inset-bottom))]">
         <div key={active} className="page-transition">
           <Outlet />
         </div>
