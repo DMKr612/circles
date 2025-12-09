@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 import type { Message } from "@/types";
 import { useAuth } from "@/App";
 import { useGroupPresence } from "@/hooks/useGroupPresence";
-import { MapPin, MoreHorizontal, Paperclip, Send, X, Smile, Reply, Loader2 } from "lucide-react";
+import { MapPin, MoreHorizontal, Paperclip, Send, X, Smile, Reply, Loader2, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 type Profile = { user_id: string; id?: string; name: string | null; avatar_url?: string | null };
@@ -48,6 +48,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
   const [myProfile, setMyProfile] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
   const [dismissedPollMsgs, setDismissedPollMsgs] = useState<Set<string>>(new Set());
+  const [pollStatuses, setPollStatuses] = useState<Record<string, string>>({});
 
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<Map<string, Record<string, string[]>>>(new Map());
@@ -61,6 +62,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   // presence/typing minimal
   const [onlineCount, setOnlineCount] = useState(0);
@@ -195,17 +197,90 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
     return () => { aborted = true; };
   }, [groupId, pageSize]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setPollStatuses({});
+    if (!groupId) return;
+
+    const loadPolls = async () => {
+      const { data, error } = await supabase
+        .from("group_polls")
+        .select("id,status")
+        .eq("group_id", groupId);
+      if (cancelled) return;
+      if (error) { console.warn("[polls] load error", error); return; }
+      const map: Record<string, string> = {};
+      (data || []).forEach((p: any) => {
+        if (p?.id && p.status === "open") map[p.id] = p.status;
+      });
+      setPollStatuses(map);
+    };
+
+    loadPolls();
+
+    const ch = supabase
+      .channel(`polls:${groupId}`)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "group_polls", filter: `group_id=eq.${groupId}` },
+        (payload) => {
+          const row: any = payload.new;
+          if (!row?.id) return;
+          setPollStatuses(prev => {
+            const next = { ...prev };
+            if (row.status === "open") next[row.id] = row.status; else delete next[row.id];
+            return next;
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "group_polls", filter: `group_id=eq.${groupId}` },
+        (payload) => {
+          const row: any = payload.new;
+          if (!row?.id) return;
+          setPollStatuses(prev => {
+            const next = { ...prev };
+            if (row.status === "open") next[row.id] = row.status; else delete next[row.id];
+            return next;
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "group_polls", filter: `group_id=eq.${groupId}` },
+        (payload) => {
+          const row: any = payload.old;
+          if (!row?.id) return;
+          setPollStatuses(prev => {
+            const next = { ...prev };
+            delete next[row.id];
+            return next;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(ch);
+    };
+  }, [groupId]);
+
   const activePollBanner = useMemo(() => {
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
       if (dismissedPollMsgs.has(m.id)) continue;
       const match = m.content?.match(/^\[POLL:([^\]]+)\]\s*(.+)$/);
       if (match) {
-        return { id: m.id, pollId: match[1], title: match[2].trim() };
+        const pollId = match[1];
+        const status = pollStatuses[pollId];
+        if (status !== "open") continue;
+        return { id: m.id, pollId, title: match[2].trim() };
       }
     }
     return null;
-  }, [msgs, dismissedPollMsgs]);
+  }, [msgs, dismissedPollMsgs, pollStatuses]);
 
   function dismissPollBanner(id: string) {
     setDismissedPollMsgs((prev) => new Set(prev).add(id));
@@ -339,6 +414,25 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
           if (!arr.includes(row.user_id)) arr.push(row.user_id);
           map.set(row.message_id, arr);
           return map;
+        });
+      }
+    ).on(
+      "postgres_changes",
+      { event: "DELETE", schema: "public", table: "group_messages" },
+      (payload) => {
+        const row = payload.old as any;
+        if (row?.group_id !== groupId) return;
+        const id = row.id;
+        setMsgs(prev => prev.filter(m => m.id !== id));
+        setReactions(prev => {
+          const next = new Map(prev);
+          next.delete(id);
+          return next;
+        });
+        setReads(prev => {
+          const next = new Map(prev);
+          next.delete(id);
+          return next;
         });
       }
     ).subscribe();
@@ -572,6 +666,30 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
     }
   };
 
+  const deleteMessage = async (messageId: string) => {
+    if (!me) return;
+    const msg = msgs.find(m => m.id === messageId);
+    if (!msg || msg.user_id !== me) return;
+    if (messageId.startsWith("phantom-")) {
+      setMsgs(prev => prev.filter(m => m.id !== messageId));
+      return;
+    }
+    if (!window.confirm("Delete this message?")) return;
+    setDeletingIds(prev => new Set(prev).add(messageId));
+    const { error } = await supabase.from("group_messages").delete().eq("id", messageId);
+    setDeletingIds(prev => {
+      const next = new Set(prev);
+      next.delete(messageId);
+      return next;
+    });
+    if (error) {
+      console.error("delete message", error);
+      alert("Could not delete message.");
+      return;
+    }
+    setMsgs(prev => prev.filter(m => m.id !== messageId));
+  };
+
   const displayName = (uid: string) => {
     if (uid === me) {
       const selfName = (myProfile?.name ?? "").trim();
@@ -801,6 +919,16 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
                            >
                              <Smile className="h-3.5 w-3.5" />
                            </button>
+                           {isMine && (
+                             <button
+                               onClick={() => deleteMessage(m.id)}
+                               className="p-1.5 rounded-full bg-red-50 hover:bg-red-100 text-red-500 hover:text-red-700 shadow-sm disabled:opacity-50"
+                               disabled={deletingIds.has(m.id)}
+                               title="Delete message"
+                             >
+                               <Trash className="h-3.5 w-3.5" />
+                             </button>
+                           )}
                         </div>
 
                         {/* Reaction Menu */}

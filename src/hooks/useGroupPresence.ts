@@ -5,22 +5,32 @@ import { Geolocation } from '@capacitor/geolocation';
 export function useGroupPresence(groupId: string | undefined, myUserId: string | undefined) {
   const [memberLocations, setMemberLocations] = useState<Record<string, { lat: number, long: number }>>({});
 
-  // 1. UPLOAD MY LOCATION (Every 15 seconds while looking at the page)
+  // 1. UPLOAD MY LOCATION (Every ~30 seconds while visible)
   useEffect(() => {
     if (!groupId || !myUserId) return;
+    let interval: ReturnType<typeof setInterval> | undefined;
+    let membershipEnsured = false;
 
     const pushLocation = async () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
-        const coordinates = await Geolocation.getCurrentPosition({ enableHighAccuracy: true });
+        const perm = await Geolocation.checkPermissions();
+        const granted = perm?.location === "granted" || perm?.coarseLocation === "granted";
+        if (!granted) return;
+
+        const coordinates = await Geolocation.getCurrentPosition({ enableHighAccuracy: false });
         const { latitude, longitude } = coordinates.coords;
 
-        // Ensure membership exists so RLS on group_live_locations passes
-        await supabase
-          .from('group_members')
-          .upsert(
-            { group_id: groupId, user_id: myUserId, role: 'member', status: 'active' },
-            { onConflict: 'group_id,user_id' }
-          );
+        if (!membershipEnsured) {
+          // Ensure membership exists so RLS on group_live_locations passes
+          await supabase
+            .from('group_members')
+            .upsert(
+              { group_id: groupId, user_id: myUserId, role: 'member', status: 'active' },
+              { onConflict: 'group_id,user_id' }
+            );
+          membershipEnsured = true;
+        }
 
         await supabase.from('group_live_locations').upsert({
           user_id: myUserId,
@@ -35,9 +45,14 @@ export function useGroupPresence(groupId: string | undefined, myUserId: string |
     };
 
     pushLocation(); // Run immediately
-    const interval = setInterval(pushLocation, 15000); // Then every 15s
+    interval = setInterval(pushLocation, 30000); // Then every 30s to reduce churn
+    const onVisible = () => { if (typeof document !== "undefined" && document.visibilityState === "visible") pushLocation(); };
+    if (typeof document !== "undefined") document.addEventListener('visibilitychange', onVisible);
 
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+      if (typeof document !== "undefined") document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [groupId, myUserId]);
 
   // 2. LISTEN TO OTHERS (Realtime)

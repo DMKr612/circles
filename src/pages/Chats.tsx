@@ -53,49 +53,46 @@ export default function Chats() {
   useEffect(() => {
     async function load() {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!user) { setLoading(false); return; }
       setMe(user.id);
 
       // Load Favorites from LocalStorage
       const favs = new Set(JSON.parse(localStorage.getItem("chat_favorites") || "[]"));
 
-      // Fetch Groups
-      const { data: groups } = await supabase
-        .from("group_members")
-        .select("group_id, groups(id, title, category)")
-        .eq("user_id", user.id)
-        .in("status", ["active", "accepted"]);
-
-      // Fetch Friends
-      const { data: friends } = await supabase
-        .from("friendships")
-        .select("user_id_a, user_id_b")
-        .or(`user_id_a.eq.${user.id},user_id_b.eq.${user.id}`)
-        .eq("status", "accepted");
+      const [{ data: groups }, { data: friends }] = await Promise.all([
+        supabase
+          .from("group_members")
+          .select("group_id, groups(id, title, category)")
+          .eq("user_id", user.id)
+          .in("status", ["active", "accepted"]),
+        supabase
+          .from("friendships")
+          .select("user_id_a, user_id_b")
+          .or(`user_id_a.eq.${user.id},user_id_b.eq.${user.id}`)
+          .eq("status", "accepted")
+      ]);
 
       const items: ChatItem[] = [];
 
       // Process Groups
-      if (groups) {
-        groups.forEach((g: any) => {
-          if (g.groups) {
-            items.push({
-              type: 'group',
-              id: g.groups.id,
-              name: g.groups.title || "Group",
-              avatar_url: null,
-              subtitle: g.groups.category || 'Group',
-              isFavorite: favs.has(g.groups.id)
-            });
-          }
-        });
-      }
+      (groups || []).forEach((g: any) => {
+        if (g.groups) {
+          items.push({
+            type: 'group',
+            id: g.groups.id,
+            name: g.groups.title || "Group",
+            avatar_url: null,
+            subtitle: g.groups.category || 'Group',
+            isFavorite: favs.has(g.groups.id)
+          });
+        }
+      });
 
       // Process Friends
-      if (friends) {
-        const friendIds = friends.map((f: any) => 
+      if (friends?.length) {
+        const friendIds = Array.from(new Set(friends.map((f: any) => 
           f.user_id_a === user.id ? f.user_id_b : f.user_id_a
-        );
+        )));
         if (friendIds.length > 0) {
           const { data: profiles } = await supabase
             .from("profiles")
@@ -197,7 +194,6 @@ export default function Chats() {
     if (!me || !selected || selected.type !== 'dm') return;
 
     let sub: any = null;
-    let poll: any = null;
     
     async function loadDMs() {
       setDmLoading(true);
@@ -231,24 +227,26 @@ export default function Chats() {
           }
         )
         .subscribe();
-
-      // Safety net polling in case realtime misses events
-      poll = setInterval(async () => {
-        const { data: fresh } = await supabase
-          .from("direct_messages")
-          .select("id, sender, receiver, content, created_at")
-          .or(`and(sender.eq.${me},receiver.eq.${otherId}),and(sender.eq.${otherId},receiver.eq.${me})`)
-          .order("created_at", { ascending: true })
-          .limit(100);
-        if (fresh) setDmMessages(fresh);
-      }, 5000);
     }
 
+    const refreshOnFocus = async () => {
+      if (!me || !selected || selected.type !== 'dm') return;
+      const otherId = selected.id;
+      const { data } = await supabase
+        .from("direct_messages")
+        .select("id, sender, receiver, content, created_at")
+        .or(`and(sender.eq.${me},receiver.eq.${otherId}),and(sender.eq.${otherId},receiver.eq.${me})`)
+        .order("created_at", { ascending: true })
+        .limit(100);
+      if (data) setDmMessages(data);
+    };
+
     loadDMs();
+    window.addEventListener('focus', refreshOnFocus);
 
     return () => {
       if (sub) supabase.removeChannel(sub);
-      if (poll) clearInterval(poll);
+      window.removeEventListener('focus', refreshOnFocus);
     };
   }, [selected, me]);
 
