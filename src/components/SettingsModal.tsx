@@ -31,6 +31,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
   const [emailNotifs, setEmailNotifs] = useState<boolean>(false);
   const [pushNotifs, setPushNotifs] = useState<boolean>(false);
   const [allowRatings, setAllowRatings] = useState<boolean>(true);
+  const [sGender, setSGender] = useState<"man" | "woman" | "nonbinary" | "prefer_not_say">("prefer_not_say");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [initials, setInitials] = useState<string>("?");
 
@@ -97,7 +98,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
       
       const { data: p, error } = await supabase
         .from("profiles")
-        .select("name, city, timezone, interests, avatar_url, allow_ratings")
+        .select("name, city, timezone, interests, avatar_url, allow_ratings, gender")
         .eq("user_id", uid)
         .maybeSingle();
         
@@ -111,6 +112,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
       setSInterests(ints.join(", "));
       setAvatarUrl((p as any)?.avatar_url ?? null);
       setAllowRatings((p as any)?.allow_ratings ?? true);
+      setSGender((p as any)?.gender ?? "prefer_not_say");
       setInitials((name || user?.email || "?").slice(0, 2).toUpperCase());
     })();
     
@@ -142,7 +144,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
 
       const { error: updateError } = await supabase
         .from("profiles")
-        .update({ name, city, timezone, interests, allow_ratings: allowRatings })
+        .update({ name, city, timezone, interests, allow_ratings: allowRatings, gender: sGender })
         .eq("user_id", uid);
 
       if (updateError) throw updateError;
@@ -207,10 +209,14 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
   if (!isOpen && !isPage) return null;
 
   return (
-    <div className={isPage ? "min-h-screen bg-gradient-to-b from-neutral-50 via-white to-neutral-100 px-4 py-6" : "fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm px-4"}>
+    <div
+      className={isPage ? "min-h-screen bg-gradient-to-b from-neutral-50 via-white to-neutral-100 px-4 py-6" : "fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm px-4"}
+      onClick={isPage ? undefined : onClose}
+    >
       <form
         onSubmit={saveSettings}
         className={`${isPage ? "mx-auto" : ""} w-[620px] max-w-[94vw] rounded-3xl border border-white/40 bg-white/90 shadow-[0_20px_80px_rgba(0,0,0,0.18)] backdrop-blur-xl p-6 space-y-5`}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between">
           <div>
@@ -277,6 +283,19 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
                 className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-300 focus:outline-none"
                 placeholder="e.g., Europe/Berlin"
               />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-neutral-500">Gender</label>
+              <select
+                value={sGender}
+                onChange={(e) => setSGender(e.target.value as any)}
+                className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-300 focus:outline-none"
+              >
+                <option value="man">Man</option>
+                <option value="woman">Woman</option>
+                <option value="nonbinary">Non-binary</option>
+                <option value="prefer_not_say">Prefer not to say</option>
+              </select>
             </div>
           </div>
           <div>

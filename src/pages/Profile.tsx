@@ -282,6 +282,14 @@ export default function Profile() {
       return { id: fid, name: prof?.name || fid.slice(0, 6), avatar: prof?.avatar_url ?? null };
     });
   }, [friends, friendProfiles, uid]);
+  const friendListItems = useMemo(() => {
+    const list = friends.map((fr) => {
+      const fid = fr.user_id_a === uid ? fr.user_id_b : fr.user_id_a;
+      const prof = friendProfiles.get(fid);
+      return { id: fid, name: prof?.name || fid.slice(0, 6), avatar: prof?.avatar_url ?? null };
+    });
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }, [friends, friendProfiles, uid]);
 
   // --- Notifications ---
   const [incomingRequests, setIncomingRequests] = useState<any[]>([]); // Using 'any' to match original
@@ -919,13 +927,23 @@ export default function Profile() {
       </div>
       {/* ...rest of modals and content remain unchanged... */}
 
+      <FriendsModal
+        open={friendsModalOpen}
+        onClose={() => setFriendsModalOpen(false)}
+        items={friendListItems}
+        onView={(id) => openProfileView(id)}
+      />
 
       {/* --- Settings Modal --- */}
       {settingsOpen && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40">
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/40"
+          onClick={() => setSettingsOpen(false)}
+        >
           <form
             onSubmit={(e) => { e.preventDefault(); saveSettings(); }}
             className="w-[560px] max-w-[92vw] rounded-2xl border border-black/10 bg-white shadow-xl max-h-[90vh] overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
 
@@ -1178,8 +1196,14 @@ function FriendsModal({
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-4">
-      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-neutral-200 max-h-[80vh] overflow-hidden">
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-neutral-200 max-h-[80vh] overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-100">
           <div className="text-sm font-semibold text-neutral-900">Friends</div>
           <button onClick={onClose} className="text-neutral-500 hover:text-neutral-800">

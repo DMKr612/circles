@@ -38,6 +38,9 @@ export default function BrowsePage() {
   const [geoStatus, setGeoStatus] = useState<"idle" | "pending" | "granted" | "denied">("idle");
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [geoPaused, setGeoPaused] = useState(false);
+  const [peopleFilter, setPeopleFilter] = useState<"any" | "small" | "medium" | "large">("any");
+  const [popularityFilter, setPopularityFilter] = useState<"all" | "5" | "20" | "50">("all");
+  const [sortOption, setSortOption] = useState<"popular" | "groups" | "name">("popular");
 
   // Stats
   const [groupCountByGame, setGroupCountByGame] = useState<Record<string, number>>({});
@@ -49,6 +52,17 @@ export default function BrowsePage() {
   const [myVerificationLevel, setMyVerificationLevel] = useState<number>(1);
   const [moments, setMoments] = useState<MomentCard[]>([]);
   const [momentsLoading, setMomentsLoading] = useState(false);
+  const momentsByCategory = useMemo(() => {
+    const tally: Record<string, number> = {};
+    moments.forEach((m) => {
+      const cat = (m.groups?.category || m.groups?.game || "Other").toString().trim();
+      const key = cat || "Other";
+      tally[key] = (tally[key] || 0) + 1;
+    });
+    return Object.entries(tally)
+      .map(([k, v]) => ({ name: k, count: v }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [moments]);
   const supportEmail = import.meta.env.VITE_SUPPORT_EMAIL || "support@circles.app";
 
   // Request Modal
@@ -123,6 +137,24 @@ export default function BrowsePage() {
   }, [geoStatus]);
 
   const fallbackCity = userCity || "Freiburg";
+
+  const filteredNearGroups = useMemo(() => {
+    const list = nearGroups || [];
+    if (peopleFilter === "any") return list;
+    const thresholds: Record<typeof peopleFilter, [number, number | null]> = {
+      any: [0, null],
+      small: [0, 5],      // up to 5
+      medium: [6, 9],     // 6-9
+      large: [10, null],  // 10+
+    };
+    const [min, max] = thresholds[peopleFilter];
+    return list.filter((g) => {
+      const cap = typeof g.capacity === "number" ? g.capacity : null;
+      if (cap === null) return true; // keep unknown capacity
+      if (max === null) return cap >= min;
+      return cap >= min && cap <= max;
+    });
+  }, [nearGroups, peopleFilter]);
 
   // Load Nearby (city-based fallback; radius widens to all groups if increased)
   useEffect(() => {
@@ -230,7 +262,7 @@ export default function BrowsePage() {
       setMomentsLoading(true);
       const { data, error } = await supabase
         .from("group_moments")
-        .select("id, photo_url, caption, verified, min_view_level, created_at, group_id, groups(title, city)")
+        .select("id, photo_url, caption, verified, min_view_level, created_at, group_id, groups(title, city, category, game)")
         .order("created_at", { ascending: false })
         .limit(20);
       if (!mounted) return;
@@ -265,10 +297,16 @@ export default function BrowsePage() {
       groups: groupCountByGame[g.id] || 0,
       members: memberCountByGame[g.id] || 0
     }));
-    mapped.sort((a, b) => (b.members - a.members) || (b.groups - a.groups) || a.name.localeCompare(b.name));
-    if (!debouncedQ) return mapped;
-    return mapped.filter(g => g.name.toLowerCase().includes(debouncedQ.toLowerCase()));
-  }, [debouncedQ, cat, groupCountByGame, memberCountByGame]);
+    const minMembers = popularityFilter === "all" ? 0 : Number(popularityFilter);
+    const filteredByPop = minMembers > 0 ? mapped.filter((g) => g.members >= minMembers) : mapped;
+    const sorted = [...filteredByPop].sort((a, b) => {
+      if (sortOption === "groups") return (b.groups - a.groups) || (b.members - a.members) || a.name.localeCompare(b.name);
+      if (sortOption === "name") return a.name.localeCompare(b.name);
+      return (b.members - a.members) || (b.groups - a.groups) || a.name.localeCompare(b.name);
+    });
+    if (!debouncedQ) return sorted;
+    return sorted.filter(g => g.name.toLowerCase().includes(debouncedQ.toLowerCase()));
+  }, [debouncedQ, cat, groupCountByGame, memberCountByGame, popularityFilter, sortOption]);
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 py-8 pb-32">
@@ -310,6 +348,27 @@ export default function BrowsePage() {
 
       {tab === "moments" ? (
         <div className="space-y-4">
+          {momentsByCategory.length > 0 && (
+            <div className="rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-semibold text-neutral-900">Trending (by photos)</div>
+                <span className="text-[11px] text-neutral-500">Last {moments.length} moments</span>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {momentsByCategory.slice(0, 8).map((c) => (
+                  <span
+                    key={c.name}
+                    className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-xs font-semibold text-neutral-800"
+                  >
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                    {c.name}
+                    <span className="text-[11px] text-neutral-500">({c.count})</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {momentsLoading && <div className="text-sm text-neutral-500">Loading meetups...</div>}
           {!momentsLoading && moments.length === 0 && (
             <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-6 text-center text-sm text-neutral-500">
@@ -351,31 +410,94 @@ export default function BrowsePage() {
       ) : (
         <>
           {/* Search & Filter Bar */}
-          <div className="sticky top-0 z-30 bg-neutral-50/95 py-3 backdrop-blur-md mb-6 -mx-4 px-4 border-b border-neutral-100 transition-all">
-            <div className="relative mb-3">
-              <Search className="absolute left-3.5 top-3 h-5 w-5 text-neutral-400" />
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search games or categories..."
-                className="w-full h-11 rounded-xl border border-neutral-200 bg-white pl-11 pr-4 text-sm shadow-sm outline-none focus:border-black focus:ring-1 focus:ring-black transition-all placeholder:text-neutral-400"
-              />
-            </div>
-            
-            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-              {CATEGORIES.map(c => (
-                <button
-                  key={c}
-                  onClick={() => { setCat(c); }} 
-                  className={`whitespace-nowrap rounded-full px-4 py-1.5 text-sm font-medium transition-all ${
-                    cat === c 
-                      ? "bg-neutral-900 text-white shadow-md scale-105" 
-                      : "bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-100"
-                  }`}
-                >
-                  {c}
-                </button>
-              ))}
+          <div className="sticky top-0 z-30 bg-neutral-50/95 py-2 backdrop-blur-md mb-5 -mx-4 px-4 border-b border-neutral-100 transition-all">
+            <div className="rounded-2xl border border-neutral-200 bg-white/90 shadow-sm p-2 space-y-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-400" />
+                <input
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search games or categories..."
+                  className="w-full h-10 rounded-xl border border-neutral-100 bg-white pl-9 pr-3 text-sm shadow-inner outline-none focus:border-neutral-300 focus:ring-1 focus:ring-neutral-300 transition-all placeholder:text-neutral-400"
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <label className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500">
+                  Category
+                  <select
+                    value={cat}
+                    onChange={(e) => setCat(e.target.value as typeof CATEGORIES[number])}
+                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-800 shadow-sm focus:border-neutral-300 focus:outline-none"
+                  >
+                    {CATEGORIES.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500">
+                  People
+                  <select
+                    value={peopleFilter}
+                    onChange={(e) => setPeopleFilter(e.target.value as typeof peopleFilter)}
+                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-800 shadow-sm focus:border-neutral-300 focus:outline-none"
+                  >
+                    <option value="any">Any</option>
+                    <option value="small">2-5</option>
+                    <option value="medium">6-9</option>
+                    <option value="large">10+</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500">
+                  Popularity
+                  <select
+                    value={popularityFilter}
+                    onChange={(e) => setPopularityFilter(e.target.value as typeof popularityFilter)}
+                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-800 shadow-sm focus:border-neutral-300 focus:outline-none"
+                  >
+                    <option value="all">All</option>
+                    <option value="5">5+ people</option>
+                    <option value="20">20+ people</option>
+                    <option value="50">50+ people</option>
+                  </select>
+                </label>
+
+                <label className="flex items-center gap-1 text-[11px] font-semibold text-neutral-500">
+                  Sort
+                  <select
+                    value={sortOption}
+                    onChange={(e) => setSortOption(e.target.value as typeof sortOption)}
+                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-800 shadow-sm focus:border-neutral-300 focus:outline-none"
+                  >
+                    <option value="popular">Most people</option>
+                    <option value="groups">Most groups</option>
+                    <option value="name">A–Z</option>
+                  </select>
+                </label>
+
+                <div className="flex flex-wrap gap-1 ml-auto">
+                  <button
+                    onClick={() => { setPopularityFilter("50"); setPeopleFilter("large"); }}
+                    className="rounded-full border border-neutral-200 bg-emerald-50 text-emerald-700 px-2.5 py-1 font-semibold hover:border-emerald-200"
+                  >
+                    Big & busy
+                  </button>
+                  <button
+                    onClick={() => { setPeopleFilter("small"); setPopularityFilter("all"); }}
+                    className="rounded-full border border-neutral-200 bg-indigo-50 text-indigo-700 px-2.5 py-1 font-semibold hover:border-indigo-200"
+                  >
+                    Small groups
+                  </button>
+                  <button
+                    onClick={() => { setPeopleFilter("any"); setPopularityFilter("20"); }}
+                    className="rounded-full border border-neutral-200 bg-amber-50 text-amber-700 px-2.5 py-1 font-semibold hover:border-amber-200"
+                  >
+                    Trending
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -456,14 +578,14 @@ export default function BrowsePage() {
                     Loading nearby circles…
                   </div>
                 )}
-                {!nearLoading && nearGroups.length === 0 && (
+                {!nearLoading && filteredNearGroups.length === 0 && (
                   <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-500">
                     No nearby circles yet. Try increasing the radius.
                   </div>
                 )}
-                {!nearLoading && nearGroups.length > 0 && (
+                {!nearLoading && filteredNearGroups.length > 0 && (
                   <div className="grid gap-3">
-                    {nearGroups.map(g => (
+                    {filteredNearGroups.map(g => (
                       <Link to={`/group/${g.id}`} key={g.id} className="block group">
                         <div className="relative overflow-hidden rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm transition-all hover:shadow-md hover:border-neutral-200 active:scale-[0.99]">
                           <div className="flex justify-between items-start">

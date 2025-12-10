@@ -13,8 +13,14 @@ export default function GamesPlayedModal({ isOpen, onClose, gameStats, gamesTota
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40">
-      <div className="w-[560px] max-w-[92vw] rounded-2xl border border-black/10 bg-white p-5 shadow-xl">
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="w-[560px] max-w-[92vw] rounded-2xl border border-black/10 bg-white p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="mb-4 flex items-center justify-between">
           <div className="text-base font-semibold text-neutral-900">Games Played</div>
           <button

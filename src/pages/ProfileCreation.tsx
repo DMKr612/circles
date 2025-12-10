@@ -7,6 +7,7 @@ export default function ProfileCreation() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [city, setCity] = useState("");
+  const [gender, setGender] = useState<"man" | "woman" | "nonbinary" | "prefer_not_say">("prefer_not_say");
   const [timezone, setTimezone] = useState("");
   const [interests, setInterests] = useState("");
   const [saving, setSaving] = useState(false);
@@ -28,6 +29,7 @@ export default function ProfileCreation() {
     name: fullName,   // <- use 'name', matches DB schema
     username,
     city: city || null,
+    gender,
     timezone: timezone || null,
     interests: interests || null,
     onboarded: true,
@@ -85,6 +87,31 @@ export default function ProfileCreation() {
               className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-black focus:ring-1 focus:ring-black"
               placeholder="e.g., Toronto, Berlin"
             />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Gender</label>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              {[
+                { key: "man", label: "Man" },
+                { key: "woman", label: "Woman" },
+                { key: "nonbinary", label: "Non-binary" },
+                { key: "prefer_not_say", label: "Prefer not to say" },
+              ].map((opt) => (
+                <label key={opt.key} className="flex items-center gap-2 rounded-md border border-neutral-200 bg-white px-3 py-2 hover:border-black/20 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="gender"
+                    value={opt.key}
+                    checked={gender === opt.key}
+                    onChange={() => setGender(opt.key as any)}
+                    className="text-black focus:ring-black"
+                    required
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              ))}
+            </div>
           </div>
 
           <div>

@@ -7,6 +7,7 @@ export type Profile = {
   id?: string; // sometimes you use id, sometimes user_id. Good to have both for now.
   name: string | null;
   avatar_url: string | null;
+  gender?: string | null;
   city?: string | null;
   rating_avg?: number;
   rating_count?: number;

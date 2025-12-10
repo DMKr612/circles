@@ -52,14 +52,28 @@ export default function NotificationsPage() {
 
     async function loadData() {
       setLoading(true);
+      const bail = setTimeout(() => setLoading(false), 8000); // ensure UI frees if a query hangs
 
       try {
-        const { data: rpcData } = await supabase.rpc("get_my_friend_requests");
+        const [rpcRes, invRes, myGroupsRes] = await Promise.all([
+          supabase.rpc("get_my_friend_requests"),
+          supabase
+            .from("group_members" as any)
+            .select("group_id, created_at, groups(title)")
+            .eq("user_id", userId)
+            .eq("status", "invited")
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("group_members" as any)
+            .select("group_id")
+            .eq("user_id", userId)
+            .in("status", ["active", "accepted"])
+        ]);
 
-        const friendRequests = (rpcData || []).map((r: any) => ({
+        const friendRequests = (rpcRes.data || []).map((r: any) => ({
           id: r.id,
-          // We map sender_id to user_id_a so the existing Accept button works
-          user_id_a: r.sender_id, 
+          // map sender_id to user_id_a so the existing Accept button works
+          user_id_a: r.sender_id,
           created_at: r.created_at,
           profiles: {
             name: r.sender_name,
@@ -67,18 +81,8 @@ export default function NotificationsPage() {
           }
         }));
 
-        const { data: inv } = await supabase
-          .from("group_members" as any)
-          .select("group_id, created_at, groups(title)")
-          .eq("user_id", userId)
-          .eq("status", "invited")
-          .order("created_at", { ascending: false });
-
-        const { data: myGroups } = await supabase
-          .from("group_members" as any)
-          .select("group_id")
-          .eq("user_id", userId)
-          .in("status", ["active", "accepted"]);
+        const inv = invRes.data;
+        const myGroups = myGroupsRes.data;
 
         const gIds = myGroups?.map((g: any) => g.group_id) || [];
 
@@ -87,30 +91,31 @@ export default function NotificationsPage() {
         let fetchedVotes: any[] = [];
 
         if (gIds.length > 0) {
-          const { data: p } = await supabase
-            .from("group_polls" as any)
-            .select("id, title, group_id, created_at, groups(title)")
-            .in("group_id", gIds)
-            .eq("status", "open")
-            .order("created_at", { ascending: false });
-          fetchedPolls = p || [];
+          const [pRes, mRes, vRes] = await Promise.all([
+            supabase
+              .from("group_polls" as any)
+              .select("id, title, group_id, created_at, groups(title)")
+              .in("group_id", gIds)
+              .eq("status", "open")
+              .order("created_at", { ascending: false }),
+            supabase
+              .from("group_messages" as any)
+              .select("group_id, created_at, groups(title)")
+              .in("group_id", gIds)
+              .neq("sender_id", userId)
+              .order("created_at", { ascending: false })
+              .limit(50),
+            supabase
+              .from("group_votes" as any)
+              .select("poll_id, option_id, created_at, group_polls(id, title, group_id, groups(title)), group_poll_options(id, label)")
+              .eq("user_id", userId)
+              .order("created_at", { ascending: false })
+              .limit(200)
+          ]);
 
-          const { data: m } = await supabase
-            .from("group_messages" as any)
-            .select("group_id, created_at, groups(title)")
-            .in("group_id", gIds)
-            .neq("sender_id", userId)
-            .order("created_at", { ascending: false })
-            .limit(50);
-          fetchedMsgs = m || [];
-
-          const { data: v } = await supabase
-            .from("group_votes" as any)
-            .select("poll_id, option_id, created_at, group_polls(id, title, group_id, groups(title)), group_poll_options(id, label)")
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false })
-            .limit(200);
-          fetchedVotes = v || [];
+          fetchedPolls = pRes.data || [];
+          fetchedMsgs = mRes.data || [];
+          fetchedVotes = vRes.data || [];
         }
 
         setFriendReqs(friendRequests || []);
@@ -121,6 +126,7 @@ export default function NotificationsPage() {
       } catch (e) {
         console.error("Error loading notifications", e);
       } finally {
+        clearTimeout(bail);
         setLoading(false);
       }
     }
@@ -245,16 +251,14 @@ export default function NotificationsPage() {
   }, [user]);
 
   useEffect(() => {
-    if (!user) return;
-    loadCalendar();
-  }, [user, loadCalendar]);
-
-  useEffect(() => {
     if (calendarOpen) {
       const today = new Date();
       setSelectedDate(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`);
     }
-  }, [calendarOpen]);
+    if (calendarOpen && !calendarEntries.length) {
+      loadCalendar();
+    }
+  }, [calendarOpen, calendarEntries.length, loadCalendar]);
 
   const pad = (n: number) => String(n).padStart(2, "0");
   const keyFromDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

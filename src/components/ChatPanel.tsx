@@ -339,7 +339,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
     const ch = supabase.channel(`gm:${groupId}`);
     ch.on(
       "postgres_changes",
-      { event: "INSERT", schema: "public", table: "group_messages" },
+      { event: "INSERT", schema: "public", table: "group_messages", filter: `group_id=eq.${groupId}` },
       async (payload) => {
         const raw = payload.new as any;
         if (raw.group_id !== groupId) return;
@@ -379,7 +379,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
         if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
       }
     ).on("postgres_changes",
-      { event: "INSERT", schema: "public", table: "group_message_reactions" },
+      { event: "INSERT", schema: "public", table: "group_message_reactions", filter: `group_id=eq.${groupId}` },
       (payload) => {
         const r = payload.new as Reaction;
         setReactions(prev => {
@@ -392,7 +392,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
         });
       }
     ).on("postgres_changes",
-      { event: "DELETE", schema: "public", table: "group_message_reactions" },
+      { event: "DELETE", schema: "public", table: "group_message_reactions", filter: `group_id=eq.${groupId}` },
       (payload) => {
         const r = payload.old as Reaction;
         setReactions(prev => {
@@ -418,7 +418,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
       }
     ).on(
       "postgres_changes",
-      { event: "DELETE", schema: "public", table: "group_messages" },
+      { event: "DELETE", schema: "public", table: "group_messages", filter: `group_id=eq.${groupId}` },
       (payload) => {
         const row = payload.old as any;
         if (row?.group_id !== groupId) return;

@@ -22,6 +22,7 @@ import { supabase } from "./lib/supabase";
 import { Search, PlusSquare, User as UserIcon, HelpCircle } from "lucide-react"; // Modern icons
 import Layout from "@/components/Layout";
 import { useProfile } from "@/hooks/useProfile";
+import LoadingScreen from "@/components/LoadingScreen";
 
 
 // Pages (statically imported to avoid missing dynamic chunks on GH Pages)
@@ -90,11 +91,7 @@ function RequireAuth({ children }: PropsWithChildren): JSX.Element | null {
 
   // 1. Wait while Auth or Profile is loading
   if (loading || (user && profileLoading)) {
-    return (
-      <div className="grid min-h-dvh place-items-center text-sm text-neutral-600">
-        Loading…
-      </div>
-    );
+    return <LoadingScreen />;
   }
 
   // 2. If not logged in, send to Onboarding
@@ -260,11 +257,7 @@ export default function App() {
           
           <AppErrorBoundary>
             <Suspense
-              fallback={
-                <div className="grid min-h-dvh place-items-center text-sm text-neutral-600">
-                  Loading…
-                </div>
-              }
+              fallback={<LoadingScreen />}
             >
               <Routes>
                 <Route path="/" element={<LandingRedirect />} />
