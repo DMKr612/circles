@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail, Users, X } from "lucide-react";
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail, Users, X, Megaphone, MapPin, CalendarClock } from "lucide-react";
 import { useAuth } from "@/App";
 
 type CalendarEntry = {
@@ -44,6 +44,23 @@ export default function NotificationsPage() {
   });
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [showUpcoming, setShowUpcoming] = useState(true);
+  const [announcements, setAnnouncements] = useState<any[]>([]);
+
+  const parseLocation = (location: string) => {
+    const match = location.match(/^(.*?)(\s*\(([^)]+)\))?\s*$/);
+    const label = match?.[1]?.trim() || location;
+    const coords = match?.[3]?.trim() || null;
+    return { label, coords };
+  };
+
+  const mapLinks = (location: string) => {
+    const { coords, label } = parseLocation(location);
+    const q = encodeURIComponent(coords || label);
+    return {
+      google: `https://www.google.com/maps/search/?api=1&query=${q}`,
+      apple: `http://maps.apple.com/?q=${q}`,
+    };
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -55,7 +72,7 @@ export default function NotificationsPage() {
       const bail = setTimeout(() => setLoading(false), 8000); // ensure UI frees if a query hangs
 
       try {
-        const [rpcRes, invRes, myGroupsRes] = await Promise.all([
+        const [rpcRes, invRes, myGroupsRes, annRes] = await Promise.all([
           supabase.rpc("get_my_friend_requests"),
           supabase
             .from("group_members" as any)
@@ -67,7 +84,12 @@ export default function NotificationsPage() {
             .from("group_members" as any)
             .select("group_id")
             .eq("user_id", userId)
-            .in("status", ["active", "accepted"])
+            .in("status", ["active", "accepted"]),
+          supabase
+            .from("announcements")
+            .select("id, title, description, datetime, location, group_id")
+            .order("datetime", { ascending: true })
+            .limit(5)
         ]);
 
         const friendRequests = (rpcRes.data || []).map((r: any) => ({
@@ -83,6 +105,7 @@ export default function NotificationsPage() {
 
         const inv = invRes.data;
         const myGroups = myGroupsRes.data;
+        const anns = annRes.data || [];
 
         const gIds = myGroups?.map((g: any) => g.group_id) || [];
 
@@ -123,6 +146,7 @@ export default function NotificationsPage() {
         setPolls(fetchedPolls);
         setMessages(fetchedMsgs);
         setVotes(fetchedVotes);
+        setAnnouncements(anns);
       } catch (e) {
         console.error("Error loading notifications", e);
       } finally {
@@ -613,7 +637,7 @@ export default function NotificationsPage() {
   }
 
   const { recent, older } = processedEvents;
-  const isEmpty = recent.length === 0 && older.length === 0;
+  const isEmpty = recent.length === 0 && older.length === 0 && announcements.length === 0;
 
   return (
     <div className="mx-auto w-full max-w-xl px-4 py-8 pb-32">
@@ -630,6 +654,92 @@ export default function NotificationsPage() {
           Calendar
         </button>
       </div>
+
+      {announcements.length > 0 && (
+        <div className="mb-8 space-y-3">
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-neutral-500">
+            <Megaphone className="h-4 w-4 text-amber-600" />
+            Announcements
+          </div>
+          {announcements.map((a) => {
+            const when = new Date(a.datetime);
+            const { label } = parseLocation(a.location || "");
+            const maps = mapLinks(a.location || "");
+            const detailPath = a.group_id ? `/group/${a.group_id}` : `/announcements#${a.id}`;
+            return (
+              <div
+                key={a.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate(detailPath)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate(detailPath);
+                  }
+                }}
+                className="rounded-2xl border border-amber-100 bg-white p-4 shadow-sm cursor-pointer"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <Megaphone className="h-4 w-4 text-amber-600" />
+                      <div className="text-sm font-bold text-neutral-900">{a.title}</div>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-neutral-600">
+                      <CalendarClock className="h-4 w-4" />
+                      <span>{when.toLocaleDateString([], { month: "short", day: "numeric" })} · {when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-700">
+                      <MapPin className="h-4 w-4" />
+                      <span className="font-medium">{label}</span>
+                      <a
+                        className="rounded-full border border-neutral-200 px-2 py-[4px] text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
+                        href={maps.google}
+                        onClick={(e) => e.stopPropagation()}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Google Maps
+                      </a>
+                      <a
+                        className="rounded-full border border-neutral-200 px-2 py-[4px] text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
+                        href={maps.apple}
+                        onClick={(e) => e.stopPropagation()}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Apple Maps
+                      </a>
+                    </div>
+                    <div className="text-sm text-neutral-600 line-clamp-3">{a.description}</div>
+                  </div>
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-amber-600">No cap</span>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); navigate(detailPath); }}
+                    className="rounded-full border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 hover:border-neutral-300"
+                  >
+                    See details
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); a.group_id && navigate(`/chats?groupId=${a.group_id}`); }}
+                    disabled={!a.group_id}
+                    className={`rounded-full px-3 py-2 text-xs font-bold ${
+                      a.group_id
+                        ? "border border-neutral-900 bg-neutral-900 text-white hover:-translate-y-[1px] hover:shadow-sm"
+                        : "border border-neutral-200 bg-neutral-100 text-neutral-400"
+                    }`}
+                  >
+                    Open chat
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {isEmpty && (
         <div className="flex flex-col items-center justify-center py-12 text-center">

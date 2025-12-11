@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from "../../lib/supabase";
-import { Search, MapPin, Users, ArrowLeft, Clock } from "lucide-react";
+import { Search, MapPin, ArrowLeft, Clock, HelpCircle, Lightbulb } from "lucide-react";
+import { GAME_LIST } from "../../lib/constants";
 import { useAuth } from "../../App";
 
 type Group = {
@@ -39,7 +40,14 @@ export default function GroupsByGame() {
 
   const { game = '' } = useParams();
   const key = (game || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim();
+  const gameMeta = useMemo(() => GAME_LIST.find(g => g.id === key) || null, [key]);
   const display = (game || '').replace(/-/g, ' ').trim();
+  const displayName = gameMeta?.name || display || 'Game';
+  const howTo = useMemo(() => {
+    const raw = gameMeta?.howTo;
+    if (!raw) return [] as string[];
+    return (Array.isArray(raw) ? raw : [raw]).map((s) => s.trim()).filter(Boolean);
+  }, [gameMeta]);
 
   const [rows, setRows] = useState<Group[]>([]);
   const [err, setErr] = useState<string | null>(null);
@@ -58,6 +66,11 @@ export default function GroupsByGame() {
   const [cityMode, setCityMode] = useState<'all' | 'mine'>('all');
   const [myCity, setMyCity] = useState<string | null>(null);
   const [myCityLoading, setMyCityLoading] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+
+  useEffect(() => {
+    setShowGuide(false);
+  }, [key]);
 
   // Fetch User's City
   async function refreshMyCity() {
@@ -241,11 +254,37 @@ export default function GroupsByGame() {
              </Link>
             <span className="text-sm font-semibold text-neutral-500 uppercase tracking-wider">Game</span>
         </div>
-        <h1 className="text-3xl font-extrabold tracking-tight text-neutral-900 capitalize">{display}</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight text-neutral-900 capitalize">{displayName}</h1>
         <p className="mt-2 text-neutral-600">
             {rows.length} active group{rows.length !== 1 && 's'} found.
         </p>
         <p className="mt-1 text-xs font-semibold text-neutral-500">Joined {joinedCount}/{MAX_GROUPS} circles.</p>
+        {howTo.length > 0 && (
+          <div className="mt-3 space-y-2">
+            <button
+              onClick={() => setShowGuide((v) => !v)}
+              className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-4 py-2 text-xs font-bold text-neutral-800 shadow-sm hover:border-neutral-300"
+            >
+              <HelpCircle className="h-4 w-4" />
+              {showGuide ? "Hide how to play" : "How to play"}
+            </button>
+            {showGuide && (
+              <div className="rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm">
+                <div className="flex gap-3">
+                  <div className="mt-0.5"><Lightbulb className="h-5 w-5 text-amber-500" /></div>
+                  <div className="flex-1 space-y-2 text-sm text-neutral-700 leading-relaxed">
+                    {howTo.map((line, idx) => (
+                      <div key={idx} className="flex gap-3">
+                        <span className="inline-flex h-6 w-6 flex-none items-center justify-center rounded-full bg-neutral-900 text-[11px] font-bold text-white">{idx + 1}</span>
+                        <p className="flex-1">{line}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {err && (
           <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
             {err}

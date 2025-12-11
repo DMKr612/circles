@@ -178,39 +178,106 @@ export default function Profile() {
     })();
   }, [uid]);
 
-  // Game stats (events in circles I'm a member of)
+  // Game stats (counts events where member & host share same city on event date)
   useEffect(() => {
     if (!uid) return;
     let cancelled = false;
+    const normCity = (v?: string | null) => (v || "").normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+
     (async () => {
+      // My memberships
       const { data: memberships, error: mErr } = await supabase
         .from("group_members")
-        .select("group_id, groups(game)")
+        .select("group_id, groups(game, city, host_id)")
         .eq("user_id", uid)
         .in("status", ["active", "accepted"]);
       if (cancelled || mErr) return;
+      const groupIds = (memberships || []).map((m: any) => m.group_id).filter(Boolean);
+      if (!groupIds.length) { if (!cancelled) { setGamesTotal(0); setGameStats([]); } return; }
 
-      const groupIds = (memberships || []).map((m: any) => m.group_id);
+      // Collect host ids and group meta
       const gameByGroup: Record<string, string> = {};
+      const cityByGroup: Record<string, string | null> = {};
+      const hostByGroup: Record<string, string | null> = {};
+      const hostIds = new Set<string>();
       (memberships || []).forEach((m: any) => {
-        if (m.group_id) gameByGroup[m.group_id] = m.groups?.game || "Unknown";
+        if (m.group_id) {
+          gameByGroup[m.group_id] = m.groups?.game || "Unknown";
+          cityByGroup[m.group_id] = m.groups?.city || null;
+          hostByGroup[m.group_id] = m.groups?.host_id || null;
+          if (m.groups?.host_id) hostIds.add(m.groups.host_id);
+        }
       });
 
-      if (!groupIds.length) {
-        if (!cancelled) { setGamesTotal(0); setGameStats([]); }
-        return;
-      }
+      // Host profile cities
+      const { data: hostProfiles } = await supabase
+        .from('profiles')
+        .select('user_id, city')
+        .in('user_id', Array.from(hostIds));
+      const hostCity: Record<string, string | null> = {};
+      (hostProfiles || []).forEach((p: any) => { hostCity[p.user_id] = p.city || null; });
 
+      // My profile city (for fallback match when no live location)
+      const { data: meProf } = await supabase
+        .from('profiles')
+        .select('city')
+        .eq('user_id', uid)
+        .maybeSingle();
+      const myCity = meProf?.city || null;
+
+      // Events
       const { data: events, error: eErr } = await supabase
         .from("group_events")
-        .select("id, group_id")
-        .in("group_id", groupIds);
+        .select("id, group_id, starts_at")
+        .in("group_id", groupIds)
+        .order('starts_at', { ascending: false })
+        .limit(300);
       if (cancelled || eErr) return;
+      const now = Date.now();
+
+      // Live locations for me and hosts around event dates (day match)
+      const userIds = Array.from(new Set([uid, ...hostIds]));
+      const { data: live } = await supabase
+        .from('group_live_locations')
+        .select('group_id, user_id, lat, long, updated_at');
+      const locByUserDayGroup: Record<string, Record<string, Set<string>>> = {};
+      (live || []).forEach((row: any) => {
+        if (!row.updated_at) return;
+        const day = row.updated_at.slice(0, 10);
+        const u = row.user_id;
+        const g = row.group_id;
+        if (!userIds.includes(u)) return;
+        locByUserDayGroup[u] = locByUserDayGroup[u] || {};
+        const map = locByUserDayGroup[u];
+        map[day] = map[day] || new Set<string>();
+        map[day].add(g);
+      });
 
       const counts: Record<string, number> = {};
+      let total = 0;
       (events || []).forEach((ev: any) => {
-        const g = gameByGroup[ev.group_id] || "Unknown";
-        counts[g] = (counts[g] || 0) + 1;
+        if (!ev.starts_at) return;
+        const start = new Date(ev.starts_at);
+        if (Number.isNaN(start.getTime())) return;
+        if (start.getTime() > now) return; // only count events that have started
+        const dayKey = ev.starts_at.slice(0, 10);
+
+        const gCity = normCity(cityByGroup[ev.group_id]);
+        const hId = hostByGroup[ev.group_id];
+        if (!hId) return;
+        const hCity = normCity(hostCity[hId] || cityByGroup[ev.group_id]);
+        const myCityNorm = normCity(myCity || cityByGroup[ev.group_id]);
+        if (!gCity || !hCity || !myCityNorm) return;
+
+        // Require member and host to be present (live location) on that day and city match
+        const mePresent = locByUserDayGroup[uid]?.[dayKey]?.has(ev.group_id);
+        const hostPresent = locByUserDayGroup[hId]?.[dayKey]?.has(ev.group_id);
+        if (!mePresent || !hostPresent) return;
+        if (gCity !== hCity || gCity !== myCityNorm) return;
+
+        const game = gameByGroup[ev.group_id] || 'Unknown';
+        counts[game] = (counts[game] || 0) + 1;
+        total += 1;
       });
 
       const stats: GameStat[] = Object.entries(counts)
@@ -218,7 +285,7 @@ export default function Profile() {
         .sort((a, b) => b.count - a.count || a.game.localeCompare(b.game));
 
       if (!cancelled) {
-        setGamesTotal(events?.length || 0);
+        setGamesTotal(total);
         setGameStats(stats);
       }
     })();

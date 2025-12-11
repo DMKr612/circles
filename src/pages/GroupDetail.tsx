@@ -4,7 +4,7 @@ import { supabase } from "../lib/supabase";
 import type { Group, Poll, PollOption, GroupMember, GroupEvent, GroupMoment } from "../types";
 import { 
   MapPin, Users, Calendar, Clock, Share2, MessageCircle, 
-  LogOut, Trash2, Edit2, Check, X, Plus, ChevronLeft, AlertCircle 
+  LogOut, Trash2, Edit2, Check, X, Plus, ChevronLeft, AlertCircle, Map, Megaphone 
 } from "lucide-react";
 import ViewOtherProfileModal from "../components/ViewOtherProfileModal";
 import { useGroupPresence } from "../hooks/useGroupPresence";
@@ -22,6 +22,18 @@ type DraftPollOption = {
   place?: string;
 };
 
+type GroupAnnouncement = {
+  id: string;
+  title: string;
+  description: string;
+  datetime: string;
+  duration_minutes?: number | null;
+  location: string;
+  activities?: string[];
+  link?: string | null;
+  group_id?: string | null;
+};
+
 type PollWithLate = Poll & { late_voter_ids?: string[] | null };
 
 export default function GroupDetail() {
@@ -33,6 +45,7 @@ export default function GroupDetail() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<string | null>(null);
   const [me, setMe] = useState<string | null>(null);
+  const [announcements, setAnnouncements] = useState<GroupAnnouncement[]>([]);
 
   // Host check
   const isHost = !!(me && group && (me === group.host_id || (group?.creator_id ?? null) === me));
@@ -146,6 +159,14 @@ export default function GroupDetail() {
     return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
   }
 
+  function mapLinks(location: string) {
+    const q = encodeURIComponent(location);
+    return {
+      google: `https://www.google.com/maps/search/?api=1&query=${q}`,
+      apple: `http://maps.apple.com/?q=${q}`,
+    };
+  }
+
   function exitPollFocus() {
     setPollFocus(false);
     if (location.hash === "#poll") {
@@ -178,6 +199,43 @@ export default function GroupDetail() {
     a.href = url;
     a.download = `${ev.title || "event"}.ics`;
     a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function formatAnnouncementRange(a: GroupAnnouncement) {
+    const start = new Date(a.datetime);
+    const end = new Date(start.getTime() + (a.duration_minutes ?? 60) * 60 * 1000);
+    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
+    return `${start.toLocaleString(undefined, opts)} – ${end.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  }
+
+  function addAnnouncementToCalendar(a: GroupAnnouncement) {
+    const start = new Date(a.datetime);
+    if (Number.isNaN(start.getTime())) return;
+    const end = new Date(start.getTime() + (a.duration_minutes ?? 60) * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const fmt = (d: Date) => `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+    const ics = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//circles//announcement//EN",
+      "BEGIN:VEVENT",
+      `UID:${a.id}`,
+      `DTSTAMP:${fmt(new Date())}`,
+      `DTSTART:${fmt(start)}`,
+      `DTEND:${fmt(end)}`,
+      `SUMMARY:${a.title}`,
+      `DESCRIPTION:${a.description} Activities: ${(a.activities || []).join(" | ")}`,
+      `LOCATION:${a.location}`,
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\n");
+    const blob = new Blob([ics], { type: "text/calendar" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${a.id}.ics`;
+    link.click();
     URL.revokeObjectURL(url);
   }
 
@@ -371,6 +429,22 @@ export default function GroupDetail() {
     })();
     return () => { cancelled = true; };
   }, [group?.id, poll?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!group?.id) return;
+      const { data, error } = await supabase
+        .from('announcements')
+        .select('id, title, description, datetime, duration_minutes, location, activities, link, group_id')
+        .eq('group_id', group.id)
+        .order('datetime', { ascending: true })
+        .limit(5);
+      if (cancelled || error) return;
+      setAnnouncements((data || []) as GroupAnnouncement[]);
+    })();
+    return () => { cancelled = true; };
+  }, [group?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -854,7 +928,7 @@ export default function GroupDetail() {
                             </button>
                         ) : (
                             <>
-                                <button onClick={() => setChatOpen(true)} className="h-10 px-5 rounded-full bg-white border border-neutral-200 text-neutral-800 text-sm font-bold shadow-sm hover:bg-neutral-50 hover:border-neutral-300 flex items-center gap-2 transition-all">
+                                <button onClick={() => nav(`/chats?groupId=${group.id}`)} className="h-10 px-5 rounded-full bg-white border border-neutral-200 text-neutral-800 text-sm font-bold shadow-sm hover:bg-neutral-50 hover:border-neutral-300 flex items-center gap-2 transition-all">
                                     <MessageCircle className="h-4 w-4" /> Chat
                                 </button>
                                 {isHost && (
@@ -878,6 +952,56 @@ export default function GroupDetail() {
                   <button onClick={() => setMsg(null)} className="ml-auto hover:bg-red-100 p-1 rounded-full"><X className="h-3 w-3" /></button>
                </div>
             </div>
+        )}
+
+        {announcements.length > 0 && (
+          <div className="mx-auto max-w-5xl px-4 mt-4">
+            <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-sm font-bold text-neutral-900">
+                  <Megaphone className="h-4 w-4 text-amber-500" />
+                  Announcement for this circle
+                </div>
+                <span className="text-[10px] font-bold uppercase tracking-wide text-amber-600">Official</span>
+              </div>
+              {announcements.map((a) => (
+                <div key={a.id} className="space-y-1 border-t border-neutral-100 pt-2 first:border-0 first:pt-0">
+                  <div className="text-sm font-bold text-neutral-900">{a.title}</div>
+                  <div className="text-xs text-neutral-600">{formatAnnouncementRange(a)}</div>
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-neutral-800">
+                    <span className="inline-flex items-center gap-1"><MapPin className="h-3 w-3" /> {a.location}</span>
+                    <a href={mapLinks(a.location).google} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-0.5 hover:border-neutral-300"><Map className="h-3 w-3" /> Google</a>
+                    <a href={mapLinks(a.location).apple} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-0.5 hover:border-neutral-300"><Map className="h-3 w-3" /> Apple</a>
+                  </div>
+                  <div className="text-sm text-neutral-700 leading-relaxed">{a.description}</div>
+                  {a.activities?.length ? (
+                    <ul className="space-y-0.5 text-xs text-neutral-600">
+                      {a.activities.map((act) => (
+                        <li key={act} className="flex items-start gap-2">
+                          <span className="mt-1 h-1.5 w-1.5 rounded-full bg-neutral-900" />
+                          <span>{act}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    <button
+                      onClick={() => nav(`/chats?groupId=${group?.id}`)}
+                      className="inline-flex items-center gap-2 rounded-full bg-black px-3 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-neutral-800"
+                    >
+                      <MessageCircle className="h-4 w-4" /> Open chat
+                    </button>
+                    <button
+                      onClick={() => addAnnouncementToCalendar(a)}
+                      className="inline-flex items-center gap-2 rounded-full border border-neutral-200 px-3 py-1.5 text-xs font-bold text-neutral-800 hover:border-neutral-300"
+                    >
+                      <Calendar className="h-4 w-4" /> Add to calendar
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* MAIN CONTENT GRID */}

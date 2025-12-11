@@ -27,6 +27,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 
 // Pages (statically imported to avoid missing dynamic chunks on GH Pages)
 const BrowsePage = lazy(() => import("./pages/Browse"));
+const AnnouncementsPage = lazy(() => import("./pages/Announcements"));
 const CreateGroup = lazy(() => import("./pages/CreateGroup"));
 const GroupDetail = lazy(() => import("./pages/GroupDetail"));
 const Groups = lazy(() => import("./pages/Groups"));
@@ -279,6 +280,7 @@ export default function App() {
                 <Route element={<RequireAuth><Layout /></RequireAuth>}>
                   <Route path="/browse" element={<BrowsePage />} />
                   <Route path="/groups" element={<Groups />} />
+                  <Route path="/announcements" element={<AnnouncementsPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="/profile" element={<Profile />} />
                   <Route path="/profile/:userId" element={<Profile />} />

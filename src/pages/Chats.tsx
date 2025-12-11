@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, lazy, Suspense } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
-import { MessageSquare, Users, ArrowLeft, Send, Search as SearchIcon, Filter, Heart } from "lucide-react";
+import { MessageSquare, Users, ArrowLeft, Send, Search as SearchIcon, Filter, Heart, Megaphone } from "lucide-react";
 import Spinner from "@/components/ui/Spinner";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 
@@ -10,12 +10,13 @@ import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 const ChatPanel = lazy(() => import("../components/ChatPanel"));
 
 type ChatItem = {
-  type: 'group' | 'dm';
+  type: 'group' | 'dm' | 'announcement';
   id: string; 
   name: string;
   avatar_url: string | null;
   subtitle: string;
   isFavorite?: boolean;
+  category?: 'announcement' | 'group';
 };
 
 type DMMsg = {
@@ -46,7 +47,7 @@ export default function Chats() {
   const dmEndRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
 
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState<"all" | "groups" | "dms" | "fav">("all");
   const [search, setSearch] = useState("");
 
   // 1. Load User & List (Groups + Friends)
@@ -88,6 +89,28 @@ export default function Chats() {
         }
       });
 
+      // Process Announcements (linked circles) for quick access
+      const { data: anns } = await supabase
+        .from("announcements")
+        .select("id, group_id, title, description")
+        .not("group_id", "is", null)
+        .order("datetime", { ascending: false })
+        .limit(20);
+      (anns || []).forEach((a: any) => {
+        if (!a.group_id) return;
+        // Avoid duplicates if already in list
+        if (items.find(i => i.type === 'group' && i.id === a.group_id)) return;
+        items.push({
+          type: 'announcement',
+          id: a.group_id,
+          name: a.title || "Announcement",
+          avatar_url: null,
+          subtitle: "Announcement",
+          isFavorite: false,
+          category: 'announcement',
+        });
+      });
+
       // Process Friends
       if (friends?.length) {
         const friendIds = Array.from(new Set(friends.map((f: any) => 
@@ -113,7 +136,11 @@ export default function Chats() {
       }
 
       items.sort((a, b) => {
-        // Sort favorites to top, then alphabetical
+        // Announcements always on top
+        const aAnn = a.type === 'announcement' ? 1 : 0;
+        const bAnn = b.type === 'announcement' ? 1 : 0;
+        if (aAnn !== bAnn) return bAnn - aAnn;
+        // Favorites next
         if (a.isFavorite && !b.isFavorite) return -1;
         if (!a.isFavorite && b.isFavorite) return 1;
         return a.name.localeCompare(b.name);
@@ -123,6 +150,16 @@ export default function Chats() {
     }
     load();
   }, []);
+
+  // Auto-select a group when opened with ?groupId=...
+  useEffect(() => {
+    if (!location.search || list.length === 0 || selected) return;
+    const params = new URLSearchParams(location.search);
+    const gid = params.get("groupId");
+    if (!gid) return;
+    const found = list.find((i) => i.type === 'group' && i.id === gid);
+    if (found) setSelected(found);
+  }, [location.search, list, selected]);
 
   // Toggle Favorite Handler
   const toggleFavorite = (id: string) => {
@@ -273,7 +310,8 @@ export default function Chats() {
   const getFilteredList = () => {
     return list.filter(item => {
       if(filter === "groups" && item.type !== "group") return false;
-      if(filter === "private" && item.type !== "dm") return false;
+      if(filter === "dms" && item.type !== "dm") return false;
+      if(filter === "private" && item.type !== "dm") return false; // legacy fallback
       if(filter === "fav" && !item.isFavorite) return false;
       if (!item.name) return false;
       if(!item.name.toLowerCase().includes(search.toLowerCase())) return false;
@@ -321,7 +359,7 @@ export default function Chats() {
         <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
           <FilterPill id="all" label="All" />
           <FilterPill id="groups" label="Groups" />
-          <FilterPill id="private" label="Private" />
+          <FilterPill id="dms" label="DMs" />
           <FilterPill id="fav" label="Favorites" />
         </div>
       </div>
@@ -356,14 +394,16 @@ export default function Chats() {
                 >
                   <div className={`
                     h-12 w-12 rounded-full flex items-center justify-center text-lg font-bold shrink-0 shadow-sm
-                    ${item.type === 'group' 
-                      ? 'bg-gradient-to-br from-indigo-100 to-indigo-200 text-indigo-700' 
-                      : 'bg-gradient-to-br from-neutral-100 to-neutral-200 text-neutral-600'}
+                    ${item.type === 'announcement'
+                      ? 'bg-gradient-to-br from-amber-100 to-amber-200 text-amber-700'
+                      : item.type === 'group'
+                        ? 'bg-gradient-to-br from-indigo-100 to-indigo-200 text-indigo-700'
+                        : 'bg-gradient-to-br from-neutral-100 to-neutral-200 text-neutral-600'}
                   `}>
                     {item.type === 'dm' && item.avatar_url ? (
                       <img src={item.avatar_url} alt="" className="h-full w-full object-cover rounded-full" />
                     ) : (
-                      item.type === 'group' ? <Users className="h-5 w-5" /> : item.name.slice(0,1).toUpperCase()
+                      item.type === 'group' ? <Users className="h-5 w-5" /> : item.type === 'announcement' ? <Megaphone className="h-5 w-5" /> : item.name.slice(0,1).toUpperCase()
                     )}
                   </div>
                   <div className="min-w-0 flex-1 pr-8">
@@ -416,7 +456,7 @@ export default function Chats() {
 
     // 3. Helper to handle clicks on header
     const handleHeaderClick = () => {
-      if (selected.type === 'group') {
+      if (selected.type === 'group' || selected.type === 'announcement') {
         navigate(`/group/${selected.id}`);
       } else if (selected.type === 'dm') {
         setViewProfileId(selected.id);
@@ -436,19 +476,27 @@ export default function Chats() {
             className="flex items-center gap-4 flex-1 min-w-0 cursor-pointer hover:opacity-70 transition-opacity"
             title={`View ${selected.type === 'group' ? 'Group' : 'Profile'}`}
           >
-            <div className={`h-10 w-10 rounded-full flex items-center justify-center text-sm font-bold shadow-sm ${selected.type === 'group' ? 'bg-indigo-100 text-indigo-700' : 'bg-neutral-100 text-neutral-600'}`}>
+            <div className={`h-10 w-10 rounded-full flex items-center justify-center text-sm font-bold shadow-sm ${
+              selected.type === 'group'
+                ? 'bg-indigo-100 text-indigo-700'
+                : selected.type === 'announcement'
+                  ? 'bg-amber-100 text-amber-700'
+                  : 'bg-neutral-100 text-neutral-600'
+            }`}>
                {selected.type === 'dm' && selected.avatar_url ? (
                  <img src={selected.avatar_url} alt="" className="h-full w-full object-cover rounded-full" />
                ) : (
-                 selected.type === 'group' ? '#' : selected.name.slice(0,1)
+                 selected.type === 'group' ? '#' : selected.type === 'announcement' ? '!' : selected.name.slice(0,1)
                )}
             </div>
             
             <div className="flex-1 min-w-0">
               <div className="font-bold text-neutral-900 truncate text-base">{selected.name}</div>
               <div className="text-xs text-neutral-500 flex items-center gap-1">
-                <span className={`w-1.5 h-1.5 rounded-full ${selected.type === 'group' ? 'bg-indigo-500' : 'bg-emerald-500'}`}></span>
-                {selected.type === 'group' ? 'Group Chat' : 'Direct Message'}
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  selected.type === 'group' ? 'bg-indigo-500' : selected.type === 'announcement' ? 'bg-amber-500' : 'bg-emerald-500'
+                }`}></span>
+                {selected.type === 'group' ? 'Group Chat' : selected.type === 'announcement' ? 'Announcement Chat' : 'Direct Message'}
               </div>
             </div>
           </div>
@@ -471,7 +519,7 @@ export default function Chats() {
              style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23000000' fill-opacity='1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='1'/%3E%3C/g%3E%3C/svg%3E")` }}>
         </div>
 
-          {selected.type === 'group' ? (
+          {selected.type === 'group' || selected.type === 'announcement' ? (
             <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Spinner /></div>}>
               <div className="h-full w-full relative z-10">
                 <ChatPanel 
