@@ -12,14 +12,13 @@ import React, {
 import {
   Routes,
   Route,
-  Link,
   Navigate,
   useLocation,
   useParams,
 } from "react-router-dom";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
-import { Search, PlusSquare, User as UserIcon, HelpCircle } from "lucide-react"; // Modern icons
+import { HelpCircle } from "lucide-react"; // Modern icons
 import Layout from "@/components/Layout";
 import { useProfile } from "@/hooks/useProfile";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -109,65 +108,6 @@ function RequireAuth({ children }: PropsWithChildren): JSX.Element | null {
 
   // 4. Authenticated & onboarded (or profile intentionally missing but auth valid)
   return <>{children}</>;
-}
-
-/* =========================
-   Bottom Nav (Modern & Stylish)
-   ========================= */
-function BottomNav() {
-  const { user } = useAuth();
-  const location = useLocation();
-  const onOnboarding = location.pathname.startsWith("/onboarding");
-
-  // Hide on onboarding, and when not authenticated
-  if (!user || onOnboarding) return null;
-
-  const isActive = (path: string) => location.pathname === path;
-
-  return (
-    <div className="fixed bottom-0 left-0 right-0 z-[60] border-t border-neutral-200 bg-white/90 backdrop-blur-md pb-[env(safe-area-inset-bottom)]">
-      <nav className="flex h-16 items-center justify-around px-6">
-        <Link
-          to="/browse"
-          className={`group flex flex-col items-center justify-center gap-1 transition-all duration-200 ${
-            isActive("/browse") ? "text-black" : "text-neutral-400 hover:text-neutral-600"
-          }`}
-          aria-label="Browse"
-        >
-          <Search
-            strokeWidth={isActive("/browse") ? 2.8 : 2}
-            className={`h-7 w-7 transition-transform duration-200 ${isActive("/browse") ? "scale-110" : "group-hover:scale-105"}`}
-          />
-        </Link>
-        
-        <Link
-          to="/create"
-          className={`group flex flex-col items-center justify-center gap-1 transition-all duration-200 ${
-            isActive("/create") ? "text-black" : "text-neutral-400 hover:text-neutral-600"
-          }`}
-          aria-label="Create"
-        >
-          <PlusSquare
-            strokeWidth={isActive("/create") ? 2.8 : 2}
-             className={`h-7 w-7 transition-transform duration-200 ${isActive("/create") ? "scale-110" : "group-hover:scale-105"}`}
-          />
-        </Link>
-
-        <Link
-          to="/profile"
-           className={`group flex flex-col items-center justify-center gap-1 transition-all duration-200 ${
-            isActive("/profile") ? "text-black" : "text-neutral-400 hover:text-neutral-600"
-          }`}
-          aria-label="Profile"
-        >
-           <UserIcon
-             strokeWidth={isActive("/profile") ? 2.8 : 2}
-             className={`h-7 w-7 transition-transform duration-200 ${isActive("/profile") ? "scale-110" : "group-hover:scale-105"}`}
-           />
-        </Link>
-      </nav>
-    </div>
-  );
 }
 
 /* =========================

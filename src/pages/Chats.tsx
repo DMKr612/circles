@@ -525,9 +525,6 @@ export default function Chats() {
                 <ChatPanel 
                   groupId={selected.id} 
                   onClose={() => setSelected(null)} 
-                  full={true} 
-                  setFull={()=>{}} 
-                  user={{ id: me }}
                 />
               </div>
             </Suspense>

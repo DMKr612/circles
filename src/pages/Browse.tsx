@@ -3,19 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { CATEGORIES, GAME_LIST } from "@/lib/constants";
 import { Search, Users, Tag, MapPin, Globe, Loader2, Megaphone, CalendarClock, MessageCircle, ArrowRight, Map } from "lucide-react";
+import type { Announcement } from "@/lib/announcements";
 import type { BrowseGroupRow } from "@/types";
-
-type AnnouncementSummary = {
-  id: string;
-  title: string;
-  description?: string;
-  datetime: string;
-  duration_minutes?: number | null;
-  location: string;
-  activities?: string[];
-  link?: string | null;
-  group_id?: string | null;
-};
 
 type MomentCard = {
   id: string;
@@ -86,15 +75,15 @@ export default function BrowsePage() {
   const [reqMsg, setReqMsg] = useState<string | null>(null);
 
   // Official announcements (special events by Circles)
-const [announcements, setAnnouncements] = useState<AnnouncementSummary[]>([]);
-const selectedEvent = announcements[0] || null;
-const mapLinks = (location: string) => {
-  const q = encodeURIComponent(location);
-  return {
-    google: `https://www.google.com/maps/search/?api=1&query=${q}`,
-    apple: `http://maps.apple.com/?q=${q}`,
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const selectedEvent = announcements[0] || null;
+  const mapLinks = (location: string) => {
+    const q = encodeURIComponent(location);
+    return {
+      google: `https://www.google.com/maps/search/?api=1&query=${q}`,
+      apple: `http://maps.apple.com/?q=${q}`,
+    };
   };
-};
 
   // Sync URL
   useEffect(() => {
@@ -104,10 +93,10 @@ const mapLinks = (location: string) => {
     if (next.toString() !== params.toString()) setParams(next, { replace: true });
   }, [q, cat]);
 
-  const formatEventRange = (evt: OfficialEvent | null) => {
+  const formatEventRange = (evt: Announcement | null) => {
     if (!evt) return "";
     const start = new Date(evt.datetime);
-    const end = new Date(start.getTime() + (evt.durationMinutes ?? 60) * 60 * 1000);
+    const end = new Date(start.getTime() + (evt.duration_minutes ?? 60) * 60 * 1000);
     const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
     return `${start.toLocaleString(undefined, opts)} – ${end.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
   };
@@ -137,7 +126,7 @@ const mapLinks = (location: string) => {
         expiry.setHours(23, 59, 59, 999);
         expiry.setDate(expiry.getDate() + 1);
         return expiry.getTime() >= now;
-      }) as OfficialEvent[];
+      }) as Announcement[];
       setAnnouncements(filtered);
     })();
     return () => { active = false; };

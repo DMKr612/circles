@@ -52,7 +52,6 @@ export default function GroupDetail() {
 
   // UI State
   const [chatOpen, setChatOpen] = useState(false);
-  const [chatFull, setChatFull] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false); 
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
@@ -864,7 +863,7 @@ export default function GroupDetail() {
 
   return (
     <>
-      <div className={"relative z-0 transition-all duration-300 min-h-screen bg-[#FDFBF7] pb-24 " + (chatOpen && !chatFull ? "lg:mr-[min(92vw,520px)]" : "")}>
+      <div className={"relative z-0 transition-all duration-300 min-h-screen bg-[#FDFBF7] pb-24 " + (chatOpen ? "lg:mr-[min(92vw,520px)]" : "")}>
         
         {/* HERO HEADER */}
         <div className="bg-white border-b border-neutral-200 pt-8 pb-6 px-4 shadow-sm relative overflow-hidden">
@@ -1522,9 +1521,7 @@ export default function GroupDetail() {
                <Suspense fallback={<div className="flex h-full items-center justify-center">Loading...</div>}>
                  <ChatPanel 
                    groupId={group.id} 
-                   onClose={() => { setChatOpen(false); setChatFull(false); }} 
-                   full={true}
-                   setFull={() => {}}
+                   onClose={() => { setChatOpen(false); }} 
                  />
                </Suspense>
            </div>

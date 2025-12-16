@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 import type { Message } from "@/types";
 import { useAuth } from "@/App";
 import { useGroupPresence } from "@/hooks/useGroupPresence";
-import { MapPin, MoreHorizontal, Paperclip, Send, X, Smile, Reply, Loader2, Trash } from "lucide-react";
+import { MapPin, Paperclip, Send, X, Smile, Reply, Loader2, Trash } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 type Profile = { user_id: string; id?: string; name: string | null; avatar_url?: string | null };
@@ -36,16 +36,11 @@ const randomName = (file: File) => {
 
 type ChatPanelProps = {
   groupId: string;
-  pageSize?: number;
-  user?: any;
   onClose: () => void;
-  full: boolean;
-  setFull: (v: boolean) => void;
 };
 
-export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full, setFull }: ChatPanelProps) {
+export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
   // base state
-  const [myProfile, setMyProfile] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Map<string, Profile>>(new Map());
   const [dismissedPollMsgs, setDismissedPollMsgs] = useState<Set<string>>(new Set());
   const [pollStatuses, setPollStatuses] = useState<Record<string, string>>({});
@@ -81,6 +76,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
   const { user: authUser } = useAuth();
   const me = authUser?.id || null;
   const myEmail = authUser?.email || null;
+  const myProfile = me ? profiles.get(me) ?? null : null;
 
   // --- LOCATION PRESENCE HOOK ---
   const { isTogether } = useGroupPresence(groupId, me ?? undefined);
@@ -195,7 +191,7 @@ export default function ChatPanel({ groupId, pageSize = 30, user, onClose, full,
     })();
 
     return () => { aborted = true; };
-  }, [groupId, pageSize]);
+  }, [groupId]);
 
   useEffect(() => {
     let cancelled = false;

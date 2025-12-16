@@ -1,22 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ANNOUNCEMENT_ADMINS } from "@/lib/announcements";
+import { ANNOUNCEMENT_ADMINS, type Announcement } from "@/lib/announcements";
 import { ArrowLeft, CalendarClock, Megaphone, MessageCircle, MapPin, Trash2, Edit2, Plus, Map } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
-type AnnouncementRow = {
-  id: string;
-  title: string;
-  description: string;
-  datetime: string;
-  duration_minutes?: number | null;
-  location: string;
-  activities: string[];
-  link?: string | null;
-  group_id?: string | null;
-};
-
-function formatEventRange(evt: AnnouncementRow): string {
+function formatEventRange(evt: Announcement): string {
   const start = new Date(evt.datetime);
   const end = new Date(start.getTime() + (evt.duration_minutes ?? 60) * 60 * 1000);
   const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
@@ -39,7 +27,7 @@ const mapLinks = (location: string) => {
   };
 };
 
-const confirmAndAddEventToCalendar = (evt: AnnouncementRow) => {
+const confirmAndAddEventToCalendar = (evt: Announcement) => {
   if (!window.confirm("Add this event to your calendar?")) return;
   const start = new Date(evt.datetime);
   if (Number.isNaN(start.getTime())) return;
@@ -73,12 +61,12 @@ const confirmAndAddEventToCalendar = (evt: AnnouncementRow) => {
 const isUuid = (val?: string | null) => !!val && /^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(val.trim());
 
 export default function AnnouncementsPage() {
-  const [events, setEvents] = useState<AnnouncementRow[]>([]);
+  const [events, setEvents] = useState<Announcement[]>([]);
   const [joined, setJoined] = useState<Set<string>>(new Set());
   const [joinBusy, setJoinBusy] = useState<Set<string>>(new Set());
   const [isAdmin, setIsAdmin] = useState(false);
   const [uid, setUid] = useState<string | null>(null);
-  const [form, setForm] = useState<Partial<AnnouncementRow>>({});
+  const [form, setForm] = useState<Partial<Announcement>>({});
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
@@ -118,7 +106,7 @@ export default function AnnouncementsPage() {
         .order('datetime', { ascending: true })
         .limit(200);
       if (error) throw error;
-      let rows = (data || []) as AnnouncementRow[];
+      let rows = (data || []) as Announcement[];
 
       // Auto-link missing circles if admin
       if (isAdmin && uid) {
@@ -152,7 +140,7 @@ export default function AnnouncementsPage() {
             .select('*')
             .order('datetime', { ascending: true })
             .limit(200);
-          rows = (refreshed || rows) as AnnouncementRow[];
+          rows = (refreshed || rows) as Announcement[];
         }
       }
 
@@ -183,7 +171,7 @@ export default function AnnouncementsPage() {
   };
 
   // Lightweight reminder: schedules a notification 24h before (browser must stay open)
-  const scheduleReminder = (evt: AnnouncementRow) => {
+  const scheduleReminder = (evt: Announcement) => {
     const start = new Date(evt.datetime).getTime();
     if (Number.isNaN(start)) return;
     const reminderAt = start - 24 * 60 * 60 * 1000;
@@ -202,7 +190,7 @@ export default function AnnouncementsPage() {
     window.setTimeout(send, delay);
   };
 
-  const joinEvent = async (evt: AnnouncementRow) => {
+  const joinEvent = async (evt: Announcement) => {
     const { data: auth } = await supabase.auth.getUser();
     const uid = auth?.user?.id;
     if (!uid) return;

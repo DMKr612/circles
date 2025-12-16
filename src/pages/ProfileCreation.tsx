@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { supabase } from "@/lib/supabase"; // adjust path if your client is elsewhere
-import useAuth from "@/hooks/useAuth";
+import { supabase } from "@/lib/supabase";
+import { useAuth } from "@/App";
 
 export default function ProfileCreation() {
   const { user } = useAuth();

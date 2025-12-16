@@ -1,7 +1,3 @@
-// src/lib/constants.ts
-
-export const APP_NAME = "Circles";
-
 export const CATEGORIES = ["All", "Games", "Study", "Outdoors"] as const;
 
 export const GAME_LIST = [
