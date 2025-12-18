@@ -18,12 +18,11 @@ export default function Layout() {
   ];
 
   return (
-    <div className="relative min-h-dvh bg-gradient-to-b from-[#f7f9fb] via-white to-[#eef2ff] text-slate-900">
-      {/* Ambient color washes */}
+    <div className="relative min-h-dvh bg-white text-slate-900">
+      {/* Ambient color washes (kept to the top to avoid a tinted footer) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -top-24 -left-20 h-64 w-64 rounded-full bg-[radial-gradient(circle_at_center,#a5b4fc,transparent_55%)] opacity-60 blur-3xl" />
         <div className="absolute top-[30%] right-[-6rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,#c7d2fe,transparent_55%)] opacity-50 blur-3xl" />
-        <div className="absolute bottom-[-4rem] left-[-2rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,#b8ffec,transparent_55%)] opacity-40 blur-3xl" />
       </div>
 
       {/* Main content wrapper with padding just enough for the nav */}
