@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import type { User } from "@supabase/supabase-js";
-import { Clock3, ShieldCheck, Sparkles, Users2 } from "lucide-react";
+import { Clock3, Download, ShieldCheck, Sparkles, Users2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/App";
 
@@ -10,6 +10,12 @@ type Slide = {
   title: string;
   text: string;
   image: string;
+};
+
+// Minimal type for beforeinstallprompt (not in TS lib)
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
 const SLIDES: Slide[] = [
@@ -50,6 +56,9 @@ export default function Onboarding() {
   const [showEmailForm, setShowEmailForm] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [registeredCount, setRegisteredCount] = useState<number | null>(null);
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(false);
   const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation() as any;
@@ -83,6 +92,37 @@ export default function Onboarding() {
       }
     })();
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    const checkStandalone = () => {
+      const standalone = window.matchMedia?.("(display-mode: standalone)")?.matches || (window.navigator as any)?.standalone;
+      if (standalone) {
+        setIsInstalled(true);
+        setInstallPrompt(null);
+      }
+    };
+
+    const handleBeforeInstall = (e: Event) => {
+      e.preventDefault();
+      setInstallPrompt(e as BeforeInstallPromptEvent);
+    };
+
+    const handleInstalled = () => {
+      setIsInstalled(true);
+      setInstallPrompt(null);
+    };
+
+    checkStandalone();
+    window.addEventListener("beforeinstallprompt", handleBeforeInstall as any);
+    window.addEventListener("appinstalled", handleInstalled);
+    window.addEventListener("visibilitychange", checkStandalone);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstall as any);
+      window.removeEventListener("appinstalled", handleInstalled);
+      window.removeEventListener("visibilitychange", checkStandalone);
+    };
   }, []);
 
   const computeDestination = useCallback(() => {
@@ -248,6 +288,23 @@ export default function Onboarding() {
     }
   }
 
+  const installApp = useCallback(async () => {
+    if (!installPrompt) return;
+    try {
+      setInstalling(true);
+      await installPrompt.prompt();
+      const { outcome } = await installPrompt.userChoice;
+      if (outcome === "accepted") {
+        setIsInstalled(true);
+      }
+    } catch (err) {
+      console.error("Install prompt failed", err);
+    } finally {
+      setInstalling(false);
+      setInstallPrompt(null);
+    }
+  }, [installPrompt]);
+
   return (
     <div
       ref={containerRef}
@@ -372,6 +429,32 @@ export default function Onboarding() {
 
                         {isLast && (
                           <div className="mx-auto mt-6 w-full max-w-sm text-left">
+                            {!isInstalled && (
+                              <div className="mb-4 flex items-center justify-between rounded-xl border border-white/20 bg-white/10 px-4 py-3 shadow-lg shadow-indigo-500/20">
+                                <div className="flex items-start gap-2">
+                                  <Download className="mt-0.5 h-5 w-5 text-emerald-200" />
+                                  <div>
+                                    <p className="font-semibold text-white">Install Circles</p>
+                                    <p className="text-xs text-white/75">
+                                      {installPrompt ? "Add it as a standalone app for quick access." : "In Chrome: tap the address bar + or ⋮ → Install app."}
+                                    </p>
+                                  </div>
+                                </div>
+                                {installPrompt ? (
+                                  <button
+                                    onClick={installApp}
+                                    disabled={installing}
+                                    className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-900 shadow transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-70"
+                                  >
+                                    {installing ? "Installing…" : "Install"}
+                                  </button>
+                                ) : (
+                                  <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white/85 ring-1 ring-white/20">
+                                    Open in Chrome to install
+                                  </span>
+                                )}
+                              </div>
+                            )}
                             {!showEmailForm ? (
                               <>
                                 <div className="grid grid-cols-1 gap-3">
