@@ -81,6 +81,8 @@ export default function Onboarding() {
   useEffect(() => {
     let active = true;
     (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData?.session) return; // skip for logged-out users to avoid RLS 401s
       try {
         const { count, error } = await supabase
           .from("profiles")
