@@ -55,7 +55,7 @@ export default function Onboarding() {
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [showEmailForm, setShowEmailForm] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
-  const [registeredCount, setRegisteredCount] = useState<number | null>(null);
+  const [registeredCount] = useState<number | null>(null);
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installing, setInstalling] = useState(false);
   const [isInstalled, setIsInstalled] = useState(false);
@@ -75,25 +75,6 @@ export default function Onboarding() {
     return () => {
       if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
     };
-  }, []);
-
-  // Fetch how many people have registered to surface a live count
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData?.session) return; // skip for logged-out users to avoid RLS 401s
-      try {
-        const { count, error } = await supabase
-          .from("profiles")
-          .select("user_id", { count: "exact", head: true });
-        if (error) throw error;
-        if (active) setRegisteredCount(count ?? null);
-      } catch (err) {
-        console.error("Failed to fetch registered count", err);
-      }
-    })();
-    return () => { active = false; };
   }, []);
 
   useEffect(() => {
