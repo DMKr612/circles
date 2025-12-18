@@ -290,15 +290,18 @@ export function useMyGroups({ category, search }: Args) {
 
           const { data: polls } = await supabase
             .from("group_polls")
-            .select("group_id")
-            .in("group_id", ids)
-            .eq("status", "open");
+            .select("group_id, status")
+            .in("group_id", ids);
 
-          const map: Record<string, boolean> = {};
-          (polls ?? []).forEach((p: any) => {
-            map[p.group_id] = true;
+          setOpenPolls((prev) => {
+            const next: Record<string, boolean> = { ...prev };
+            // Clear existing flags for the ids we just refreshed
+            ids.forEach((id) => { delete next[id]; });
+            (polls ?? []).forEach((p: any) => {
+              if (p.status === "open") next[p.group_id] = true;
+            });
+            return next;
           });
-          setOpenPolls((prev) => ({ ...prev, ...map }));
         }
       } catch (e: any) {
         setErr(e?.message ?? "Failed to load groups");

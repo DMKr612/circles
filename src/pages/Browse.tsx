@@ -43,6 +43,12 @@ export default function BrowsePage() {
   const [peopleFilter, setPeopleFilter] = useState<"any" | "small" | "medium" | "large">("any");
   const [popularityFilter, setPopularityFilter] = useState<"all" | "5" | "20" | "50">("all");
   const [sortOption, setSortOption] = useState<"popular" | "groups" | "name">("popular");
+  const filtersActive =
+    q.trim().length > 0 ||
+    cat !== "All" ||
+    peopleFilter !== "any" ||
+    popularityFilter !== "all" ||
+    sortOption !== "popular";
 
   // Stats
   const [groupCountByGame, setGroupCountByGame] = useState<Record<string, number>>({});
@@ -99,6 +105,17 @@ export default function BrowsePage() {
     const end = new Date(start.getTime() + (evt.duration_minutes ?? 60) * 60 * 1000);
     const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
     return `${start.toLocaleString(undefined, opts)} – ${end.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  };
+
+  const clearFilters = () => {
+    setQ("");
+    setDebouncedQ("");
+    setCat("All");
+    setPeopleFilter("any");
+    setPopularityFilter("all");
+    setSortOption("popular");
+    setSlide(0);
+    setParams(new URLSearchParams(), { replace: true });
   };
 
   // Debounce search to avoid unnecessary filtering work
@@ -580,29 +597,41 @@ export default function BrowsePage() {
                   </select>
                 </label>
 
-                <div className="flex flex-wrap gap-1 ml-auto">
-                  <button
-                    onClick={() => { setPopularityFilter("50"); setPeopleFilter("large"); }}
-                    className="rounded-full border border-neutral-200 bg-emerald-50 text-emerald-700 px-2.5 py-1 font-semibold hover:border-emerald-200"
-                  >
-                    Big & busy
-                  </button>
-                  <button
-                    onClick={() => { setPeopleFilter("small"); setPopularityFilter("all"); }}
-                    className="rounded-full border border-neutral-200 bg-indigo-50 text-indigo-700 px-2.5 py-1 font-semibold hover:border-indigo-200"
-                  >
-                    Small groups
-                  </button>
-                  <button
-                    onClick={() => { setPeopleFilter("any"); setPopularityFilter("20"); }}
-                    className="rounded-full border border-neutral-200 bg-amber-50 text-amber-700 px-2.5 py-1 font-semibold hover:border-amber-200"
-                  >
-                    Trending
-                  </button>
-                </div>
+              <div className="flex flex-wrap gap-1 ml-auto">
+                <button
+                  onClick={() => { setPopularityFilter("50"); setPeopleFilter("large"); }}
+                  className="rounded-full border border-neutral-200 bg-emerald-50 text-emerald-700 px-2.5 py-1 font-semibold hover:border-emerald-200"
+                >
+                  Big & busy
+                </button>
+                <button
+                  onClick={() => { setPeopleFilter("small"); setPopularityFilter("all"); }}
+                  className="rounded-full border border-neutral-200 bg-indigo-50 text-indigo-700 px-2.5 py-1 font-semibold hover:border-indigo-200"
+                >
+                  Small groups
+                </button>
+                <button
+                  onClick={() => { setPeopleFilter("any"); setPopularityFilter("20"); }}
+                  className="rounded-full border border-neutral-200 bg-amber-50 text-amber-700 px-2.5 py-1 font-semibold hover:border-amber-200"
+                >
+                  Trending
+                </button>
+                <button
+                  onClick={clearFilters}
+                  disabled={!filtersActive}
+                  className={`rounded-full border px-2.5 py-1 font-semibold transition ${
+                    filtersActive
+                      ? "border-neutral-300 bg-white text-neutral-700 hover:border-neutral-400 hover:text-black"
+                      : "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed"
+                  }`}
+                  title="Clear all filters"
+                >
+                  Clear filters
+                </button>
               </div>
             </div>
           </div>
+        </div>
 
           {/* Slides: All vs Nearby */}
           <div className="mb-4 flex items-center gap-2">

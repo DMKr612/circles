@@ -36,49 +36,74 @@ export default function GroupsPage() {
     markGroupRead,
   } = useMyGroups({ category, search });
 
+  const totalUnread = useMemo(
+    () => Object.values(unreadCounts || {}).reduce((sum, n) => sum + (n ?? 0), 0),
+    [unreadCounts]
+  );
+  const totalOpenPolls = useMemo(
+    () => Object.values(openPolls || {}).filter(Boolean).length,
+    [openPolls]
+  );
+
   const pageTitle = "My Groups";
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-8">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">{pageTitle}</h1>
-          {search && (
-            <p className="text-sm text-neutral-600">Filtered by: “{search}”</p>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          <Link to="/browse" className="text-sm underline">
-            Back
-          </Link>
-          <Link
-            to="/create"
-            className="rounded-md bg-emerald-700 px-3 py-1.5 text-sm text-white hover:brightness-110"
-          >
-            New Group
-          </Link>
+    <main className="mx-auto max-w-6xl px-4 py-8 space-y-6">
+      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-emerald-600 via-emerald-500 to-cyan-500 text-white shadow-lg ring-1 ring-emerald-200/60">
+        <div className="absolute right-6 top-6 h-24 w-24 rounded-full bg-white/10 blur-3xl" />
+        <div className="absolute -left-10 -bottom-12 h-32 w-32 rounded-full bg-white/10 blur-3xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-4 px-6 py-6 md:px-8 md:py-8">
+          <div>
+            <p className="text-xs uppercase tracking-[0.25em] text-white/80">{search ? "Filtered View" : "Dashboard"}</p>
+            <h1 className="text-3xl font-black md:text-4xl">{pageTitle}</h1>
+            <p className="mt-2 max-w-2xl text-sm text-white/90">
+              Stay on top of your circles. Track unread chats, open polls, and jump back in quickly.
+            </p>
+            {search && (
+              <p className="mt-2 inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-white/90 ring-1 ring-white/20">
+                Filtered by “{search}”
+              </p>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="rounded-2xl bg-white/15 px-4 py-3 text-left shadow-sm ring-1 ring-white/20">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-white/80">Unread</div>
+              <div className="text-2xl font-bold">{totalUnread}</div>
+            </div>
+            <div className="rounded-2xl bg-white/15 px-4 py-3 text-left shadow-sm ring-1 ring-white/20">
+              <div className="text-[11px] uppercase tracking-[0.18em] text-white/80">Open Polls</div>
+              <div className="text-2xl font-bold">{totalOpenPolls}</div>
+            </div>
+            <Link
+              to="/create"
+              className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-semibold text-emerald-700 shadow-md transition hover:-translate-y-0.5 hover:shadow-lg"
+            >
+              + New Group
+            </Link>
+          </div>
         </div>
       </div>
 
       {/* Results */}
-      <div className="mt-6 rounded-2xl border border-black/10 bg-white/90 p-5 shadow-sm backdrop-blur">
+      <div className="rounded-3xl border border-black/5 bg-white/90 p-5 shadow-xl backdrop-blur">
         {loading && groups.length === 0 ? (
-          <ul className="divide-y divide-black/5">
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 6 }).map((_, i) => (
-              <li
-                key={i}
-                className="rounded-xl border border-black/10 bg-white p-4 shadow-sm"
-              >
-                <div className="h-5 w-48 animate-pulse rounded bg-neutral-200" />
-                <div className="mt-2 h-3 w-5/6 animate-pulse rounded bg-neutral-200" />
-                <div className="mt-1 h-3 w-2/3 animate-pulse rounded bg-neutral-200" />
-                <div className="mt-4 flex gap-2">
-                  <div className="h-8 w-24 animate-pulse rounded bg-neutral-200" />
-                  <div className="h-8 w-28 animate-pulse rounded bg-neutral-200" />
+              <div key={i} className="rounded-2xl border border-black/5 bg-white p-5 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="h-10 w-10 rounded-full bg-neutral-200 animate-pulse" />
+                  <div className="h-6 w-16 rounded-full bg-neutral-200 animate-pulse" />
                 </div>
-              </li>
+                <div className="mt-4 h-5 w-40 rounded bg-neutral-200 animate-pulse" />
+                <div className="mt-2 h-3 w-5/6 rounded bg-neutral-200 animate-pulse" />
+                <div className="mt-6 flex gap-2">
+                  <div className="h-7 w-20 rounded-full bg-neutral-200 animate-pulse" />
+                  <div className="h-7 w-16 rounded-full bg-neutral-200 animate-pulse" />
+                  <div className="h-7 w-12 rounded-full bg-neutral-200 animate-pulse" />
+                </div>
+              </div>
             ))}
-          </ul>
+          </div>
         ) : err ? (
           <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
             {err}
@@ -117,93 +142,87 @@ export default function GroupsPage() {
           </div>
         ) : (
           <>
-            <ul className="divide-y divide-black/5">
-              {groups.map((g) => (
-                <li key={g.id} className="group py-1 first:pt-0 last:pb-0">
-                  <div className="flex items-center">
-                    <Link
-                      to={`/group/${g.id}`}
-                      onClick={() => markGroupRead(g.id)}
-                      className="block flex-1 rounded-lg px-2 py-2 hover:bg-black/[0.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 select-none items-center justify-center rounded-full border border-black/10 bg-neutral-100 text-sm font-semibold text-neutral-700">
-                          {(g.title || g.game || "G").slice(0, 1).toUpperCase()}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <div className="truncate text-base font-medium text-neutral-900">
-                              {g.title ?? "Untitled group"}
-                            </div>
-                            {g.host_id && g.host_id === me && (
-                              <span className="shrink-0 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-800">
-                                Host
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-0.5 line-clamp-1 text-xs text-neutral-600">
-                            {g.description ?? "No description"}
-                          </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-neutral-700">
-                            {g.category && (
-                              <span className="rounded-full border border-black/10 bg-neutral-50 px-2 py-0.5">
-                                #{g.category}
-                              </span>
-                            )}
-                            {g.game && (
-                              <span className="rounded-full border border-black/10 bg-neutral-50 px-2 py-0.5">
-                                {g.game}
-                              </span>
-                            )}
-                            {g.city && (
-                              <span className="rounded-full border border-black/10 bg-neutral-50 px-2 py-0.5">
-                                {g.city}
-                              </span>
-                            )}
-                            {g.capacity && (
-                              <span className="rounded-full border border-black/10 bg-neutral-50 px-2 py-0.5">
-                                {g.capacity} slots
-                              </span>
-                            )}
-                            {g.created_at && (
-                              <span className="rounded-full border border-black/10 bg-neutral-50 px-2 py-0.5">
-                                {fmtDate(g.created_at)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="ml-1 flex items-center gap-1">
-                          {openPolls[g.id] && (
-                            <span
-                              className="inline-flex h-6 items-center justify-center rounded-full bg-blue-600 px-2 text-xs font-semibold text-white"
-                              title="Open voting"
-                              aria-label="Open voting"
-                            >
-                              Vote
-                            </span>
-                          )}
-                          {typeof unreadCounts[g.id] === "number" && unreadCounts[g.id]! > 0 && (
-                            <span
-                              className="inline-flex h-6 min-w-[1.5rem] items-center justify-center rounded-full bg-emerald-600 px-1 text-xs font-semibold text-white"
-                              title={`${unreadCounts[g.id]} new messages`}
-                              aria-label={`${unreadCounts[g.id]} new messages`}
-                            >
-                              {unreadCounts[g.id] > 99 ? "99+" : unreadCounts[g.id]}
-                            </span>
-                          )}
-                        </div>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {groups.map((g) => {
+                const unread = unreadCounts[g.id] ?? 0;
+                const hasPoll = !!openPolls[g.id];
+                const initial = (g.title || g.game || "G").slice(0, 1).toUpperCase();
+                return (
+                  <Link
+                    key={g.id}
+                    to={`/group/${g.id}`}
+                    onClick={() => markGroupRead(g.id)}
+                    className="group relative flex flex-col rounded-2xl border border-black/5 bg-white/80 p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="grid h-12 w-12 place-items-center rounded-full bg-gradient-to-br from-emerald-50 to-cyan-50 text-base font-bold text-emerald-700 ring-1 ring-emerald-100">
+                        {initial}
                       </div>
-                    </Link>
-                  </div>
-                </li>
-              ))}
-            </ul>
+                      <div className="flex items-center gap-2">
+                        {hasPoll && (
+                          <span className="rounded-full bg-blue-600/90 px-2.5 py-1 text-[11px] font-bold text-white shadow-sm">
+                            Open poll
+                          </span>
+                        )}
+                        {unread > 0 && (
+                          <span className="rounded-full bg-emerald-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-sm">
+                            {unread > 99 ? "99+" : unread} new
+                          </span>
+                        )}
+                        {g.host_id && g.host_id === me && (
+                          <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800">
+                            Host
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 space-y-2">
+                      <div className="line-clamp-1 text-lg font-semibold text-neutral-900">
+                        {g.title ?? "Untitled group"}
+                      </div>
+                      <p className="line-clamp-2 text-sm text-neutral-600">
+                        {g.description ?? "No description added yet."}
+                      </p>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] font-medium text-neutral-700">
+                      {g.category && (
+                        <span className="rounded-full border border-black/10 bg-neutral-50 px-2.5 py-1">#{g.category}</span>
+                      )}
+                      {g.game && (
+                        <span className="rounded-full border border-black/10 bg-neutral-50 px-2.5 py-1">{g.game}</span>
+                      )}
+                      {g.city && (
+                        <span className="rounded-full border border-black/10 bg-neutral-50 px-2.5 py-1">{g.city}</span>
+                      )}
+                    </div>
+
+                    <div className="mt-4 flex items-center justify-between text-xs text-neutral-500">
+                      <div className="flex items-center gap-3">
+                        {g.capacity ? (
+                          <span className="rounded-lg bg-neutral-100 px-2 py-1 font-semibold text-neutral-700">
+                            {g.capacity} slots
+                          </span>
+                        ) : (
+                          <span className="rounded-lg bg-neutral-100 px-2 py-1 font-semibold text-neutral-700">
+                            Open capacity
+                          </span>
+                        )}
+                        {g.created_at && <span>Created {fmtDate(g.created_at)}</span>}
+                      </div>
+                      <span className="text-emerald-700 font-semibold group-hover:underline">View</span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
 
             {hasMore && (
               <div className="mt-5 border-t border-black/5 p-4 text-center">
                 <button
                   onClick={loadMore}
-                  className="inline-flex items-center gap-2 rounded-md border border-black/10 bg-white px-3 py-1.5 text-sm hover:bg-black/[0.04]"
+                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-neutral-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-70"
                   disabled={paging}
                 >
                   {paging ? (

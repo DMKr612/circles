@@ -49,7 +49,6 @@ export default function Onboarding() {
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [showEmailForm, setShowEmailForm] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
-  const [redirecting, setRedirecting] = useState(false);
   const [registeredCount, setRegisteredCount] = useState<number | null>(null);
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -98,7 +97,6 @@ export default function Onboarding() {
   const queueProfileRedirect = useCallback((dest: string) => {
     if (hasQueuedRedirectRef.current) return;
     hasQueuedRedirectRef.current = true;
-    setRedirecting(true);
 
     if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
     redirectTimerRef.current = window.setTimeout(() => {
@@ -253,7 +251,7 @@ export default function Onboarding() {
   return (
     <div
       ref={containerRef}
-      className="relative min-h-dvh w-full overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white"
+      className="relative min-h-dvh w-full overflow-hidden bg-gradient-to-br from-slate-900 via-slate-850 to-slate-950 text-white"
       aria-label="Onboarding"
     >
       <div className="pointer-events-none absolute inset-0">
@@ -298,10 +296,10 @@ export default function Onboarding() {
               <Clock3 className="h-4 w-4 text-emerald-200" />
               {index + 1} / {SLIDES.length} — guided setup
             </div>
-            <h1 className="text-4xl font-black leading-tight sm:text-5xl">
+            <h1 className="text-4xl font-black leading-tight sm:text-5xl text-white">
               Build serious circles with people who follow through.
             </h1>
-            <p className="max-w-2xl text-lg text-white/80">
+            <p className="max-w-2xl text-lg text-white/90">
               Curated pods, structured updates, and clear privacy controls. Everything is tuned for reliable meetups and respectful conversation.
             </p>
 
@@ -312,11 +310,11 @@ export default function Onboarding() {
                 { icon: Sparkles, title: "Actionable threads", desc: "Polls, check-ins, and agendas instead of endless scrolling." },
                 { icon: Clock3, title: "Designed for calm", desc: "Smart pacing, quiet hours, and dependable reminders." },
               ].map((item) => (
-                <div key={item.title} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-sm">
+                <div key={item.title} className="flex items-start gap-3 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.18)] backdrop-blur-md">
                   <item.icon className="mt-1 h-5 w-5 text-emerald-200" />
                   <div>
                     <p className="font-semibold text-white">{item.title}</p>
-                    <p className="text-sm text-white/70">{item.desc}</p>
+                    <p className="text-sm text-white/85">{item.desc}</p>
                   </div>
                 </div>
               ))}
@@ -412,14 +410,14 @@ export default function Onboarding() {
                                   placeholder="you@example.com"
                                   value={email}
                                   onChange={(e) => setEmail(e.target.value)}
-                                  className="w-full rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-white placeholder-white/70 outline-none transition focus:border-white/30 focus:bg-white/15"
+                                  className="w-full rounded-xl border border-white/20 bg-white/15 px-3 py-3 text-white placeholder-white/80 outline-none transition focus:border-white/40 focus:bg-white/25"
                                 />
                                 <input
                                   type="password"
                                   placeholder="Password (min 6)"
                                   value={password}
                                   onChange={(e) => setPassword(e.target.value)}
-                                  className="w-full rounded-xl border border-white/15 bg-white/10 px-3 py-3 text-white placeholder-white/70 outline-none transition focus:border-white/30 focus:bg-white/15"
+                                  className="w-full rounded-xl border border-white/20 bg-white/15 px-3 py-3 text-white placeholder-white/80 outline-none transition focus:border-white/40 focus:bg-white/25"
                                 />
                                 <button
                                   type="submit"
@@ -453,9 +451,9 @@ export default function Onboarding() {
                 </div>
 
                 <div className={`${isLast && showEmailForm ? "hidden" : ""} space-y-3`}>
-                  <div className="h-1.5 w-full rounded-full bg-white/15 ring-1 ring-white/10">
+                  <div className="h-1.5 w-full rounded-full bg-white/20 ring-1 ring-white/10">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-indigo-200 via-fuchsia-200 to-cyan-200 transition-all"
+                      className="h-full rounded-full bg-gradient-to-r from-indigo-100 via-fuchsia-100 to-cyan-100 transition-all"
                       style={{ width: `${progressPct}%` }}
                       aria-hidden
                     />
@@ -500,39 +498,6 @@ export default function Onboarding() {
         </div>
       </div>
 
-      {redirecting && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-6 backdrop-blur-md">
-          <div className="relative w-full max-w-sm overflow-hidden rounded-3xl border border-white/10 bg-slate-900/70 text-white shadow-2xl backdrop-blur-lg ring-1 ring-white/10">
-            <video
-              className="absolute inset-0 h-full w-full object-cover opacity-70"
-              src={`${import.meta.env.BASE_URL}loading.mp4`}
-              autoPlay
-              loop
-              muted
-              playsInline
-            />
-            <div className="relative flex items-center gap-3 border-b border-white/10 bg-slate-900/70 px-5 py-4">
-              <div className="grid h-10 w-10 place-items-center rounded-full bg-white/10 text-cyan-200">
-                <Clock3 className="h-5 w-5 animate-spin" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-white">Setting up your profile</p>
-                <p className="text-xs text-white/80">Almost there—routing you to your profile.</p>
-              </div>
-            </div>
-            <div className="relative px-5 py-5 bg-slate-900/80">
-              <div className="h-2 w-full overflow-hidden rounded-full bg-white/10 ring-1 ring-white/10">
-                <motion.div
-                  initial={{ width: "10%" }}
-                  animate={{ width: "100%" }}
-                  transition={{ duration: 2, ease: [0.22, 1, 0.36, 1] }}
-                  className="h-full rounded-full bg-gradient-to-r from-cyan-300 via-sky-400 to-indigo-400"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
