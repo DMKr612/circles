@@ -337,7 +337,7 @@ export default function Chats() {
 
   // Component: The Chat List (Sidebar)
   const ChatList = () => (
-    <div className={`flex flex-col h-full bg-white border-r border-neutral-200 ${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96`}>
+    <div className={`flex flex-col min-h-[calc(100dvh-140px)] bg-white border-r border-neutral-200 ${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96`}>
       <div className="p-5 border-b border-neutral-100 bg-white/80 backdrop-blur-md sticky top-0 z-10">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">Chats</h1>
@@ -622,7 +622,7 @@ export default function Chats() {
   // Main Layout
   return (
     <>
-      <div className="flex h-[calc(100vh-64px)] w-full overflow-hidden bg-white fixed top-0 left-0">
+      <div className="flex w-full min-h-dvh overflow-hidden bg-white pb-[calc(96px+env(safe-area-inset-bottom))]">
         <ChatList />
         <ActiveChat />
       </div>
