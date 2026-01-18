@@ -4,7 +4,9 @@ import { Link, useNavigate, useParams, useLocation } from "react-router-dom";
 import { useProfile } from "../hooks/useProfile";
 import { useAuth } from "@/App";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
-import { X, List } from "lucide-react";
+import PersonalityQuizModal from "@/components/PersonalityQuizModal";
+import UserCard from "@/components/UserCard";
+import { X, List, Sparkles, Battery, Star } from "lucide-react";
 
 // Demo stubs for toast calls (prevents red lines if Toaster is removed)
 const success = (m?: string) => console.log("[ok]", m || "");
@@ -144,6 +146,25 @@ export default function Profile() {
       setGroupsJoined(profile.groups_joined || 0);
     }
   }, [profile]);
+
+  useEffect(() => {
+    if (!profile) return;
+    setPersonalityTraits((profile as any).personality_traits ?? null);
+    setReputationScore(profile.reputation_score ?? 0);
+    if (typeof (profile as any).social_battery === "number") {
+      setSocialBattery((profile as any).social_battery);
+    }
+  }, [profile]);
+
+  useEffect(() => {
+    if (!uid) return;
+    (async () => {
+      const { data } = await supabase.rpc("refresh_reputation_score", { p_user: uid });
+      if (typeof data === "number") {
+        setReputationScore(data);
+      }
+    })();
+  }, [uid]);
 
   // Recalculate groupsCreated based on groups where I am creator or host
   useEffect(() => {
@@ -304,6 +325,24 @@ export default function Profile() {
 
   const viewingOther = !!routeUserId && routeUserId !== uid;
 
+  // Load viewed profile meta when looking at someone else
+  useEffect(() => {
+    if (!viewingOther || !routeUserId) return;
+    (async () => {
+      const { data } = await supabase
+        .from("profiles")
+        .select("name, avatar_url, city, reputation_score, personality_traits")
+        .eq("user_id", routeUserId)
+        .maybeSingle();
+      if (!data) return;
+      setViewName((data as any)?.name ?? "");
+      setViewAvatar((data as any)?.avatar_url ?? null);
+      setViewCity((data as any)?.city ?? null);
+      setViewReputationScore(Number((data as any)?.reputation_score ?? 0));
+      setViewPersonality((data as any)?.personality_traits ?? null);
+    })();
+  }, [viewingOther, routeUserId]);
+
   // --- Settings modal state ---
   const [sName, setSName] = useState<string>("");
   const [sCity, setSCity] = useState<string>("");
@@ -376,6 +415,15 @@ export default function Profile() {
   const [pairNextAllowedAt, setPairNextAllowedAt] = useState<string | null>(null);
   const [pairEditUsed, setPairEditUsed] = useState<boolean>(false);
   const [viewFriendStatus, setViewFriendStatus] = useState<'none' | 'pending_in' | 'pending_out' | 'accepted' | 'blocked'>('none');
+  const [reputationScore, setReputationScore] = useState<number>(0);
+  const [personalityTraits, setPersonalityTraits] = useState<any | null>(null);
+  const [socialBattery, setSocialBattery] = useState<number>(100);
+  const [batterySaving, setBatterySaving] = useState(false);
+  const batterySaveRef = useRef<number | null>(null);
+  const [quizOpen, setQuizOpen] = useState(false);
+  const [viewReputationScore, setViewReputationScore] = useState<number>(0);
+  const [viewPersonality, setViewPersonality] = useState<any | null>(null);
+  const [viewCity, setViewCity] = useState<string | null>(null);
  
   const [otherUserGamesTotal, setOtherUserGamesTotal] = useState<number>(0);
   const [theirFriendCount, setTheirFriendCount] = useState<number>(0);
@@ -390,8 +438,9 @@ export default function Profile() {
   // --- Derived State ---
   const headerName = viewingOther ? (viewName || (routeUserId ? routeUserId.slice(0,6) : '')) : (profile?.name || user?.email || '');
   const headerAvatar = viewingOther ? viewAvatar : profile?.avatar_url;
-  const headerRatingAvg = viewingOther ? viewRatingAvg : profile?.rating_avg;
-  const headerRatingCount = viewingOther ? viewRatingCount : profile?.rating_count;
+  const headerReputationScore = viewingOther ? viewReputationScore : reputationScore;
+  const headerStars = Math.round(((headerReputationScore || 0) / 20) * 10) / 10;
+  const headerPersonality = viewingOther ? viewPersonality : personalityTraits;
   const headerInitials = (headerName || '?').slice(0, 2).toUpperCase() ?? '?';
 
   const notifCount = useMemo(
@@ -839,7 +888,24 @@ export default function Profile() {
     } catch {}
     window.location.replace(base);
   }
- 
+
+  const updateBattery = (val: number) => {
+    setSocialBattery(val);
+    if (batterySaveRef.current) {
+      window.clearTimeout(batterySaveRef.current);
+    }
+    batterySaveRef.current = window.setTimeout(async () => {
+      setBatterySaving(true);
+      try {
+        await supabase.rpc("update_social_battery", { p_value: val });
+      } catch (e) {
+        console.warn("Failed to update battery", e);
+      } finally {
+        setBatterySaving(false);
+      }
+    }, 350) as unknown as number;
+  };
+
   // --- Render ---
 
   if (isLoading) {
@@ -866,23 +932,21 @@ export default function Profile() {
             </div>
             <div className="flex-1">
               <div className="text-lg font-semibold text-neutral-900">{headerName}</div>
-              <div
-                className="mt-1 flex items-center gap-2 text-sm text-neutral-800"
-                title={`${(headerRatingAvg ?? 0).toFixed(1)} / 6 from ${headerRatingCount ?? 0} ratings`}
-              >
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-neutral-800">
                 <span className="inline-flex items-center gap-1 text-lg leading-none">
-                  {Array.from({ length: 6 }).map((_, i) => (
-                    <span key={i}>
-                      {i < Math.round(headerRatingAvg || 0) ? '★' : '☆'}
-                    </span>
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <span key={i}>{i + 1 <= Math.floor(headerStars) ? "★" : "☆"}</span>
                   ))}
                 </span>
-                <span className="text-xs font-semibold text-neutral-700">
-                  {(headerRatingAvg || 0).toFixed(1)}/6
-                </span>
-                <span className="text-[11px] text-neutral-500">
-                  • {headerRatingCount || 0} rating{(headerRatingCount || 0) === 1 ? "" : "s"}
-                </span>
+                <span className="text-xs font-semibold text-neutral-700">{headerStars.toFixed(1)} / 5 trust</span>
+                <span className="text-[11px] text-neutral-500">• {Math.round(headerReputationScore || 0)} pts</span>
+                {headerPersonality && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-800 ring-1 ring-emerald-100">
+                    <Sparkles className="h-3 w-3" />
+                    {(headerPersonality as any)?.badge?.name || "Social Style"}
+                    {headerPersonality?.summary ? ` • ${headerPersonality.summary}` : ""}
+                  </span>
+                )}
                 {viewingOther && (
                   <button onClick={() => openProfileView(routeUserId!)} className="text-xs text-emerald-700 hover:underline">Rate</button>
                 )}
@@ -896,6 +960,17 @@ export default function Profile() {
                     Settings
                   </button>
                   <button
+                    onClick={() => {
+                      if (!uid) return;
+                      localStorage.removeItem(`circles_first_steps_${uid}`);
+                      localStorage.removeItem(`circles_first_steps_collapsed_${uid}`);
+                      window.dispatchEvent(new Event("circles:show-checklist"));
+                    }}
+                    className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-700 hover:bg-emerald-100"
+                  >
+                    Show first steps
+                  </button>
+                  <button
                     onClick={logout}
                     className="rounded-md border border-red-200 bg-red-50 px-3 py-1.5 text-sm font-semibold text-red-700 hover:bg-red-100"
                   >
@@ -905,6 +980,81 @@ export default function Profile() {
               )}
             </div>
           </div>
+
+          {!viewingOther && (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4 shadow-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Social Style</div>
+                    <div className="text-lg font-bold text-neutral-900">
+                      {personalityTraits ? (personalityTraits?.badge?.name || "Verified Social Style") : "Complete your profile"}
+                    </div>
+                    <p className="text-sm text-neutral-600">
+                      {personalityTraits
+                        ? personalityTraits?.summary || "Your Social Style is visible on your public card."
+                        : "Discover your Social Style and boost your Rating by 20 points!"}
+                    </p>
+                  </div>
+                  <Sparkles className="h-5 w-5 text-emerald-500" />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-emerald-800 ring-1 ring-emerald-100">
+                    <Sparkles className="h-3 w-3" /> +20 rating boost
+                  </span>
+                  {personalityTraits?.summary && (
+                    <span className="text-xs text-neutral-600">Tag: {personalityTraits.summary}</span>
+                  )}
+                </div>
+                {personalityTraits && (
+                  <div className="mt-3">
+                    <UserCard
+                      name={headerName}
+                      city={profile?.city}
+                      avatarUrl={headerAvatar || undefined}
+                      reputationScore={reputationScore}
+                      personalityTraits={personalityTraits}
+                      subtitle="Public preview"
+                    />
+                  </div>
+                )}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    onClick={() => setQuizOpen(true)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700"
+                  >
+                    {personalityTraits ? "Retake quiz" : "Take the 2-minute quiz"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-[0.14em] text-neutral-600">Social Battery</div>
+                    <div className="text-sm font-semibold text-neutral-900">Private slider for your energy</div>
+                    <p className="text-xs text-neutral-600">Only you (and admin dashboard) can see this.</p>
+                  </div>
+                  <Battery className="h-5 w-5 text-emerald-600" />
+                </div>
+                <div className="mt-3 flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={socialBattery}
+                    onChange={(e) => updateBattery(Number(e.target.value))}
+                    className="w-full accent-emerald-600"
+                  />
+                  <div className="text-sm font-bold text-neutral-900">{socialBattery}%</div>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-[11px] text-neutral-500">
+                  <span>Private to you</span>
+                  {batterySaving ? <span>Saving…</span> : <span>Auto-saved</span>}
+                </div>
+              </div>
+            </div>
+          )}
           {/* --- Stats Section --- */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
@@ -1194,6 +1344,16 @@ export default function Profile() {
           </form>
         </div>
       )}
+
+      <PersonalityQuizModal
+        open={quizOpen}
+        onClose={() => setQuizOpen(false)}
+        currentScore={reputationScore}
+        onCompleted={({ personality_traits, reputation_score }) => {
+          setPersonalityTraits(personality_traits);
+          setReputationScore(reputation_score);
+        }}
+      />
 
       {/* --- View Other Profile Modal --- */}
       <ViewOtherProfileModal 

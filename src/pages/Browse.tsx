@@ -628,10 +628,14 @@ export default function BrowsePage() {
                 >
                   Clear filters
                 </button>
-              </div>
             </div>
           </div>
         </div>
+
+        <p className="text-sm text-neutral-600">
+          Find active circles near you right now. Join one or start your own and meet this week.
+        </p>
+      </div>
 
           {/* Slides: All vs Nearby */}
           <div className="mb-4 flex items-center gap-2">

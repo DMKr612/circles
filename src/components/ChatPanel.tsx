@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Message } from "@/types";
 import { useAuth } from "@/App";
@@ -70,7 +70,13 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const navigate = useNavigate();
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    const el = listRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior });
+  }, []);
 
   // Auth hook for user info
   const { user: authUser } = useAuth();
@@ -114,6 +120,13 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       supabase.removeChannel(channel);
     };
   }, [groupId, me]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.matchMedia("(min-width: 768px)").matches) return;
+    const id = requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(id);
+  }, [groupId]);
 
   // load messages + profiles + reactions + reads
   useEffect(() => {
@@ -182,7 +195,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       const arr = (data ?? []) as Message[];
       setMsgs(arr);
       setLoading(false);
-      setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }), 0);
+      setTimeout(() => scrollToBottom("smooth"), 0);
 
       const userIds = Array.from(new Set(arr.map(m => m.user_id)));
       await fetchMissingProfiles(userIds);
@@ -327,8 +340,8 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [msgs.length]);
+    scrollToBottom("smooth");
+  }, [msgs.length, scrollToBottom]);
 
   // realtime
   useEffect(() => {
@@ -372,7 +385,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
           const el = listRef.current; if (!el) return true;
           return el.scrollHeight - el.scrollTop - el.clientHeight < 200;
         })();
-        if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+        if (nearBottom) scrollToBottom("smooth");
       }
     ).on("postgres_changes",
       { event: "INSERT", schema: "public", table: "group_message_reactions", filter: `group_id=eq.${groupId}` },
@@ -549,7 +562,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       attachments: []
     };
     setMsgs(prev => [...prev, phantom]);
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    scrollToBottom("smooth");
     setInput("");
     setReplyTo(null);
 
@@ -593,7 +606,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       alert(error.message);
       return;
     }
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    scrollToBottom("smooth");
   };
 
   useEffect(() => {
@@ -743,7 +756,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
   // --- Main render ---
   return (
-    <div className="relative flex h-full w-full flex-col overflow-hidden bg-white">
+    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-white">
       
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between border-b border-neutral-100 bg-white/80 px-4 py-3 backdrop-blur-md z-10">
@@ -817,10 +830,10 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       )}
 
       {/* Messages Area */}
-      <div className="flex-1 overflow-hidden bg-white">
+      <div className="flex-1 min-h-0 overflow-hidden bg-white">
         <div
           ref={listRef}
-          className="h-full overflow-y-auto p-4 space-y-6"
+          className="h-full min-h-0 overflow-y-auto p-4 space-y-6"
           onDrop={onDrop}
           onDragOver={(e)=>e.preventDefault()}
           onClick={()=>setMenuFor(null)}
@@ -1050,11 +1063,11 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
           
           <div className="relative flex-1">
             <textarea
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
               onPaste={onPaste}
-              autoFocus
               placeholder="Type a message..."
               rows={1}
               className="w-full resize-none rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 text-sm text-neutral-900 placeholder-neutral-400 focus:border-neutral-300 focus:bg-white focus:outline-none focus:ring-0 max-h-32 transition-all"

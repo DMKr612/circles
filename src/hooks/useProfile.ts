@@ -6,6 +6,9 @@ export type ProfileData = {
   name: string;
   avatar_url: string | null;
   city: string | null;
+  personality_traits: any | null;
+  social_battery: number | null;
+  reputation_score: number;
   rating_avg: number;
   rating_count: number;
   groups_created: number;
@@ -57,6 +60,9 @@ export function useProfile(userId: string | null) {
         name: pData.name || "",
         avatar_url: pData.avatar_url,
         city: pData.city,
+        personality_traits: pData.personality_traits ?? null,
+        social_battery: typeof pData.social_battery === "number" ? pData.social_battery : null,
+        reputation_score: pData.reputation_score || 0,
         rating_avg: pData.rating_avg || 0,
         rating_count: pData.rating_count || 0,
         groups_created: created.count || 0,

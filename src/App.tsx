@@ -41,6 +41,7 @@ const Chats = lazy(() => import("./pages/Chats"));
 const Legal = lazy(() => import("./pages/Legal"));
 const AuthCallback = lazy(() => import("./pages/AuthCallback"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 
 /* =========================
    Auth (single source)
@@ -230,6 +231,7 @@ export default function App() {
                   <Route path="/groups/game/:game" element={<GroupsByGame />} />
                   <Route path="/groups/mine" element={<MyGroups />} />
                   <Route path="/chats" element={<Chats />} />
+                  <Route path="/admin/dashboard" element={<AdminDashboard />} />
                 </Route>
 
                 <Route path="/groups/:id" element={<GroupRedirect />} />

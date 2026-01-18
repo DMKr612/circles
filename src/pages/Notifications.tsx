@@ -654,6 +654,9 @@ export default function NotificationsPage() {
           Calendar
         </button>
       </div>
+      <p className="mb-6 text-sm text-neutral-600">
+        Things to respond to today: new polls, announcements, and mentions that need your attention.
+      </p>
 
       {announcements.length > 0 && (
         <div className="mb-8 space-y-3">

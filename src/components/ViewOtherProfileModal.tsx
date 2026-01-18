@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { Users, MessageSquare, UserPlus, UserCheck, UserMinus, X, AlertTriangle, Unlock } from "lucide-react";
+import UserCard from "./UserCard";
 import { useNavigate } from "react-router-dom";
 
 const toast = (msg: string) => alert(msg);
@@ -22,6 +23,9 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
   const [viewAllowRatings, setViewAllowRatings] = useState<boolean>(true);
   const [viewRatingAvg, setViewRatingAvg] = useState<number>(0);
   const [viewRatingCount, setViewRatingCount] = useState<number>(0);
+  const [viewReputationScore, setViewReputationScore] = useState<number>(0);
+  const [viewPersonality, setViewPersonality] = useState<any | null>(null);
+  const [viewCity, setViewCity] = useState<string | null>(null);
 
   const [mutualGroupsCount, setMutualGroupsCount] = useState<number>(0);
   const [mutualGroupNames, setMutualGroupNames] = useState<string[]>([]);
@@ -53,7 +57,7 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
     async function loadData() {
       const { data: prof } = await supabase
         .from("profiles")
-        .select("name,avatar_url,allow_ratings,rating_avg,rating_count")
+        .select("name,avatar_url,allow_ratings,rating_avg,rating_count,reputation_score,personality_traits,city")
         .eq("user_id", viewUserId)
         .maybeSingle();
 
@@ -62,6 +66,9 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
       setViewAllowRatings(Boolean((prof as any)?.allow_ratings ?? true));
       setViewRatingAvg(Number((prof as any)?.rating_avg ?? 0));
       setViewRatingCount(Number((prof as any)?.rating_count ?? 0));
+      setViewReputationScore(Number((prof as any)?.reputation_score ?? 0));
+      setViewPersonality((prof as any)?.personality_traits ?? null);
+      setViewCity((prof as any)?.city ?? null);
 
       const { data: pair } = await supabase
         .from('rating_pairs')
@@ -221,17 +228,15 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
           <X className="h-5 w-5" />
         </button>
 
-        <div className="flex flex-col items-center mb-6">
-          <div className="h-24 w-24 rounded-full bg-neutral-200 overflow-hidden shadow-sm">
-            {viewAvatar ? (
-              <img src={viewAvatar} alt="Avatar" className="h-full w-full object-cover" />
-            ) : (
-              <div className="h-full w-full flex items-center justify-center text-3xl font-bold text-neutral-500">
-                {viewName.slice(0,1).toUpperCase()}
-              </div>
-            )}
-          </div>
-          <h2 className="text-xl font-bold mt-3">{viewName}</h2>
+        <div className="mb-4">
+          <UserCard
+            name={viewName || "User"}
+            city={viewCity}
+            avatarUrl={viewAvatar || undefined}
+            reputationScore={viewReputationScore}
+            personalityTraits={viewPersonality}
+            subtitle={viewAllowRatings ? undefined : "Ratings disabled"}
+          />
         </div>
 
         <div className="flex gap-3 mb-6">

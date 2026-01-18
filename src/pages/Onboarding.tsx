@@ -20,33 +20,25 @@ type BeforeInstallPromptEvent = Event & {
 
 const SLIDES: Slide[] = [
   {
-    title: "Welcome to Circles",
-    text: "Create and join micro-groups for games, study, and local meetups.",
+    title: "Create a private circle",
+    text: "Spin up a small group (max 7 people) and invite with a code.",
     image: `${import.meta.env.BASE_URL}image2.png`,
   },
   {
-    title: "Find Your People",
-    text: "Match by interests. See active circles. Join in two taps.",
+    title: "Plan real meetups",
+    text: "Schedule gatherings, vote on plans, and lock times everyone agrees on.",
     image: `${import.meta.env.BASE_URL}image3.png`,
   },
   {
-    title: "Chat & Organize",
-    text: "Lightweight DMs, clean group chats, quick polls and events.",
-    image: `${import.meta.env.BASE_URL}image.png`,
-  },
-  {
-    title: "Privacy First",
-    text: "You choose what to share. RLS-secured backend powered by Supabase.",
-    image: `${import.meta.env.BASE_URL}image4.png`,
-  },
-  {
-    title: "Join Circles Now",
-    text: "Sign in to start connecting with others!",
+    title: "Signal, not noise",
+    text: "No endless feed. Just chats, polls, and reminders that keep your group moving.",
     image: `${import.meta.env.BASE_URL}image5.png`,
   },
 ];
 
 export default function Onboarding() {
+  const { user } = useAuth();
+  const isLoggedIn = !!user;
   const [index, setIndex] = useState(0);
   const [imgOk, setImgOk] = useState<boolean | null>(null);
   const [email, setEmail] = useState("");
@@ -59,7 +51,6 @@ export default function Onboarding() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installing, setInstalling] = useState(false);
   const [isInstalled, setIsInstalled] = useState(false);
-  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation() as any;
   const prefersReducedMotion = useReducedMotion();
@@ -172,12 +163,7 @@ export default function Onboarding() {
   }
 
   function next() {
-    if (isLast) {
-      // stay on the last slide and show auth options instead of navigating away
-      setShowEmailForm(true);
-    } else {
-      setIndex((i) => Math.min(i + 1, SLIDES.length - 1));
-    }
+    setIndex((i) => Math.min(i + 1, SLIDES.length - 1));
   }
 
   function back() {
@@ -316,14 +302,14 @@ export default function Onboarding() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <span className="hidden md:inline-flex items-center gap-2 rounded-full bg-white/5 px-3 py-1 text-xs font-semibold text-white/80 ring-1 ring-white/10">
               <ShieldCheck className="h-4 w-4 text-emerald-200" />
-              Privacy-first by design
+              Only people you invite can see your data
             </span>
             <button
               onClick={skip}
-              className="rounded-full border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:border-white/25 hover:bg-white/15"
+              className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900 shadow-lg shadow-emerald-500/20 transition hover:-translate-y-0.5 hover:shadow-xl"
             >
               Skip tour
             </button>
@@ -337,10 +323,10 @@ export default function Onboarding() {
               {index + 1} / {SLIDES.length} — guided setup
             </div>
             <h1 className="text-4xl font-black leading-tight sm:text-5xl text-white">
-              Build serious circles with people who follow through.
+              Get into a circle fast.
             </h1>
             <p className="max-w-2xl text-lg text-white/90">
-              Curated pods, structured updates, and clear privacy controls. Everything is tuned for reliable meetups and respectful conversation.
+              Create a group, pick a time, and meet the same week. No noise, just the updates your circle needs.
             </p>
 
             <div className="grid gap-3 sm:grid-cols-2">
@@ -410,107 +396,105 @@ export default function Onboarding() {
                         <h1 className="text-3xl font-extrabold">{SLIDES[index].title}</h1>
                         <p className="text-base/7 text-white/80">{SLIDES[index].text}</p>
 
-                        {isLast && (
-                          <div className="mx-auto mt-6 w-full max-w-sm text-left">
-                            {!isInstalled && (
-                              <div className="mb-4 flex items-center justify-between rounded-xl border border-white/20 bg-white/10 px-4 py-3 shadow-lg shadow-indigo-500/20">
-                                <div className="flex items-start gap-2">
-                                  <Download className="mt-0.5 h-5 w-5 text-emerald-200" />
-                                  <div>
-                                    <p className="font-semibold text-white">Install Circles</p>
-                                    <p className="text-xs text-white/75">
-                                      {installPrompt ? "Add it as a standalone app for quick access." : "In Chrome: tap the address bar + or ⋮ → Install app."}
-                                    </p>
-                                  </div>
+                        <div className="mx-auto mt-6 w-full max-w-sm text-left">
+                          {!isInstalled && isLoggedIn && (
+                            <div className="mb-4 flex items-center justify-between rounded-xl border border-white/20 bg-white/10 px-4 py-3 shadow-lg shadow-indigo-500/20">
+                              <div className="flex items-start gap-2">
+                                <Download className="mt-0.5 h-5 w-5 text-emerald-200" />
+                                <div>
+                                  <p className="font-semibold text-white">Install Circles</p>
+                                  <p className="text-xs text-white/75">
+                                    {installPrompt ? "Add it as a standalone app for quick access." : "In Chrome: tap the address bar + or ⋮ → Install app."}
+                                  </p>
                                 </div>
-                                {installPrompt ? (
-                                  <button
-                                    onClick={installApp}
-                                    disabled={installing}
-                                    className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-900 shadow transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-70"
-                                  >
-                                    {installing ? "Installing…" : "Install"}
-                                  </button>
-                                ) : (
-                                  <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white/85 ring-1 ring-white/20">
-                                    Open in Chrome to install
-                                  </span>
-                                )}
                               </div>
-                            )}
-                            {!showEmailForm ? (
-                              <>
-                                <div className="grid grid-cols-1 gap-3">
-                                  <button
-                                    onClick={loginGoogle}
-                                    className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-slate-900 shadow-lg shadow-indigo-500/20 transition hover:-translate-y-0.5 hover:shadow-xl"
-                                  >
-                                    Continue with Google
-                                  </button>
-                                  <button
-                                    onClick={() => { setShowEmailForm(true); setAuthErr(null); }}
-                                    className="w-full rounded-xl bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-cyan-400 px-4 py-3 font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:-translate-y-0.5 hover:shadow-xl"
-                                  >
-                                    Continue with Email
-                                  </button>
-                                  <button
-                                    onClick={loginFacebook}
-                                    className="w-full rounded-xl bg-[#1877F2] px-4 py-3 font-semibold text-white shadow-lg shadow-blue-600/30 transition hover:-translate-y-0.5 hover:shadow-xl"
-                                  >
-                                    Continue with Facebook
-                                  </button>
-                                </div>
+                              {installPrompt ? (
+                                <button
+                                  onClick={installApp}
+                                  disabled={installing}
+                                  className="rounded-full bg-white px-3 py-2 text-xs font-semibold text-slate-900 shadow transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-70"
+                                >
+                                  {installing ? "Installing…" : "Install"}
+                                </button>
+                              ) : (
+                                <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-semibold text-white/85 ring-1 ring-white/20">
+                                  Open in Chrome to install
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          {!showEmailForm ? (
+                            <>
+                              <div className="grid grid-cols-1 gap-3">
+                                <button
+                                  onClick={loginGoogle}
+                                  className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-slate-900 shadow-lg shadow-indigo-500/20 transition hover:-translate-y-0.5 hover:shadow-xl"
+                                >
+                                  Continue with Google
+                                </button>
+                                <button
+                                  onClick={() => { setShowEmailForm(true); setAuthErr(null); }}
+                                  className="w-full rounded-xl bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-cyan-400 px-4 py-3 font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:-translate-y-0.5 hover:shadow-xl"
+                                >
+                                  Continue with Email
+                                </button>
+                                <button
+                                  onClick={loginFacebook}
+                                  className="w-full rounded-xl bg-[#1877F2] px-4 py-3 font-semibold text-white shadow-lg shadow-blue-600/30 transition hover:-translate-y-0.5 hover:shadow-xl"
+                                >
+                                  Continue with Facebook
+                                </button>
+                              </div>
 
-                                <p className="mt-4 text-center text-[10px] text-white/60">
-                                  By continuing, you agree to our{" "}
-                                  <Link to="/legal" className="underline hover:text-white">
-                                    Terms & Privacy Policy
-                                  </Link>
-                                  .
-                                </p>
-                              </>
-                            ) : (
-                              <form onSubmit={submitCreds} className="grid grid-cols-1 gap-3">
-                                <input
-                                  type="email"
-                                  placeholder="you@example.com"
-                                  value={email}
-                                  onChange={(e) => setEmail(e.target.value)}
-                                  className="w-full rounded-xl border border-white/20 bg-white/15 px-3 py-3 text-white placeholder-white/80 outline-none transition focus:border-white/40 focus:bg-white/25"
-                                />
-                                <input
-                                  type="password"
-                                  placeholder="Password (min 6)"
-                                  value={password}
-                                  onChange={(e) => setPassword(e.target.value)}
-                                  className="w-full rounded-xl border border-white/20 bg-white/15 px-3 py-3 text-white placeholder-white/80 outline-none transition focus:border-white/40 focus:bg-white/25"
-                                />
-                                <button
-                                  type="submit"
-                                  disabled={authBusy}
-                                  className={`w-full rounded-xl px-4 py-3 font-semibold shadow-lg shadow-indigo-500/20 transition ${authBusy ? "cursor-not-allowed bg-white/40 text-slate-900" : "bg-white text-slate-900 hover:-translate-y-0.5 hover:shadow-xl"}`}
-                                >
-                                  {authBusy ? "Please wait…" : authMode === "signup" ? "Sign up" : "Sign in"}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setAuthMode(authMode === "signup" ? "signin" : "signup")}
-                                  className="text-sm font-semibold text-white underline-offset-2 hover:underline"
-                                >
-                                  {authMode === "signup" ? "Have an account? Sign in" : "No account? Sign up"}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setShowEmailForm(false)}
-                                  className="text-xs text-white/80 underline-offset-2 hover:text-white hover:underline"
-                                >
-                                  ← Back to options
-                                </button>
-                              </form>
-                            )}
-                            {authErr && <div className="mt-3 rounded-lg border border-red-200/70 bg-red-50/90 px-3 py-2 text-sm text-red-800">{authErr}</div>}
-                          </div>
-                        )}
+                              <p className="mt-4 text-center text-[10px] text-white/60">
+                                By continuing, you agree to our{" "}
+                                <Link to="/legal" className="underline hover:text-white">
+                                  Terms & Privacy Policy
+                                </Link>
+                                .
+                              </p>
+                            </>
+                          ) : (
+                            <form onSubmit={submitCreds} className="grid grid-cols-1 gap-3">
+                              <input
+                                type="email"
+                                placeholder="you@example.com"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                className="w-full rounded-xl border border-white/20 bg-white/15 px-3 py-3 text-white placeholder-white/80 outline-none transition focus:border-white/40 focus:bg-white/25"
+                              />
+                              <input
+                                type="password"
+                                placeholder="Password (min 6)"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                className="w-full rounded-xl border border-white/20 bg-white/15 px-3 py-3 text-white placeholder-white/80 outline-none transition focus:border-white/40 focus:bg-white/25"
+                              />
+                              <button
+                                type="submit"
+                                disabled={authBusy}
+                                className={`w-full rounded-xl px-4 py-3 font-semibold shadow-lg shadow-indigo-500/20 transition ${authBusy ? "cursor-not-allowed bg-white/40 text-slate-900" : "bg-white text-slate-900 hover:-translate-y-0.5 hover:shadow-xl"}`}
+                              >
+                                {authBusy ? "Please wait…" : authMode === "signup" ? "Sign up" : "Sign in"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setAuthMode(authMode === "signup" ? "signin" : "signup")}
+                                className="text-sm font-semibold text-white underline-offset-2 hover:underline"
+                              >
+                                {authMode === "signup" ? "Have an account? Sign in" : "No account? Sign up"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setShowEmailForm(false)}
+                                className="text-xs text-white/80 underline-offset-2 hover:text-white hover:underline"
+                              >
+                                ← Back to options
+                              </button>
+                            </form>
+                          )}
+                          {authErr && <div className="mt-3 rounded-lg border border-red-200/70 bg-red-50/90 px-3 py-2 text-sm text-red-800">{authErr}</div>}
+                        </div>
                       </motion.div>
                     </motion.div>
                   </AnimatePresence>

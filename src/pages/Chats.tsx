@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, lazy, Suspense } from "react";
+import { useEffect, useState, useRef, lazy, Suspense, type CSSProperties } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
@@ -44,11 +44,36 @@ export default function Chats() {
   const [dmMessages, setDmMessages] = useState<DMMsg[]>([]);
   const [dmInput, setDmInput] = useState("");
   const [dmLoading, setDmLoading] = useState(false);
-  const dmEndRef = useRef<HTMLDivElement>(null);
+  const dmListRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
 
   const [filter, setFilter] = useState<"all" | "groups" | "dms" | "fav">("all");
   const [search, setSearch] = useState("");
+  const shellStyle: CSSProperties = {
+    "--chat-surface": "rgba(255, 255, 255, 0.78)",
+    "--chat-surface-strong": "rgba(255, 255, 255, 0.96)",
+    "--chat-border": "rgba(148, 163, 184, 0.35)",
+    "--chat-accent": "#0f766e",
+    "--chat-accent-strong": "#0d9488",
+    "--chat-accent-wash": "rgba(13, 148, 136, 0.16)",
+  };
+  const listItemStagger = (index: number): CSSProperties => ({
+    animationDelay: `${Math.min(index, 10) * 40}ms`,
+    animationFillMode: "both",
+  });
+  const shouldFocusDmInput = () =>
+    typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
+  const focusDmInput = () => {
+    if (!shouldFocusDmInput()) return;
+    const el = dmInputRef.current;
+    if (!el) return;
+    requestAnimationFrame(() => el.focus({ preventScroll: true }));
+  };
+  const scrollDmToBottom = () => {
+    const el = dmListRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
 
   // 1. Load User & List (Groups + Friends)
   useEffect(() => {
@@ -245,7 +270,7 @@ export default function Chats() {
       
       setDmMessages(data || []);
       setDmLoading(false);
-      setTimeout(() => dmEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      setTimeout(() => scrollDmToBottom(), 100);
 
       sub = supabase.channel(`dm:${otherId}`)
         .on(
@@ -259,7 +284,7 @@ export default function Chats() {
 
             if (isMatch) {
               setDmMessages(prev => [...prev, newMsg]);
-              setTimeout(() => dmEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+              setTimeout(() => scrollDmToBottom(), 100);
             }
           }
         )
@@ -289,17 +314,16 @@ export default function Chats() {
 
   // Keep DM input focused when switching threads
   useEffect(() => {
-    if (selected?.type === 'dm') {
-      dmInputRef.current?.focus();
-    }
+    if (selected?.type !== 'dm') return;
+    focusDmInput();
   }, [selected]);
 
   // 3. Send DM
-  const sendDM = async () => {
-    if (!dmInput.trim() || !me || !selected || selected.type !== 'dm') return;
-    const text = dmInput.trim();
+  const sendDM = async (preset?: string) => {
+    const text = (preset ?? dmInput).trim();
+    if (!text || !me || !selected || selected.type !== 'dm') return;
     setDmInput("");
-    dmInputRef.current?.focus();
+    focusDmInput();
     await supabase.from("direct_messages").insert({
       sender: me,
       receiver: selected.id,
@@ -322,13 +346,14 @@ export default function Chats() {
   const filteredList = getFilteredList();
 
   const FilterPill = ({ id, label }: { id: string; label: string }) => (
-    <button 
-      onClick={() => setFilter(id)} 
+    <button
+      onClick={() => setFilter(id)}
       className={`
-        whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-semibold transition-all border
-        ${filter === id 
-          ? "bg-neutral-900 text-white border-neutral-900 shadow-md transform scale-105" 
-          : "bg-white text-neutral-600 border-neutral-200 hover:bg-neutral-50 hover:border-neutral-300"}
+        whitespace-nowrap px-4 py-1.5 rounded-full text-xs font-semibold tracking-wide transition-all border
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30
+        ${filter === id
+          ? "bg-gradient-to-r from-neutral-900 via-neutral-800 to-emerald-700 text-white border-transparent shadow-[0_10px_25px_rgba(5,150,105,0.25)]"
+          : "bg-white/70 text-neutral-600 border-[color:var(--chat-border)] hover:bg-white hover:text-neutral-900"}
       `}
     >
       {label}
@@ -337,13 +362,18 @@ export default function Chats() {
 
   // Component: The Chat List (Sidebar)
   const ChatList = () => (
-    <div className={`flex flex-col min-h-[calc(100dvh-140px)] bg-white border-r border-neutral-200 ${selected ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96`}>
-      <div className="p-5 border-b border-neutral-100 bg-white/80 backdrop-blur-md sticky top-0 z-10">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">Chats</h1>
-          {loading && <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-neutral-900"></div>}
+    <div className={`relative flex h-full min-h-0 flex-col w-full md:w-[340px] lg:w-[400px] ${selected ? 'hidden md:flex' : 'flex'} bg-[color:var(--chat-surface)] backdrop-blur-xl border border-[color:var(--chat-border)] md:rounded-[28px] shadow-none md:shadow-[0_30px_80px_rgba(15,23,42,0.12)] overflow-hidden`}>
+      <div className="p-5 pt-6 pb-4 border-b border-[color:var(--chat-border)] bg-[color:var(--chat-surface-strong)] backdrop-blur-xl sticky top-0 z-20 md:rounded-t-[28px]">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700/70">Inbox</p>
+            <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">Chats</h1>
+          </div>
+          {loading && (
+            <div className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/20 border-t-emerald-600" />
+          )}
         </div>
-        
+
         <div className="relative mb-4 group">
           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400 group-focus-within:text-emerald-600 transition-colors">
             <SearchIcon className="h-4 w-4" />
@@ -352,11 +382,11 @@ export default function Chats() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search conversations..."
-            className="block w-full pl-10 pr-3 py-2.5 border border-neutral-200 rounded-xl leading-5 bg-neutral-50 placeholder-neutral-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-sm font-medium"
+            className="block w-full pl-10 pr-3 py-2.5 border border-[color:var(--chat-border)] rounded-2xl leading-5 bg-white/70 placeholder-neutral-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-sm font-medium shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
           />
         </div>
 
-        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+        <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scrollbar-hide">
           <FilterPill id="all" label="All" />
           <FilterPill id="groups" label="Groups" />
           <FilterPill id="dms" label="DMs" />
@@ -364,50 +394,56 @@ export default function Chats() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         {loading ? (
           <div className="p-8 flex justify-center"><Spinner /></div>
         ) : filteredList.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-64 text-neutral-400 px-6 text-center">
-            <div className="w-16 h-16 bg-neutral-50 rounded-full flex items-center justify-center mb-4">
+            <div className="w-16 h-16 bg-white/80 rounded-2xl flex items-center justify-center mb-4 shadow-sm border border-white/70">
               <Filter className="h-6 w-6 opacity-30" />
             </div>
-            <p className="text-sm font-medium">No chats found.</p>
-            <p className="text-xs mt-1 opacity-70">Try adjusting your filters or search.</p>
+            <p className="text-sm font-semibold text-neutral-700">No chats found.</p>
+            <p className="text-xs mt-1 text-neutral-500">Try adjusting your filters or search.</p>
           </div>
         ) : (
-          <div className="px-2 py-2 space-y-1">
-            {filteredList.map(item => (
-              // THIS IS THE LIST ITEM
-              <div 
-                key={item.type + item.id} 
-                className="group relative"
+          <div className="px-3 py-3 space-y-2">
+            {filteredList.map((item, index) => (
+              <div
+                key={item.type + item.id}
+                className="group relative page-transition"
+                style={listItemStagger(index)}
               >
+                <span
+                  className={`
+                    absolute left-2 top-1/2 -translate-y-1/2 h-8 w-1 rounded-full bg-gradient-to-b from-emerald-500 to-teal-400 transition-opacity
+                    ${selected?.id === item.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'}
+                  `}
+                />
                 <button
                   onClick={() => setSelected(item)}
                   className={`
-                    w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all duration-200
-                    ${selected?.id === item.id 
-                      ? 'bg-emerald-50 shadow-sm ring-1 ring-emerald-100' 
-                      : 'hover:bg-neutral-50'}
+                    w-full flex items-center gap-3 p-3 pl-5 rounded-2xl text-left transition-all duration-200 border
+                    ${selected?.id === item.id
+                      ? 'bg-white shadow-[0_12px_30px_rgba(15,23,42,0.08)] border-emerald-100/80'
+                      : 'bg-white/40 border-transparent hover:bg-white/70 hover:border-white/70'}
                   `}
                 >
                   <div className={`
-                    h-12 w-12 rounded-full flex items-center justify-center text-lg font-bold shrink-0 shadow-sm
+                    h-12 w-12 rounded-2xl flex items-center justify-center text-lg font-bold shrink-0 shadow-sm ring-1 ring-white/70
                     ${item.type === 'announcement'
                       ? 'bg-gradient-to-br from-amber-100 to-amber-200 text-amber-700'
                       : item.type === 'group'
-                        ? 'bg-gradient-to-br from-indigo-100 to-indigo-200 text-indigo-700'
+                        ? 'bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700'
                         : 'bg-gradient-to-br from-neutral-100 to-neutral-200 text-neutral-600'}
                   `}>
                     {item.type === 'dm' && item.avatar_url ? (
-                      <img src={item.avatar_url} alt="" className="h-full w-full object-cover rounded-full" />
+                      <img src={item.avatar_url} alt="" className="h-full w-full object-cover rounded-2xl" />
                     ) : (
                       item.type === 'group' ? <Users className="h-5 w-5" /> : item.type === 'announcement' ? <Megaphone className="h-5 w-5" /> : item.name.slice(0,1).toUpperCase()
                     )}
                   </div>
-                  <div className="min-w-0 flex-1 pr-8">
-                    <div className={`font-semibold truncate ${selected?.id === item.id ? 'text-emerald-900' : 'text-neutral-900'}`}>
+                  <div className="min-w-0 flex-1 pr-10">
+                    <div className={`truncate text-[15px] font-semibold ${selected?.id === item.id ? 'text-emerald-900' : 'text-neutral-900'}`}>
                       {item.name}
                     </div>
                     <div className="text-xs text-neutral-500 truncate mt-0.5">
@@ -416,15 +452,14 @@ export default function Chats() {
                   </div>
                 </button>
 
-                {/* HEART BUTTON IN LIST - VISIBLE ON HOVER OR IF FAVORITED */}
                 <button
                   onClick={(e) => { e.stopPropagation(); toggleFavorite(item.id); }}
                   className={`
-                    absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full transition-all duration-200
-                    hover:bg-white hover:shadow-sm
-                    ${item.isFavorite 
-                      ? 'opacity-100 text-rose-500' 
-                      : 'opacity-0 group-hover:opacity-100 text-neutral-300 hover:text-rose-400'}
+                    absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-full transition-all duration-200
+                    bg-white/80 shadow-sm ring-1 ring-white/70
+                    ${item.isFavorite
+                      ? 'opacity-100 text-rose-500'
+                      : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 text-neutral-300 hover:text-rose-400'}
                   `}
                   title={item.isFavorite ? "Remove from Favorites" : "Add to Favorites"}
                 >
@@ -442,13 +477,16 @@ export default function Chats() {
   const ActiveChat = () => {
     if (!selected) {
       return (
-        <div className="hidden md:flex flex-1 items-center justify-center bg-neutral-50/50 flex-col gap-6">
-          <div className="bg-white p-6 rounded-full shadow-sm ring-1 ring-black/5">
-            <MessageSquare className="h-12 w-12 text-emerald-500/50" />
-          </div>
-          <div className="text-center">
-            <h3 className="text-lg font-semibold text-neutral-900">Select a conversation</h3>
-            <p className="text-sm text-neutral-500 mt-1">Choose a group or friend to start chatting</p>
+        <div className="hidden md:flex flex-1 items-center justify-center">
+          <div className="relative flex max-w-md flex-col items-center gap-5 rounded-[28px] border border-[color:var(--chat-border)] bg-[color:var(--chat-surface)] p-8 text-center shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur-xl">
+            <div className="absolute -top-10 h-20 w-20 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.25),transparent_70%)] blur-xl" />
+            <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-white shadow-md ring-1 ring-white/70">
+              <MessageSquare className="h-8 w-8 text-emerald-500/70" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-neutral-900">Select a conversation</h3>
+              <p className="text-sm text-neutral-500 mt-1">Choose a group or friend to start chatting.</p>
+            </div>
           </div>
         </div>
       );
@@ -464,60 +502,73 @@ export default function Chats() {
     };
 
     return (
-      <div className="fixed inset-0 z-50 pb-0 md:static md:inset-auto md:flex-1 bg-white flex flex-col h-full">
+      <div className="fixed inset-0 z-50 md:static md:inset-auto md:flex-1 flex h-full min-h-0 flex-col bg-[color:var(--chat-surface-strong)] pb-[calc(96px+env(safe-area-inset-bottom))] md:bg-[color:var(--chat-surface)] md:pb-0 md:backdrop-blur-xl md:border md:border-[color:var(--chat-border)] md:rounded-[28px] md:shadow-[0_35px_90px_rgba(15,23,42,0.14)] overflow-hidden">
         {/* Header */}
-        <div className="h-[72px] border-b border-neutral-200 flex items-center px-4 gap-4 bg-white/95 backdrop-blur-sm shrink-0 shadow-sm z-20">
-          <button onClick={() => setSelected(null)} className="md:hidden p-2 -ml-2 rounded-full hover:bg-neutral-100 transition-colors">
+        <div className="relative h-[76px] border-b border-[color:var(--chat-border)] flex items-center px-4 gap-4 bg-[color:var(--chat-surface-strong)] backdrop-blur-xl shrink-0 z-20 md:rounded-t-[28px]">
+          <div className="absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent via-emerald-400/40 to-transparent" />
+          <button onClick={() => setSelected(null)} className="md:hidden p-2 -ml-2 rounded-full hover:bg-white/80 transition-colors">
             <ArrowLeft className="h-5 w-5 text-neutral-600" />
           </button>
-          
-          <div 
-            onClick={handleHeaderClick} 
-            className="flex items-center gap-4 flex-1 min-w-0 cursor-pointer hover:opacity-70 transition-opacity"
+
+          <div
+            onClick={handleHeaderClick}
+            className="flex items-center gap-4 flex-1 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
             title={`View ${selected.type === 'group' ? 'Group' : 'Profile'}`}
           >
-            <div className={`h-10 w-10 rounded-full flex items-center justify-center text-sm font-bold shadow-sm ${
+            <div className={`h-11 w-11 rounded-2xl flex items-center justify-center text-sm font-bold shadow-sm ring-1 ring-white/70 ${
               selected.type === 'group'
-                ? 'bg-indigo-100 text-indigo-700'
+                ? 'bg-sky-100 text-sky-700'
                 : selected.type === 'announcement'
                   ? 'bg-amber-100 text-amber-700'
                   : 'bg-neutral-100 text-neutral-600'
             }`}>
-               {selected.type === 'dm' && selected.avatar_url ? (
-                 <img src={selected.avatar_url} alt="" className="h-full w-full object-cover rounded-full" />
-               ) : (
-                 selected.type === 'group' ? '#' : selected.type === 'announcement' ? '!' : selected.name.slice(0,1)
-               )}
+              {selected.type === 'dm' && selected.avatar_url ? (
+                <img src={selected.avatar_url} alt="" className="h-full w-full object-cover rounded-2xl" />
+              ) : (
+                selected.type === 'group' ? '#' : selected.type === 'announcement' ? '!' : selected.name.slice(0,1)
+              )}
             </div>
-            
+
             <div className="flex-1 min-w-0">
               <div className="font-bold text-neutral-900 truncate text-base">{selected.name}</div>
-              <div className="text-xs text-neutral-500 flex items-center gap-1">
-                <span className={`w-1.5 h-1.5 rounded-full ${
-                  selected.type === 'group' ? 'bg-indigo-500' : selected.type === 'announcement' ? 'bg-amber-500' : 'bg-emerald-500'
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-500 flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full shadow-sm ${
+                  selected.type === 'group' ? 'bg-sky-500' : selected.type === 'announcement' ? 'bg-amber-500' : 'bg-emerald-500'
                 }`}></span>
                 {selected.type === 'group' ? 'Group Chat' : selected.type === 'announcement' ? 'Announcement Chat' : 'Direct Message'}
               </div>
             </div>
           </div>
 
-          <button 
+          <button
             onClick={() => toggleFavorite(selected.id)}
-            className="p-2 rounded-full hover:bg-neutral-100 transition-colors focus:outline-none focus:ring-2 focus:ring-neutral-200"
+            className="p-2 rounded-full bg-white/70 shadow-sm ring-1 ring-white/70 hover:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-200"
             title={selected.isFavorite ? "Remove from Favorites" : "Add to Favorites"}
           >
-            <Heart 
-              className={`h-5 w-5 transition-colors ${selected.isFavorite ? 'fill-rose-500 text-rose-500' : 'text-neutral-400'}`} 
+            <Heart
+              className={`h-5 w-5 transition-colors ${selected.isFavorite ? 'fill-rose-500 text-rose-500' : 'text-neutral-400'}`}
             />
           </button>
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-hidden relative bg-neutral-50"> 
-          {/* Background Pattern */}
-        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" 
-             style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23000000' fill-opacity='1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='1'/%3E%3C/g%3E%3C/svg%3E")` }}>
-        </div>
+        <div
+          className="flex-1 min-h-0 overflow-hidden relative"
+          style={{
+            background:
+              "radial-gradient(circle at 20% 20%, rgba(16,185,129,0.08), transparent 55%), radial-gradient(circle at 85% 0%, rgba(14,116,144,0.08), transparent 50%)",
+          }}
+        >
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -top-24 right-[-8rem] h-56 w-56 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.18),transparent_70%)] blur-2xl" />
+            <div className="absolute bottom-[-6rem] left-[-4rem] h-56 w-56 rounded-full bg-[radial-gradient(circle_at_center,rgba(251,191,36,0.2),transparent_70%)] blur-2xl" />
+          </div>
+          <div
+            className="absolute inset-0 opacity-[0.04] pointer-events-none"
+            style={{
+              backgroundImage: `url("data:image/svg+xml,%3Csvg width='20' height='20' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%230f172a' fill-opacity='1' fill-rule='evenodd'%3E%3Ccircle cx='3' cy='3' r='1'/%3E%3C/g%3E%3C/svg%3E")`,
+            }}
+          />
 
           {selected.type === 'group' || selected.type === 'announcement' ? (
             <Suspense fallback={<div className="h-full w-full flex items-center justify-center"><Spinner /></div>}>
@@ -530,81 +581,99 @@ export default function Chats() {
             </Suspense>
           ) : (
             // Custom DM Interface
-            <div className="flex flex-col h-full relative z-10">
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {dmLoading && (
-                  <div className="flex justify-center py-4">
-                    <div className="bg-white/80 px-4 py-1.5 rounded-full text-xs font-medium text-neutral-500 shadow-sm border border-neutral-100">
-                      Loading history...
+            <div className="flex h-full min-h-0 flex-col relative z-10">
+              <div ref={dmListRef} className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8 md:py-6">
+                <div className="mx-auto w-full max-w-3xl space-y-5">
+                  {dmLoading && (
+                    <div className="flex justify-center py-4">
+                      <div className="bg-white/80 px-4 py-1.5 rounded-full text-xs font-semibold text-neutral-600 shadow-sm border border-white/70">
+                        Loading history...
+                      </div>
                     </div>
-                  </div>
-                )}
-                {!dmLoading && dmMessages.length === 0 && (
-                  <div className="flex flex-col items-center justify-center h-full text-neutral-400 space-y-3">
-                    <div className="w-16 h-16 bg-white rounded-full shadow-sm flex items-center justify-center">
-                      <MessageSquare className="h-8 w-8 text-neutral-200" />
+                  )}
+                  {!dmLoading && dmMessages.length === 0 && (
+                    <div className="flex flex-col items-center justify-center h-full text-neutral-400 space-y-4 text-center py-6">
+                      <div className="w-16 h-16 bg-white/90 rounded-2xl shadow-md flex items-center justify-center ring-1 ring-white/70">
+                        <MessageSquare className="h-8 w-8 text-emerald-200" />
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-neutral-700">No messages yet. Break the ice.</div>
+                        <p className="text-xs text-neutral-500">Pick a starter and we’ll drop it in.</p>
+                      </div>
+                      <div className="flex flex-wrap justify-center gap-2">
+                        {[
+                          "👋 Hey! I’m glad we matched here.",
+                          "🗳 Want to pick a time to meet?",
+                          "📍 Any favorite spot in town?",
+                        ].map((msg) => (
+                          <button
+                            key={msg}
+                            onClick={() => sendDM(msg)}
+                            className="rounded-full border border-white/70 bg-white/80 px-3 py-1.5 text-xs font-semibold text-neutral-700 shadow-sm hover:border-emerald-200 hover:text-emerald-700"
+                          >
+                            {msg}
+                          </button>
+                        ))}
+                      </div>
                     </div>
-                    <div className="text-sm">No messages yet. Say hi! 👋</div>
-                  </div>
-                )}
-                
-                {dmMessages.map((m, idx) => {
-                  const isMine = m.sender === me;
-                  const showAvatar = !isMine && (idx === 0 || dmMessages[idx-1].sender !== m.sender);
-                  
-                  return (
-                    <div key={m.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-300`}>
-                      <div className={`flex max-w-[80%] md:max-w-[70%] ${isMine ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
-                        {/* Avatar placeholder for friend side */}
-                        {!isMine && (
-                          <div className="w-6 h-6 shrink-0 mb-1">
-                            {showAvatar && (
-                              selected.avatar_url ? 
-                              <img src={selected.avatar_url} className="w-6 h-6 rounded-full object-cover shadow-sm" /> :
-                              <div className="w-6 h-6 rounded-full bg-neutral-200 flex items-center justify-center text-[9px] font-bold text-neutral-500">
-                                {selected.name.slice(0,1)}
-                              </div>
-                            )}
-                          </div>
-                        )}
+                  )}
 
-                        <div className={`
-                          px-4 py-2.5 text-sm shadow-sm relative
-                          ${isMine 
-                            ? 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white rounded-2xl rounded-tr-sm' 
-                            : 'bg-white text-neutral-800 border border-neutral-100 rounded-2xl rounded-tl-sm'}
-                        `}>
-                          {m.content}
-                          <div className={`text-[9px] mt-1 text-right opacity-70 ${isMine ? 'text-emerald-100' : 'text-neutral-400'}`}>
-                            {new Date(m.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                  {dmMessages.map((m, idx) => {
+                    const isMine = m.sender === me;
+                    const showAvatar = !isMine && (idx === 0 || dmMessages[idx-1].sender !== m.sender);
+
+                    return (
+                      <div key={m.id} className={`flex ${isMine ? 'justify-end' : 'justify-start'} group animate-in fade-in slide-in-from-bottom-2 duration-300`}>
+                        <div className={`flex max-w-[80%] md:max-w-[70%] ${isMine ? 'flex-row-reverse' : 'flex-row'} items-end gap-2`}>
+                          {!isMine && (
+                            <div className="w-6 h-6 shrink-0 mb-1">
+                              {showAvatar && (
+                                selected.avatar_url ?
+                                <img src={selected.avatar_url} className="w-6 h-6 rounded-full object-cover shadow-sm ring-1 ring-white/70" /> :
+                                <div className="w-6 h-6 rounded-full bg-neutral-200 flex items-center justify-center text-[9px] font-bold text-neutral-600 ring-1 ring-white/70">
+                                  {selected.name.slice(0,1)}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className={`
+                            px-4 py-2.5 text-sm shadow-sm relative
+                            ${isMine
+                              ? 'bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 text-white rounded-[20px] rounded-tr-sm shadow-[0_12px_30px_rgba(16,185,129,0.25)]'
+                              : 'bg-white/90 text-neutral-800 border border-white/70 rounded-[20px] rounded-tl-sm shadow-[0_8px_24px_rgba(15,23,42,0.08)]'}
+                          `}>
+                            {m.content}
+                            <div className={`text-[10px] mt-1 text-right font-semibold tracking-wide opacity-70 ${isMine ? 'text-emerald-50' : 'text-neutral-400'}`}>
+                              {new Date(m.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-                <div ref={dmEndRef} />
+                    );
+                  })}
+                  
+                </div>
               </div>
-              
+
               {/* DM Input */}
-              <div className="p-4 bg-white border-t border-neutral-200/80 backdrop-blur-md">
-                <div className="flex items-center gap-2 max-w-4xl mx-auto bg-neutral-50 border border-neutral-200 rounded-full px-2 py-2 focus-within:ring-2 focus-within:ring-emerald-500/20 focus-within:border-emerald-500 transition-all shadow-inner">
+              <div className="p-4 bg-[color:var(--chat-surface-strong)] border-t border-[color:var(--chat-border)] backdrop-blur-xl">
+                <div className="flex items-center gap-2 max-w-3xl mx-auto bg-white/75 border border-white/70 rounded-full px-2 py-2 focus-within:ring-2 focus-within:ring-emerald-500/20 focus-within:border-emerald-400 transition-all shadow-[inset_0_0_0_1px_rgba(255,255,255,0.5)]">
                   <input
                     ref={dmInputRef}
                     value={dmInput}
                     onChange={(e) => setDmInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && sendDM()}
-                    autoFocus
                     placeholder="Type a message..."
                     className="flex-1 bg-transparent border-0 px-4 py-1 text-sm focus:ring-0 text-neutral-900 placeholder-neutral-400 outline-none"
                   />
-                  <button 
+                  <button
                     onClick={sendDM}
                     disabled={!dmInput.trim()}
                     className={`
                       p-2.5 rounded-full transition-all duration-200 flex items-center justify-center shadow-sm
-                      ${dmInput.trim() 
-                        ? 'bg-emerald-600 text-white hover:bg-emerald-700 hover:scale-105 active:scale-95' 
+                      ${dmInput.trim()
+                        ? 'bg-gradient-to-r from-emerald-600 to-teal-500 text-white hover:brightness-105 hover:scale-105 active:scale-95 shadow-[0_12px_24px_rgba(16,185,129,0.3)]'
                         : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'}
                     `}
                   >
@@ -622,9 +691,18 @@ export default function Chats() {
   // Main Layout
   return (
     <>
-      <div className="flex w-full min-h-dvh overflow-hidden bg-white pb-[calc(96px+env(safe-area-inset-bottom))]">
-        <ChatList />
-        <ActiveChat />
+      <div
+        className="relative w-full h-dvh overflow-hidden pb-[calc(96px+env(safe-area-inset-bottom))]"
+        style={shellStyle}
+      >
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.16),transparent_70%)] blur-3xl" />
+          <div className="absolute bottom-[-10rem] right-[-6rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,rgba(14,116,144,0.16),transparent_70%)] blur-3xl" />
+        </div>
+        <div className="relative flex w-full h-full min-h-0 gap-0 md:gap-5 lg:gap-7 px-0 md:px-6 py-0 md:py-6 page-transition">
+          <ChatList />
+          <ActiveChat />
+        </div>
       </div>
       
       {/* 4. Render the Modal */}

@@ -9,6 +9,9 @@ export type Profile = {
   avatar_url: string | null;
   gender?: string | null;
   city?: string | null;
+  personality_traits?: any | null;
+  social_battery?: number | null;
+  reputation_score?: number | null;
   rating_avg?: number;
   rating_count?: number;
   verification_level?: number | null;
