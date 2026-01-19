@@ -6,7 +6,7 @@ import { useAuth } from "@/App";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 import PersonalityQuizModal from "@/components/PersonalityQuizModal";
 import UserCard from "@/components/UserCard";
-import { X, List, Sparkles, Battery, Star } from "lucide-react";
+import { X, List, Sparkles, Battery, Star, Phone } from "lucide-react";
 
 // Demo stubs for toast calls (prevents red lines if Toaster is removed)
 const success = (m?: string) => console.log("[ok]", m || "");
@@ -444,6 +444,11 @@ export default function Profile() {
   const headerStars = Math.round(((headerReputationScore || 0) / 20) * 10) / 10;
   const headerPersonality = viewingOther ? viewPersonality : personalityTraits;
   const headerInitials = (headerName || '?').slice(0, 2).toUpperCase() ?? '?';
+  const supportNumbers = [
+    { label: "116 123", tel: "116123" },
+    { label: "0800 1110111", tel: "08001110111" },
+    { label: "0800 1110222", tel: "08001110222" },
+  ];
 
   const notifCount = useMemo(
     () => incomingRequests.length + groupInvites.length + groupNotifs.length,
@@ -1058,6 +1063,36 @@ export default function Profile() {
                   ) : (
                     <span>Saved locally</span>
                   )}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-50 to-white p-4 shadow-sm md:col-span-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-[0.14em] text-rose-700">Support line</div>
+                    <div className="text-sm font-semibold text-neutral-900">If you feel really down, reach out now.</div>
+                    <p className="text-xs text-neutral-600">Tap the button or call one of the numbers below.</p>
+                  </div>
+                  <Phone className="h-5 w-5 text-rose-500" />
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <a
+                    href="tel:116123"
+                    className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-700"
+                  >
+                    Call support
+                  </a>
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-600">
+                    {supportNumbers.map((n) => (
+                      <a
+                        key={n.tel}
+                        href={`tel:${n.tel}`}
+                        className="rounded-full border border-rose-100 bg-white px-3 py-1 font-semibold text-rose-700 hover:border-rose-200 hover:text-rose-800"
+                      >
+                        {n.label}
+                      </a>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
