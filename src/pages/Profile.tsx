@@ -20,6 +20,18 @@ function ssSet(k: string, v: any) {
   try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {}
 }
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+const DAY_MS = 86_400_000;
+const BATTERY_THRESHOLDS = {
+  groups: 7,
+  votes: 3,
+  events: 3,
+  rating: 3.5,
+};
+const BATTERY_DAILY_DELTA = 10;
+const BATTERY_LOW_THRESHOLD = 20;
+
 // Types
 type PreviewGroup = { id: string; title: string; game: string | null; category: string | null; code?: string | null };
 type Thread = {
@@ -135,7 +147,6 @@ export default function Profile() {
   const { user } = useAuth();
   const uid = user?.id;
   const canRefreshReputation = import.meta.env.VITE_ENABLE_REPUTATION_RPC === "true";
-  const canUpdateSocialBattery = import.meta.env.VITE_ENABLE_SOCIAL_BATTERY_RPC === "true";
 
   const { data: profile, isLoading, error: profileError } = useProfile(uid ?? null);
   
@@ -420,8 +431,22 @@ export default function Profile() {
   const [reputationScore, setReputationScore] = useState<number>(0);
   const [personalityTraits, setPersonalityTraits] = useState<any | null>(null);
   const [socialBattery, setSocialBattery] = useState<number>(100);
-  const [batterySaving, setBatterySaving] = useState(false);
-  const batterySaveRef = useRef<number | null>(null);
+  const [batterySyncing, setBatterySyncing] = useState(false);
+  const [batteryStats, setBatteryStats] = useState<{
+    groups: number;
+    votes: number;
+    events: number;
+    rating: number;
+    meets: boolean;
+  }>({
+    groups: 0,
+    votes: 0,
+    events: 0,
+    rating: 0,
+    meets: false,
+  });
+  const [supportOpen, setSupportOpen] = useState(false);
+  const lastBatteryMetRef = useRef<boolean>(false);
   const [quizOpen, setQuizOpen] = useState(false);
   const [viewReputationScore, setViewReputationScore] = useState<number>(0);
   const [viewPersonality, setViewPersonality] = useState<any | null>(null);
@@ -446,8 +471,8 @@ export default function Profile() {
   const headerInitials = (headerName || '?').slice(0, 2).toUpperCase() ?? '?';
   const supportNumbers = [
     { label: "116 123", tel: "116123" },
-    { label: "0800 1110111", tel: "08001110111" },
-    { label: "0800 1110222", tel: "08001110222" },
+    { label: "0800/1110111", tel: "08001110111" },
+    { label: "0800/1110222", tel: "08001110222" },
   ];
 
   const notifCount = useMemo(
@@ -896,23 +921,105 @@ export default function Profile() {
     window.location.replace(base);
   }
 
-  const updateBattery = (val: number) => {
-    setSocialBattery(val);
-    if (!canUpdateSocialBattery) return;
-    if (batterySaveRef.current) {
-      window.clearTimeout(batterySaveRef.current);
-    }
-    batterySaveRef.current = window.setTimeout(async () => {
-      setBatterySaving(true);
-      try {
-        await supabase.rpc("update_social_battery", { p_value: val });
-      } catch (e) {
-        console.warn("Failed to update battery", e);
-      } finally {
-        setBatterySaving(false);
+  useEffect(() => {
+    if (!uid || viewingOther) return;
+    let cancelled = false;
+
+    const calcKey = `circles_social_battery_calc_${uid}`;
+    setBatterySyncing(false);
+
+    (async () => {
+      const { data: memberships, error: mErr } = await supabase
+        .from("group_members")
+        .select("group_id")
+        .eq("user_id", uid)
+        .in("status", ["active", "accepted"]);
+      if (cancelled) return;
+      if (mErr) {
+        console.warn("[battery] memberships load failed", mErr);
+        return;
       }
-    }, 350) as unknown as number;
-  };
+
+      const groupIds = (memberships || []).map((m: any) => m.group_id).filter(Boolean);
+      const joinedCount = groupIds.length;
+
+      const votesRes = await supabase
+        .from("group_votes")
+        .select("poll_id", { count: "exact", head: true })
+        .eq("user_id", uid);
+      if (cancelled) return;
+      if (votesRes.error) {
+        console.warn("[battery] votes load failed", votesRes.error);
+      }
+
+      let eventsCount = 0;
+      if (groupIds.length) {
+        const eventsRes = await supabase
+          .from("group_events")
+          .select("id", { count: "exact", head: true })
+          .in("group_id", groupIds)
+          .lte("starts_at", new Date().toISOString());
+        if (cancelled) return;
+        if (eventsRes.error) {
+          console.warn("[battery] events load failed", eventsRes.error);
+        } else {
+          eventsCount = eventsRes.count ?? 0;
+        }
+      }
+
+      const votesCount = votesRes.count ?? 0;
+      const ratingAvg = profile?.rating_avg ?? 0;
+      const meets =
+        joinedCount >= BATTERY_THRESHOLDS.groups &&
+        votesCount >= BATTERY_THRESHOLDS.votes &&
+        eventsCount >= BATTERY_THRESHOLDS.events &&
+        ratingAvg >= BATTERY_THRESHOLDS.rating;
+
+      const base = typeof profile?.social_battery === "number" ? profile.social_battery : 100;
+      const now = Date.now();
+      const lastCalcRaw = Number(localStorage.getItem(calcKey) || 0);
+      const lastCalc = lastCalcRaw || now;
+      const daysSince = Math.floor((now - lastCalc) / DAY_MS);
+
+      let next = base;
+      let didUpdate = false;
+
+      if (daysSince > 0) {
+        const delta = (meets ? BATTERY_DAILY_DELTA : -BATTERY_DAILY_DELTA) * daysSince;
+        next = clamp(base + delta, 0, 100);
+        didUpdate = true;
+      } else if (meets && !lastBatteryMetRef.current && base < 100) {
+        next = clamp(base + BATTERY_DAILY_DELTA, 0, 100);
+        didUpdate = true;
+      }
+
+      setSocialBattery(next);
+      setBatteryStats({
+        groups: joinedCount,
+        votes: votesCount,
+        events: eventsCount,
+        rating: ratingAvg,
+        meets,
+      });
+
+      if (didUpdate) {
+        localStorage.setItem(calcKey, String(now));
+        setBatterySyncing(true);
+        const { error } = await supabase
+          .from("profiles")
+          .update({ social_battery: next })
+          .eq("user_id", uid);
+        if (error) console.warn("[battery] update failed", error);
+        if (!cancelled) setBatterySyncing(false);
+      }
+
+      lastBatteryMetRef.current = meets;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uid, viewingOther, profile?.rating_avg, profile?.social_battery]);
 
   // --- Render ---
 
@@ -1040,59 +1147,74 @@ export default function Profile() {
                 <div className="flex items-start justify-between">
                   <div>
                     <div className="text-xs font-bold uppercase tracking-[0.14em] text-neutral-600">Social Battery</div>
-                    <div className="text-sm font-semibold text-neutral-900">Private slider for your energy</div>
+                    <div className="text-sm font-semibold text-neutral-900">Auto-calculated from engagement</div>
                     <p className="text-xs text-neutral-600">Only you (and admin dashboard) can see this.</p>
                   </div>
-                  <Battery className="h-5 w-5 text-emerald-600" />
+                  <Battery className={`h-5 w-5 ${socialBattery < BATTERY_LOW_THRESHOLD ? "text-rose-500" : "text-emerald-600"}`} />
                 </div>
-                <div className="mt-3 flex items-center gap-3">
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    value={socialBattery}
-                    onChange={(e) => updateBattery(Number(e.target.value))}
-                    className="w-full accent-emerald-600"
-                  />
-                  <div className="text-sm font-bold text-neutral-900">{socialBattery}%</div>
+                <div className="mt-3 space-y-2">
+                  <div className="h-2 w-full rounded-full bg-neutral-100">
+                    <div
+                      className={`h-2 rounded-full ${
+                        socialBattery < BATTERY_LOW_THRESHOLD
+                          ? "bg-rose-500"
+                          : batteryStats.meets
+                            ? "bg-emerald-500"
+                            : "bg-amber-400"
+                      }`}
+                      style={{ width: `${socialBattery}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-neutral-600">
+                    <span className="font-semibold text-neutral-900">{socialBattery}%</span>
+                    {socialBattery < BATTERY_LOW_THRESHOLD ? (
+                      <span className="font-semibold text-rose-600">Red flag</span>
+                    ) : batteryStats.meets ? (
+                      <span className="font-semibold text-emerald-600">On track</span>
+                    ) : (
+                      <span>Draining 10% daily</span>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-neutral-600">
+                  <span className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700">
+                    Groups {batteryStats.groups}/{BATTERY_THRESHOLDS.groups}
+                  </span>
+                  <span className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700">
+                    Votes {batteryStats.votes}/{BATTERY_THRESHOLDS.votes}
+                  </span>
+                  <span className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700">
+                    Meetings {batteryStats.events}/{BATTERY_THRESHOLDS.events}
+                  </span>
+                  <span className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700">
+                    Rating {batteryStats.rating.toFixed(1)}/{BATTERY_THRESHOLDS.rating}
+                  </span>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] text-neutral-500">
-                  <span>Private to you</span>
-                  {canUpdateSocialBattery ? (
-                    batterySaving ? <span>Saving…</span> : <span>Auto-saved</span>
-                  ) : (
-                    <span>Saved locally</span>
-                  )}
+                  <span>Updated daily</span>
+                  {batterySyncing ? <span>Syncing…</span> : <span>Auto-calculated</span>}
                 </div>
-              </div>
-
-              <div className="rounded-2xl border border-rose-100 bg-gradient-to-br from-rose-50 to-white p-4 shadow-sm md:col-span-2">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-xs font-bold uppercase tracking-[0.14em] text-rose-700">Support line</div>
-                    <div className="text-sm font-semibold text-neutral-900">If you feel really down, reach out now.</div>
-                    <p className="text-xs text-neutral-600">Tap the button or call one of the numbers below.</p>
-                  </div>
-                  <Phone className="h-5 w-5 text-rose-500" />
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <a
-                    href="tel:116123"
-                    className="inline-flex items-center justify-center rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-700"
+                <div className="mt-3">
+                  <button
+                    onClick={() => setSupportOpen((prev) => !prev)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-rose-700"
                   >
-                    Call support
-                  </a>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-neutral-600">
-                    {supportNumbers.map((n) => (
-                      <a
-                        key={n.tel}
-                        href={`tel:${n.tel}`}
-                        className="rounded-full border border-rose-100 bg-white px-3 py-1 font-semibold text-rose-700 hover:border-rose-200 hover:text-rose-800"
-                      >
-                        {n.label}
-                      </a>
-                    ))}
-                  </div>
+                    <Phone className="h-4 w-4" />
+                    Talk to someone
+                  </button>
+                  {supportOpen && (
+                    <div className="mt-2 flex flex-wrap gap-2 text-xs text-neutral-600">
+                      {supportNumbers.map((n) => (
+                        <a
+                          key={n.tel}
+                          href={`tel:${n.tel}`}
+                          className="rounded-full border border-rose-100 bg-white px-3 py-1 font-semibold text-rose-700 hover:border-rose-200 hover:text-rose-800"
+                        >
+                          {n.label}
+                        </a>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
