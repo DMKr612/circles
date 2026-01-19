@@ -134,6 +134,8 @@ export default function Profile() {
   // --- Auth & Profile Data ---
   const { user } = useAuth();
   const uid = user?.id;
+  const canRefreshReputation = import.meta.env.VITE_ENABLE_REPUTATION_RPC === "true";
+  const canUpdateSocialBattery = import.meta.env.VITE_ENABLE_SOCIAL_BATTERY_RPC === "true";
 
   const { data: profile, isLoading, error: profileError } = useProfile(uid ?? null);
   
@@ -157,14 +159,14 @@ export default function Profile() {
   }, [profile]);
 
   useEffect(() => {
-    if (!uid) return;
+    if (!uid || !canRefreshReputation) return;
     (async () => {
       const { data } = await supabase.rpc("refresh_reputation_score", { p_user: uid });
       if (typeof data === "number") {
         setReputationScore(data);
       }
     })();
-  }, [uid]);
+  }, [uid, canRefreshReputation]);
 
   // Recalculate groupsCreated based on groups where I am creator or host
   useEffect(() => {
@@ -891,6 +893,7 @@ export default function Profile() {
 
   const updateBattery = (val: number) => {
     setSocialBattery(val);
+    if (!canUpdateSocialBattery) return;
     if (batterySaveRef.current) {
       window.clearTimeout(batterySaveRef.current);
     }
@@ -1050,7 +1053,11 @@ export default function Profile() {
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] text-neutral-500">
                   <span>Private to you</span>
-                  {batterySaving ? <span>Saving…</span> : <span>Auto-saved</span>}
+                  {canUpdateSocialBattery ? (
+                    batterySaving ? <span>Saving…</span> : <span>Auto-saved</span>
+                  ) : (
+                    <span>Saved locally</span>
+                  )}
                 </div>
               </div>
             </div>
