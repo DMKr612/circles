@@ -200,37 +200,6 @@ export default function Onboarding() {
   // segmented progress (0..100)
   const progressPct = ((index + 1) / SLIDES.length) * 100;
 
-  const base = (import.meta.env.BASE_URL || "/").replace(/\/+$/, "");
-  const redirectTo = `${window.location.origin}${base}/auth/callback`;
-
-  async function loginFacebook() {
-    try {
-      setAuthErr(null);
-      localStorage.setItem("onboardingSeen", "1");
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "facebook",
-        options: { redirectTo },
-      });
-      if (error) throw error;
-    } catch (err: any) {
-      setAuthErr(err?.message ?? "Failed to start Facebook login");
-    }
-  }
-
-  async function loginGoogle() {
-    try {
-      setAuthErr(null);
-      localStorage.setItem("onboardingSeen", "1");
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo },
-      });
-      if (error) throw error;
-    } catch (err: any) {
-      setAuthErr(err?.message ?? "Failed to start Google login");
-    }
-  }
-
   async function submitCreds(e: React.FormEvent) {
     e.preventDefault();
     setAuthErr(null);
@@ -427,22 +396,10 @@ export default function Onboarding() {
                             <>
                               <div className="grid grid-cols-1 gap-3">
                                 <button
-                                  onClick={loginGoogle}
-                                  className="w-full rounded-xl bg-white px-4 py-3 font-semibold text-slate-900 shadow-lg shadow-indigo-500/20 transition hover:-translate-y-0.5 hover:shadow-xl"
-                                >
-                                  Continue with Google
-                                </button>
-                                <button
                                   onClick={() => { setShowEmailForm(true); setAuthErr(null); }}
                                   className="w-full rounded-xl bg-gradient-to-r from-indigo-500 via-fuchsia-500 to-cyan-400 px-4 py-3 font-semibold text-white shadow-lg shadow-indigo-500/25 transition hover:-translate-y-0.5 hover:shadow-xl"
                                 >
                                   Continue with Email
-                                </button>
-                                <button
-                                  onClick={loginFacebook}
-                                  className="w-full rounded-xl bg-[#1877F2] px-4 py-3 font-semibold text-white shadow-lg shadow-blue-600/30 transition hover:-translate-y-0.5 hover:shadow-xl"
-                                >
-                                  Continue with Facebook
                                 </button>
                               </div>
 
