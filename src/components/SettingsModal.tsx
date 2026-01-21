@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { X, Upload, Sparkles, Moon, Sun, MonitorSmartphone, Bell } from "lucide-react";
+import { X, Upload, Sparkles, Moon, Sun, MonitorSmartphone, Bell, Trash2 } from "lucide-react";
 import { CATEGORIES, GAME_LIST } from "@/lib/constants";
 // @ts-ignore: package ships without TS types in this setup
 import { City } from 'country-state-city';
@@ -38,6 +38,8 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteMsg, setDeleteMsg] = useState<string | null>(null);
 
   // All German cities from country-state-city, deduped + sorted
   const [deCities, setDeCities] = useState<string[]>([]);
@@ -203,6 +205,56 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
       setSettingsMsg('Avatar upload failed');
     } finally {
       setAvatarUploading(false);
+    }
+  }
+
+  async function deleteAccount() {
+    if (!uid) return;
+    setDeleteMsg(null);
+    const ok = window.confirm(
+      "This will permanently delete your account, your chats, and any groups you created. This cannot be undone."
+    );
+    if (!ok) return;
+    const typed = window.prompt('Type DELETE to confirm account deletion.');
+    if (typed !== "DELETE") {
+      setDeleteMsg("Deletion cancelled.");
+      return;
+    }
+    setDeleteBusy(true);
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke("delete-account", {
+        body: { confirm: true }
+      });
+      if (fnErr) {
+        let msg = fnErr.message || "Failed to delete account.";
+        try {
+          const payload = await fnErr.context.json();
+          if (payload?.error) msg = payload.error;
+        } catch {}
+        throw new Error(msg);
+      }
+      if ((data as any)?.error) throw new Error((data as any).error);
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+      try {
+        localStorage.removeItem('onboardingSeen');
+        sessionStorage.clear();
+      } catch {}
+      const base = `${window.location.origin}${import.meta.env.BASE_URL}`;
+      try {
+        if ('serviceWorker' in navigator) {
+          const regs = await navigator.serviceWorker.getRegistrations();
+          await Promise.all(regs.map(r => r.unregister()));
+        }
+      } catch {}
+      window.location.replace(base);
+    } catch (err: any) {
+      const msg = err?.message || "Failed to delete account.";
+      setDeleteMsg(msg);
+      error(msg);
+    } finally {
+      setDeleteBusy(false);
     }
   }
   
@@ -396,6 +448,34 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
               Push notifications
             </label>
           </div>
+        </div>
+
+        {/* Danger zone */}
+        <div className="rounded-2xl border border-red-100 bg-red-50/70 p-4 shadow-sm">
+          <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-red-600">
+            <Trash2 className="h-4 w-4" /> Danger zone
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-red-900">Delete account</div>
+              <div className="text-[11px] text-red-700/80">
+                Permanently deletes your account, chats, and groups you created.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={deleteAccount}
+              disabled={deleteBusy}
+              className="rounded-xl border border-red-200 bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-md transition hover:bg-red-700 disabled:opacity-60"
+            >
+              {deleteBusy ? "Deleting…" : "Delete account"}
+            </button>
+          </div>
+          {deleteMsg && (
+            <div className="mt-3 rounded-xl border border-red-200 bg-white/70 px-3 py-2 text-xs text-red-700">
+              {deleteMsg}
+            </div>
+          )}
         </div>
 
         {settingsMsg && (
