@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from "../../lib/supabase";
+import { checkGroupJoinBlock, joinBlockMessage } from "../../lib/ratings";
 import { Search, MapPin, ArrowLeft, Clock, HelpCircle, Lightbulb } from "lucide-react";
 import { GAME_LIST } from "../../lib/constants";
 import { useAuth } from "../../App";
@@ -185,6 +186,13 @@ export default function GroupsByGame() {
     const requiredLevel = Number(group.requires_verification_level ?? 1);
     if (myVerificationLevel < requiredLevel) {
       setErr('This circle is for verified members only. Increase your verification level to join.');
+      return;
+    }
+    const blockReason = await checkGroupJoinBlock(userId, group.id);
+    if (blockReason) {
+      const message = joinBlockMessage(blockReason);
+      window.alert(message);
+      setErr(message);
       return;
     }
 

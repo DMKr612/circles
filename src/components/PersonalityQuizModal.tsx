@@ -155,7 +155,7 @@ export default function PersonalityQuizModal({ open, onClose, onCompleted, curre
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[120] grid place-items-center bg-black/60 px-4" onClick={onClose}>
+    <div className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-6 md:items-center" onClick={onClose}>
       <div
         className="w-full max-w-3xl rounded-3xl bg-white shadow-2xl ring-1 ring-neutral-200/80 overflow-hidden"
         onClick={(e) => e.stopPropagation()}

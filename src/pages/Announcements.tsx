@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ANNOUNCEMENT_ADMINS, type Announcement } from "@/lib/announcements";
 import { ArrowLeft, CalendarClock, Megaphone, MessageCircle, MapPin, Trash2, Edit2, Plus, Map } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
 
 function formatEventRange(evt: Announcement): string {
   const start = new Date(evt.datetime);
@@ -203,6 +204,12 @@ export default function AnnouncementsPage() {
       // If this announcement is tied to a circle, join that group so it appears in My Groups & chat
       let groupIdToJoin: string | null = evt.group_id || null;
       if (groupIdToJoin) {
+        const blockReason = await checkGroupJoinBlock(uid, groupIdToJoin);
+        if (blockReason) {
+          const message = joinBlockMessage(blockReason);
+          window.alert(message);
+          return;
+        }
         const { error } = await supabase.from('group_members').insert({
           group_id: groupIdToJoin,
           user_id: uid,

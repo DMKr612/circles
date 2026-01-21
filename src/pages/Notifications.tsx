@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail, Users, X, Megaphone, MapPin, CalendarClock } from "lucide-react";
+import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail, Users, X, Megaphone, MapPin, CalendarClock, Star } from "lucide-react";
 import { useAuth } from "@/App";
+import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 
 type CalendarEntry = {
   id: string;
@@ -25,10 +26,16 @@ export default function NotificationsPage() {
   
   // Raw Data
   const [friendReqs, setFriendReqs] = useState<any[]>([]);
+  const [reconnectReqs, setReconnectReqs] = useState<any[]>([]);
   const [invites, setInvites] = useState<any[]>([]);
   const [polls, setPolls] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [votes, setVotes] = useState<any[]>([]);
+  const [ratings, setRatings] = useState<any[]>([]);
+  const [reconnectRatings, setReconnectRatings] = useState<Record<string, { stars: number; nextAllowedAt: string | null; editUsed: boolean; busy?: boolean; err?: string }>>({});
+  const [reconnectHover, setReconnectHover] = useState<Record<string, number | null>>({});
+  const [viewUserId, setViewUserId] = useState<string | null>(null);
+  const [viewOpen, setViewOpen] = useState(false);
 
   // UI State
   const [showOlder, setShowOlder] = useState(false);
@@ -72,7 +79,7 @@ export default function NotificationsPage() {
       const bail = setTimeout(() => setLoading(false), 8000); // ensure UI frees if a query hangs
 
       try {
-        const [rpcRes, invRes, myGroupsRes, annRes] = await Promise.all([
+        const [rpcRes, invRes, myGroupsRes, annRes, reconnectRes, ratingsRes] = await Promise.all([
           supabase.rpc("get_my_friend_requests"),
           supabase
             .from("group_members" as any)
@@ -89,7 +96,19 @@ export default function NotificationsPage() {
             .from("announcements")
             .select("id, title, description, datetime, location, group_id")
             .order("datetime", { ascending: true })
-            .limit(5)
+            .limit(5),
+          supabase
+            .from("reconnect_requests")
+            .select("id, requester_id, target_id, message, status, created_at")
+            .eq("target_id", userId)
+            .eq("status", "pending")
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("rating_pairs")
+            .select("rater_id, stars, created_at, updated_at")
+            .eq("ratee_id", userId)
+            .order("updated_at", { ascending: false })
+            .limit(20)
         ]);
 
         const friendRequests = (rpcRes.data || []).map((r: any) => ({
@@ -106,8 +125,65 @@ export default function NotificationsPage() {
         const inv = invRes.data;
         const myGroups = myGroupsRes.data;
         const anns = annRes.data || [];
+        const reconnectRaw = reconnectRes.data || [];
+        const ratingsRaw = ratingsRes.data || [];
+        const reqIds = Array.from(new Set(reconnectRaw.map((r: any) => r.requester_id).filter(Boolean)));
 
         const gIds = myGroups?.map((g: any) => g.group_id) || [];
+        if (reconnectRaw.length) {
+          const { data: profs } = await supabase
+            .from("profiles")
+            .select("user_id, name, avatar_url, allow_ratings")
+            .in("user_id", reqIds);
+          const map = new Map<string, { name: string; avatar_url: string | null; allow_ratings?: boolean | null }>();
+          (profs ?? []).forEach((p: any) =>
+            map.set(p.user_id, { name: p.name, avatar_url: p.avatar_url, allow_ratings: p.allow_ratings })
+          );
+          const merged = reconnectRaw.map((r: any) => ({
+            ...r,
+            profiles: map.get(r.requester_id) || null
+          }));
+          setReconnectReqs(merged);
+        } else {
+          setReconnectReqs([]);
+        }
+
+        if (reqIds.length) {
+          const { data: pairs } = await supabase
+            .from("rating_pairs")
+            .select("ratee_id, stars, next_allowed_at, edit_used")
+            .eq("rater_id", userId)
+            .in("ratee_id", reqIds);
+          const ratingMap: Record<string, { stars: number; nextAllowedAt: string | null; editUsed: boolean }> = {};
+          (pairs ?? []).forEach((p: any) => {
+            if (!p?.ratee_id) return;
+            ratingMap[p.ratee_id] = {
+              stars: Number(p.stars ?? 0),
+              nextAllowedAt: p.next_allowed_at ?? null,
+              editUsed: Boolean(p.edit_used ?? false),
+            };
+          });
+          setReconnectRatings(ratingMap);
+        } else {
+          setReconnectRatings({});
+        }
+
+        if (ratingsRaw.length) {
+          const raterIds = Array.from(new Set(ratingsRaw.map((r: any) => r.rater_id).filter(Boolean)));
+          const { data: profs } = await supabase
+            .from("profiles")
+            .select("user_id, name, avatar_url")
+            .in("user_id", raterIds);
+          const map = new Map<string, { name: string; avatar_url: string | null }>();
+          (profs ?? []).forEach((p: any) => map.set(p.user_id, { name: p.name, avatar_url: p.avatar_url }));
+          const merged = ratingsRaw.map((r: any) => ({
+            ...r,
+            profiles: map.get(r.rater_id) || null
+          }));
+          setRatings(merged);
+        } else {
+          setRatings([]);
+        }
 
         let fetchedPolls: any[] = [];
         let fetchedMsgs: any[] = [];
@@ -305,6 +381,15 @@ export default function NotificationsPage() {
       });
     });
 
+    reconnectReqs.forEach(r => {
+      events.push({
+        id: `reconnect-${r.id}`,
+        type: 'reconnect_req',
+        date: new Date(r.created_at),
+        data: r
+      });
+    });
+
     // B. Group Invites
     invites.forEach(i => {
       events.push({
@@ -374,6 +459,18 @@ export default function NotificationsPage() {
       });
     });
 
+    // F. Ratings received
+    ratings.forEach(r => {
+      const when = r.updated_at || r.created_at;
+      if (!when) return;
+      events.push({
+        id: `rating-${r.rater_id}-${when}`,
+        type: 'rating',
+        date: new Date(when),
+        data: r
+      });
+    });
+
     // Sort all by date descending
     events.sort((a, b) => b.date.getTime() - a.date.getTime());
 
@@ -382,7 +479,7 @@ export default function NotificationsPage() {
     const older = events.filter(e => e.date.getTime() < startOfToday.getTime());
 
     return { recent, older };
-  }, [friendReqs, invites, polls, messages, votes]);
+  }, [friendReqs, reconnectReqs, invites, polls, messages, votes, ratings]);
 
   const upcomingEntries = useMemo(() => {
     const now = Date.now();
@@ -476,6 +573,24 @@ export default function NotificationsPage() {
     setFriendReqs(prev => prev.filter(r => r.id !== id));
   }
 
+  async function handleAcceptReconnect(req: any) {
+    if (!user) return;
+    await supabase
+      .from("reconnect_requests")
+      .update({ status: "accepted" })
+      .eq("id", req.id);
+    await supabase.rpc("remove_friend", { other_id: req.requester_id });
+    setReconnectReqs(prev => prev.filter(r => r.id !== req.id));
+  }
+
+  async function handleDeclineReconnect(req: any) {
+    await supabase
+      .from("reconnect_requests")
+      .update({ status: "declined" })
+      .eq("id", req.id);
+    setReconnectReqs(prev => prev.filter(r => r.id !== req.id));
+  }
+
   async function handleJoinGroup(gid: string) {
     if (!user) return;
 
@@ -494,6 +609,52 @@ export default function NotificationsPage() {
     navigate(`/group/${gid}`);
   }
 
+  function openProfileView(otherId?: string | null) {
+    if (!otherId) return;
+    setViewUserId(otherId);
+    setViewOpen(true);
+  }
+
+  function updateReconnectRating(
+    targetId: string,
+    patch: Partial<{ stars: number; nextAllowedAt: string | null; editUsed: boolean; busy?: boolean; err?: string }>
+  ) {
+    setReconnectRatings(prev => {
+      const current = prev[targetId] || { stars: 0, nextAllowedAt: null, editUsed: false };
+      return { ...prev, [targetId]: { ...current, ...patch } };
+    });
+  }
+
+  async function rateReconnectUser(targetId: string, stars: number) {
+    if (!user) return;
+    updateReconnectRating(targetId, { busy: true, err: undefined });
+    try {
+      const { error } = await supabase.rpc("submit_rating", { p_ratee: targetId, p_stars: stars });
+      if (error) throw error;
+      const { data: pair } = await supabase
+        .from("rating_pairs")
+        .select("stars, next_allowed_at, edit_used")
+        .eq("rater_id", user.id)
+        .eq("ratee_id", targetId)
+        .maybeSingle();
+      updateReconnectRating(targetId, {
+        stars: Number(pair?.stars ?? stars),
+        nextAllowedAt: pair?.next_allowed_at ?? null,
+        editUsed: Boolean(pair?.edit_used ?? false),
+        busy: false,
+        err: undefined,
+      });
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      let errMsg = "Rating failed.";
+      if (/rate_cooldown_active/i.test(msg)) errMsg = "Cooldown active. Try again later.";
+      else if (/ratings_disabled/i.test(msg)) errMsg = "Ratings are disabled for this user.";
+      else if (/not_authenticated/i.test(msg)) errMsg = "Please sign in to rate.";
+      else if (/invalid_stars/i.test(msg)) errMsg = "Rating must be between 1 and 6.";
+      updateReconnectRating(targetId, { busy: false, err: errMsg });
+    }
+  }
+
   // --- Render Helpers ---
 
   const renderEvent = (e: any) => {
@@ -504,14 +665,18 @@ export default function NotificationsPage() {
         {/* Icon Column */}
         <div className={`h-10 w-10 shrink-0 rounded-full flex items-center justify-center ${
           e.type === 'friend_req' ? 'bg-purple-100 text-purple-600' :
+          e.type === 'reconnect_req' ? 'bg-rose-100 text-rose-600' :
           e.type === 'invite' ? 'bg-amber-100 text-amber-600' :
           e.type === 'poll' ? 'bg-blue-100 text-blue-600' :
+          e.type === 'rating' ? 'bg-amber-100 text-amber-600' :
           e.type === 'vote' ? 'bg-emerald-100 text-emerald-600' :
           'bg-emerald-100 text-emerald-600'
         }`}>
           {e.type === 'friend_req' && <UserPlus className="h-5 w-5" />}
+          {e.type === 'reconnect_req' && <Mail className="h-5 w-5" />}
           {e.type === 'invite' && <Mail className="h-5 w-5" />}
           {e.type === 'poll' && <CheckSquare className="h-5 w-5" />}
+          {e.type === 'rating' && <Star className="h-5 w-5" />}
           {e.type === 'vote' && <CheckSquare className="h-5 w-5" />}
           {e.type === 'message_summary' && <MessageCircle className="h-5 w-5" />}
         </div>
@@ -527,6 +692,58 @@ export default function NotificationsPage() {
               <div className="mt-2 flex gap-2">
                 <button onClick={() => handleAcceptFriend(e.data.id, e.data.user_id_a)} className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold">Accept</button>
               </div>
+            </>
+          )}
+
+          {e.type === 'reconnect_req' && (
+            <>
+              <div className="text-sm font-bold text-neutral-900">{e.data.profiles?.name || "User"}</div>
+              <div className="text-xs text-neutral-500">Wants to reconnect</div>
+              {e.data.message && (
+                <div className="mt-1 text-xs text-neutral-600">&quot;{e.data.message}&quot;</div>
+              )}
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => handleAcceptReconnect(e.data)} className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold">Accept</button>
+                <button onClick={() => handleDeclineReconnect(e.data)} className="bg-neutral-100 text-neutral-700 px-3 py-1 rounded-full text-xs font-bold">Decline</button>
+              </div>
+              {e.data.requester_id && (
+                <div className="mt-3 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Update rating</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="flex items-center gap-1">
+                      {Array.from({ length: 6 }).map((_, i) => {
+                        const n = i + 1;
+                        const ratingState = reconnectRatings[e.data.requester_id] || { stars: 0, busy: false };
+                        const hover = reconnectHover[e.data.requester_id] ?? null;
+                        const active = (hover ?? ratingState.stars) >= n;
+                        const canRate = e.data.profiles?.allow_ratings !== false;
+                        return (
+                          <button
+                            key={n}
+                            disabled={ratingState.busy || !canRate}
+                            onMouseEnter={() => setReconnectHover(prev => ({ ...prev, [e.data.requester_id]: n }))}
+                            onMouseLeave={() => setReconnectHover(prev => ({ ...prev, [e.data.requester_id]: null }))}
+                            onClick={() => rateReconnectUser(e.data.requester_id, n)}
+                            className={`text-lg ${active ? "text-amber-500" : "text-neutral-300"} ${ratingState.busy || !canRate ? "cursor-not-allowed" : "hover:scale-110 transition-transform"}`}
+                            aria-label={`Rate ${n} star${n > 1 ? "s" : ""}`}
+                          >
+                            ★
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="text-[11px] text-neutral-500">
+                      {Number((reconnectRatings[e.data.requester_id]?.stars ?? 0)).toFixed(0)} / 6
+                    </div>
+                  </div>
+                  {e.data.profiles?.allow_ratings === false && (
+                    <div className="mt-1 text-[10px] text-neutral-400">Ratings disabled.</div>
+                  )}
+                  {reconnectRatings[e.data.requester_id]?.err && (
+                    <div className="mt-1 text-[10px] text-red-600">{reconnectRatings[e.data.requester_id]?.err}</div>
+                  )}
+                </div>
+              )}
             </>
           )}
 
@@ -563,6 +780,17 @@ export default function NotificationsPage() {
               </div>
               <div className="text-xs text-neutral-500">
                 {e.data.group_polls?.groups?.title ? `Group: ${e.data.group_polls.groups.title}` : ''}
+              </div>
+            </div>
+          )}
+
+          {/* Rating */}
+          {e.type === 'rating' && (
+            <div onClick={() => openProfileView(e.data.rater_id)} className="cursor-pointer">
+              <div className="text-sm font-bold text-neutral-900">{e.data.profiles?.name || "Someone"} rated you</div>
+              <div className="text-xs text-neutral-500 flex items-center gap-1">
+                <Star className="h-3.5 w-3.5 text-amber-500" />
+                <span>{Number(e.data.stars ?? 0)} / 6</span>
               </div>
             </div>
           )}
@@ -782,7 +1010,7 @@ export default function NotificationsPage() {
       )}
 
       {calendarOpen && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm px-4 py-6">
+        <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm px-4 py-6 md:items-center">
           <div className="relative w-full max-w-4xl rounded-3xl bg-white p-6 shadow-2xl">
             <button
               onClick={() => setCalendarOpen(false)}
@@ -955,6 +1183,14 @@ export default function NotificationsPage() {
           </div>
         </div>
       )}
+      <ViewOtherProfileModal
+        isOpen={viewOpen}
+        onClose={() => {
+          setViewOpen(false);
+          setViewUserId(null);
+        }}
+        viewUserId={viewUserId}
+      />
     </div>
   );
 }

@@ -255,38 +255,43 @@ export default function BrowsePage() {
   useEffect(() => {
     let mounted = true;
     (async () => {
-      // FIX: Added 'group_id' to selection so we can distinguish unique groups
-      const { data: gm } = await supabase.from("group_members").select("user_id, group_id, groups(game)");
-      if (!mounted || !gm) return;
-      
-      const uniqueGroups: Record<string, Set<string>> = {}; // To count unique groups
-      const mc: Record<string, number> = {}; // To count total members
-      const users = new Set<string>();
+      try {
+        const { data, error } = await supabase.rpc("get_game_stats");
+        if (error) throw error;
+        if (!mounted) return;
 
-      gm.forEach((r: any) => {
-         const g = (r.groups?.game || "").toLowerCase();
-         const gid = r.group_id;
+        const gc: Record<string, number> = {};
+        const mc: Record<string, number> = {};
+        (data || []).forEach((row: any) => {
+          const key = String(row.game || "").trim().toLowerCase();
+          if (!key) return;
+          gc[key] = Number(row.group_count ?? 0);
+          mc[key] = Number(row.member_count ?? 0);
+        });
 
-         if (g && gid) {
-             // 1. Member Count: Increment for every row
-             mc[g] = (mc[g] || 0) + 1;
+        setGroupCountByGame(gc);
+        setMemberCountByGame(mc);
+      } catch (err) {
+        console.warn("[browse] game stats fallback", err);
+        const { data: groups } = await supabase
+          .from("groups")
+          .select("id, game");
+        if (!mounted || !groups) return;
 
-             // 2. Group Count: Add ID to Set (automatically handles duplicates)
-             if (!uniqueGroups[g]) uniqueGroups[g] = new Set();
-             uniqueGroups[g].add(gid);
-         }
-         if (r.user_id) users.add(r.user_id);
-      });
+        const gc: Record<string, number> = {};
+        const mc: Record<string, number> = {};
+        (groups as any[]).forEach((g) => {
+          const key = String(g.game || "").trim().toLowerCase();
+          if (!key) return;
+          gc[key] = (gc[key] || 0) + 1;
+        });
+        Object.keys(gc).forEach((k) => {
+          mc[k] = gc[k];
+        });
 
-      // Convert Sets to numbers for the state
-      const gc: Record<string, number> = {};
-      Object.keys(uniqueGroups).forEach(k => {
-        gc[k] = uniqueGroups[k].size;
-      });
-
-      setGroupCountByGame(gc);
-      setMemberCountByGame(mc);
-      setTotalOnlineLive(users.size);
+        setGroupCountByGame(gc);
+        setMemberCountByGame(mc);
+      }
     })();
     return () => { mounted = false; };
   }, []);
@@ -794,9 +799,9 @@ export default function BrowsePage() {
 
       {/* Request Modal */}
       {showReq && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto px-4 py-6 md:items-center">
            <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowReq(false)} />
-           <div className="relative w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl animate-in zoom-in-95 duration-200">
+           <div className="relative w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl animate-in zoom-in-95 duration-200 max-h-[calc(100dvh-3rem)] overflow-y-auto">
               <h3 className="text-xl font-bold text-neutral-900 mb-2">Request Game</h3>
               <p className="text-sm text-neutral-500 mb-6">Don't see your favorite game? Let us know.</p>
               

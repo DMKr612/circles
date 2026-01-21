@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, lazy, Suspense, useRef } from "react";
 import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import { checkGroupJoinBlock, joinBlockMessage } from "../lib/ratings";
 import type { Group, Poll, PollOption, GroupMember, GroupEvent, GroupMoment } from "../types";
 import { 
   MapPin, Users, Calendar, Clock, Share2, MessageCircle, 
@@ -477,6 +478,13 @@ export default function GroupDetail() {
     }
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) { setMsg("Please sign in."); return; }
+    const blockReason = await checkGroupJoinBlock(auth.user.id, group.id);
+    if (blockReason) {
+      const message = joinBlockMessage(blockReason);
+      window.alert(message);
+      setMsg(message);
+      return;
+    }
     const payload = { group_id: id, user_id: auth.user.id, role: "member", status: "active", last_joined_at: new Date().toISOString() };
     const { error } = await supabase
       .from("group_members")
@@ -1314,8 +1322,8 @@ export default function GroupDetail() {
 
       {/* Create Vote Modal */}
       {createOpen && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-2xl ring-1 ring-black/5 max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 z-[150] flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm px-4 py-6 md:items-center animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-2xl ring-1 ring-black/5 max-h-[calc(100dvh-3rem)] flex flex-col">
             <div className="flex justify-between items-center mb-5">
                 <h3 className="text-xl font-bold text-neutral-900">New Vote</h3>
                 <button onClick={() => setCreateOpen(false)} className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"><X className="h-5 w-5" /></button>
@@ -1419,8 +1427,8 @@ export default function GroupDetail() {
 
       {/* Members Modal */}
       {membersOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl overflow-hidden flex flex-col max-h-[80vh]">
+        <div className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm px-4 py-6 md:items-center animate-in fade-in duration-200">
+          <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-3rem)]">
             <div className="flex justify-between items-center mb-4 shrink-0">
                <h3 className="text-xl font-bold text-neutral-900">Members ({members.length})</h3>
                <button onClick={() => setMembersOpen(false)} className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"><X className="h-5 w-5" /></button>
@@ -1512,7 +1520,7 @@ export default function GroupDetail() {
       />
       {/* Chat Panel - WRAPPED IN MODAL */}
       {chatOpen && group && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto px-4 py-6 md:items-center animate-in zoom-in-95 duration-200">
            {/* Backdrop */}
            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setChatOpen(false)} />
            

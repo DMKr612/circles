@@ -1,12 +1,13 @@
 import React, { useEffect, useLayoutEffect, useMemo, useState, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import { checkGroupJoinBlock, joinBlockMessage, isLowRatingBlock } from "@/lib/ratings";
 import { Link, useNavigate, useParams, useLocation } from "react-router-dom";
 import { useProfile } from "../hooks/useProfile";
 import { useAuth } from "@/App";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 import PersonalityQuizModal from "@/components/PersonalityQuizModal";
 import UserCard from "@/components/UserCard";
-import { X, List, Sparkles, Battery, Star, Phone } from "lucide-react";
+import { X, List, Sparkles, Battery, Phone } from "lucide-react";
 
 // Demo stubs for toast calls (prevents red lines if Toaster is removed)
 const success = (m?: string) => console.log("[ok]", m || "");
@@ -344,14 +345,15 @@ export default function Profile() {
     (async () => {
       const { data } = await supabase
         .from("profiles")
-        .select("name, avatar_url, city, reputation_score, personality_traits")
+        .select("name, avatar_url, city, rating_avg, rating_count, personality_traits")
         .eq("user_id", routeUserId)
         .maybeSingle();
       if (!data) return;
       setViewName((data as any)?.name ?? "");
       setViewAvatar((data as any)?.avatar_url ?? null);
       setViewCity((data as any)?.city ?? null);
-      setViewReputationScore(Number((data as any)?.reputation_score ?? 0));
+      setViewRatingAvg(Number((data as any)?.rating_avg ?? 0));
+      setViewRatingCount(Number((data as any)?.rating_count ?? 0));
       setViewPersonality((data as any)?.personality_traits ?? null);
     })();
   }, [viewingOther, routeUserId]);
@@ -427,7 +429,7 @@ export default function Profile() {
   const [hoverRating, setHoverRating] = useState<number | null>(null);
   const [pairNextAllowedAt, setPairNextAllowedAt] = useState<string | null>(null);
   const [pairEditUsed, setPairEditUsed] = useState<boolean>(false);
-  const [viewFriendStatus, setViewFriendStatus] = useState<'none' | 'pending_in' | 'pending_out' | 'accepted' | 'blocked'>('none');
+  const [viewFriendStatus, setViewFriendStatus] = useState<'none' | 'pending_in' | 'pending_out' | 'accepted' | 'blocked_by_me' | 'blocked_by_them'>('none');
   const [reputationScore, setReputationScore] = useState<number>(0);
   const [personalityTraits, setPersonalityTraits] = useState<any | null>(null);
   const [socialBattery, setSocialBattery] = useState<number>(100);
@@ -448,7 +450,6 @@ export default function Profile() {
   const [supportOpen, setSupportOpen] = useState(false);
   const lastBatteryMetRef = useRef<boolean>(false);
   const [quizOpen, setQuizOpen] = useState(false);
-  const [viewReputationScore, setViewReputationScore] = useState<number>(0);
   const [viewPersonality, setViewPersonality] = useState<any | null>(null);
   const [viewCity, setViewCity] = useState<string | null>(null);
  
@@ -465,8 +466,8 @@ export default function Profile() {
   // --- Derived State ---
   const headerName = viewingOther ? (viewName || (routeUserId ? routeUserId.slice(0,6) : '')) : (profile?.name || user?.email || '');
   const headerAvatar = viewingOther ? viewAvatar : profile?.avatar_url;
-  const headerReputationScore = viewingOther ? viewReputationScore : reputationScore;
-  const headerStars = Math.round(((headerReputationScore || 0) / 20) * 10) / 10;
+  const headerRatingAvg = viewingOther ? viewRatingAvg : (profile?.rating_avg ?? 0);
+  const headerRatingCount = viewingOther ? viewRatingCount : (profile?.rating_count ?? 0);
   const headerPersonality = viewingOther ? viewPersonality : personalityTraits;
   const headerInitials = (headerName || '?').slice(0, 2).toUpperCase() ?? '?';
   const supportNumbers = [
@@ -720,6 +721,12 @@ export default function Profile() {
 
   const acceptGroupInvite = async (gid: string) => {
     if (!uid) return;
+    const blockReason = await checkGroupJoinBlock(uid, gid);
+    if (blockReason) {
+      const message = joinBlockMessage(blockReason);
+      window.alert(message);
+      return;
+    }
     const { error } = await supabase
       .from("group_members")
       .update({ status: "active" })
@@ -874,6 +881,18 @@ export default function Profile() {
     try {
       const { error: rpcErr } = await supabase.rpc('submit_rating', { p_ratee: viewUserId, p_stars: v });
       if (rpcErr) throw rpcErr;
+
+      if (isLowRatingBlock(v)) {
+        await supabase
+          .from("reconnect_requests")
+          .delete()
+          .eq("requester_id", viewUserId)
+          .eq("target_id", uid);
+        await supabase.rpc("remove_friend", { other_id: viewUserId });
+        const { error: blockErr } = await supabase.rpc("block_user", { target_id: viewUserId });
+        if (blockErr) console.warn("Auto-block failed after low rating:", blockErr);
+        setViewFriendStatus("blocked_by_me");
+      }
 
       // Reload pair status and aggregates
       await loadPairStatus(viewUserId);
@@ -1049,12 +1068,12 @@ export default function Profile() {
               <div className="text-lg font-semibold text-neutral-900">{headerName}</div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-neutral-800">
                 <span className="inline-flex items-center gap-1 text-lg leading-none">
-                  {Array.from({ length: 5 }).map((_, i) => (
-                    <span key={i}>{i + 1 <= Math.floor(headerStars) ? "★" : "☆"}</span>
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <span key={i}>{i + 1 <= Math.floor(headerRatingAvg) ? "★" : "☆"}</span>
                   ))}
                 </span>
-                <span className="text-xs font-semibold text-neutral-700">{headerStars.toFixed(1)} / 5 trust</span>
-                <span className="text-[11px] text-neutral-500">• {Math.round(headerReputationScore || 0)} pts</span>
+                <span className="text-xs font-semibold text-neutral-700">{headerRatingAvg.toFixed(1)} / 6</span>
+                <span className="text-[11px] text-neutral-500">• {headerRatingCount} rating{headerRatingCount === 1 ? "" : "s"}</span>
                 {headerPersonality && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-semibold text-emerald-800 ring-1 ring-emerald-100">
                     <Sparkles className="h-3 w-3" />
@@ -1127,7 +1146,8 @@ export default function Profile() {
                       name={headerName}
                       city={profile?.city}
                       avatarUrl={headerAvatar || undefined}
-                      reputationScore={reputationScore}
+                      ratingAvg={profile?.rating_avg}
+                      ratingCount={profile?.rating_count}
                       personalityTraits={personalityTraits}
                       subtitle="Public preview"
                     />
@@ -1186,8 +1206,11 @@ export default function Profile() {
                   <span className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700">
                     Meetings {batteryStats.events}/{BATTERY_THRESHOLDS.events}
                   </span>
-                  <span className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700">
-                    Rating {batteryStats.rating.toFixed(1)}/{BATTERY_THRESHOLDS.rating}
+                  <span
+                    className="rounded-full bg-neutral-50 px-2 py-1 font-semibold text-neutral-700"
+                    title={`Goal ${BATTERY_THRESHOLDS.rating}+ for social battery`}
+                  >
+                    Rating {batteryStats.rating.toFixed(1)}/6
                   </span>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[11px] text-neutral-500">
@@ -1318,12 +1341,12 @@ export default function Profile() {
       {/* --- Settings Modal --- */}
       {settingsOpen && (
         <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/40"
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 px-4 py-6 md:items-center"
           onClick={() => setSettingsOpen(false)}
         >
           <form
             onSubmit={(e) => { e.preventDefault(); saveSettings(); }}
-            className="w-[560px] max-w-[92vw] rounded-2xl border border-black/10 bg-white shadow-xl max-h-[90vh] overflow-hidden flex flex-col"
+            className="w-[560px] max-w-[92vw] rounded-2xl border border-black/10 bg-white shadow-xl max-h-[calc(100dvh-3rem)] overflow-hidden flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
@@ -1588,11 +1611,11 @@ function FriendsModal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/50 px-4"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 px-4 py-6 md:items-center"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-neutral-200 max-h-[80vh] overflow-hidden"
+        className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-neutral-200 max-h-[calc(100dvh-3rem)] overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-100">

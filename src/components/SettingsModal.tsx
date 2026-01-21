@@ -210,12 +210,12 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
 
   return (
     <div
-      className={isPage ? "min-h-screen bg-gradient-to-b from-neutral-50 via-white to-neutral-100 px-4 py-6" : "fixed inset-0 z-50 grid place-items-center bg-black/50 backdrop-blur-sm px-4"}
+      className={isPage ? "min-h-screen bg-gradient-to-b from-neutral-50 via-white to-neutral-100 px-4 py-6" : "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 backdrop-blur-sm px-4 py-6 md:items-center"}
       onClick={isPage ? undefined : onClose}
     >
       <form
         onSubmit={saveSettings}
-        className={`${isPage ? "mx-auto" : ""} w-[620px] max-w-[94vw] rounded-3xl border border-white/40 bg-white/90 shadow-[0_20px_80px_rgba(0,0,0,0.18)] backdrop-blur-xl p-6 space-y-5`}
+        className={`${isPage ? "mx-auto" : ""} w-[620px] max-w-[94vw] rounded-3xl border border-white/40 bg-white/90 shadow-[0_20px_80px_rgba(0,0,0,0.18)] backdrop-blur-xl p-6 space-y-5 ${isPage ? "" : "max-h-[calc(100dvh-3rem)] overflow-y-auto"}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between">

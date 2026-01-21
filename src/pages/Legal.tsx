@@ -29,7 +29,7 @@ export default function Legal() {
       <section className="mb-8 space-y-4">
         <h2 className="text-xl font-bold">Contact</h2>
         <p className="text-neutral-600 text-sm">
-          Questions? Email us at support@yourdomain.com
+          Questions? Email us at support@meincircles.com
         </p>
       </section>
     </div>

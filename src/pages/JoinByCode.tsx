@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
+import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
 
 // Simple 8-char A–Z/0–9 code guard; relax if your format differs
 const CODE_RE = /^[A-Z0-9]{6,12}$/i;
@@ -37,7 +38,27 @@ export default function JoinByCode() {
         return;
       }
 
-      // 3) Call RPC to join; handle null and errors
+      // 3) Check low-rating/blocked conflicts before joining
+      try {
+        const { data: groupRow } = await supabase
+          .from("groups")
+          .select("id")
+          .ilike("code", code)
+          .maybeSingle();
+        if (groupRow?.id) {
+          const blockReason = await checkGroupJoinBlock(auth.user.id, groupRow.id);
+          if (blockReason) {
+            const message = joinBlockMessage(blockReason);
+            if (!off) setMsg(message);
+            window.alert(message);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn("[join] conflict check failed", e);
+      }
+
+      // 4) Call RPC to join; handle null and errors
       try {
         const { data: gid, error } = await supabase.rpc("join_via_code", { p_code: code });
         if (error) {
@@ -48,7 +69,7 @@ export default function JoinByCode() {
           if (!off) setMsg("Invite not found or expired");
           return;
         }
-        // 4) Navigate to group
+        // 5) Navigate to group
         nav(`/group/${gid}`, { replace: true });
       } catch (e: any) {
         if (!off) setMsg(readableError(e?.message || String(e)));

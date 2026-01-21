@@ -5,27 +5,25 @@ type Props = {
   name: string;
   city?: string | null;
   avatarUrl?: string | null;
-  reputationScore?: number;
+  ratingAvg?: number;
+  ratingCount?: number;
   personalityTraits?: any | null;
   subtitle?: string;
   onClick?: () => void;
 };
 
-function toStars(score: number | undefined) {
-  const val = typeof score === "number" ? score : 0;
-  return Math.round((val / 20) * 10) / 10;
-}
-
 export default function UserCard({
   name,
   city,
   avatarUrl,
-  reputationScore = 0,
+  ratingAvg,
+  ratingCount,
   personalityTraits,
   subtitle,
   onClick,
 }: Props) {
-  const stars = toStars(reputationScore);
+  const avg = typeof ratingAvg === "number" ? ratingAvg : 0;
+  const count = typeof ratingCount === "number" ? ratingCount : 0;
   const badgeName = personalityTraits?.badge?.name ?? personalityTraits?.summary ?? null;
   const traitTag = personalityTraits?.summary ?? badgeName;
 
@@ -48,10 +46,10 @@ export default function UserCard({
         <div className="flex-1 space-y-1 text-left">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold text-neutral-900">{name}</div>
-            <div className="flex items-center gap-1 text-[13px] font-semibold text-amber-700" title={`${stars} / 5`}>
+            <div className="flex items-center gap-1 text-[13px] font-semibold text-amber-700" title={`${avg.toFixed(1)} / 6 (${count} ratings)`}>
               <Star className="h-4 w-4 fill-amber-400 stroke-amber-400" />
-              {stars.toFixed(1)}
-              <span className="text-[11px] text-neutral-500">({Math.round(reputationScore)} pts)</span>
+              {avg.toFixed(1)}
+              <span className="text-[11px] text-neutral-500">({count} rating{count === 1 ? "" : "s"})</span>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
