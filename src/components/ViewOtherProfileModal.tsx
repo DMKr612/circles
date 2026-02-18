@@ -310,6 +310,7 @@ export default function ViewOtherProfileModal({ isOpen, onClose, viewUserId }: V
             name={viewName || "User"}
             city={viewCity}
             avatarUrl={viewAvatar || undefined}
+            avatarSeed={viewUserId}
             ratingAvg={viewRatingAvg}
             ratingCount={viewRatingCount}
             personalityTraits={viewPersonality}

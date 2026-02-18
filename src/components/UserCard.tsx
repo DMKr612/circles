@@ -1,10 +1,12 @@
 import React from "react";
 import { Star, Sparkles } from "lucide-react";
+import { getAvatarUrl } from "@/lib/avatar";
 
 type Props = {
   name: string;
   city?: string | null;
   avatarUrl?: string | null;
+  avatarSeed?: string | null;
   ratingAvg?: number;
   ratingCount?: number;
   personalityTraits?: any | null;
@@ -16,6 +18,7 @@ export default function UserCard({
   name,
   city,
   avatarUrl,
+  avatarSeed,
   ratingAvg,
   ratingCount,
   personalityTraits,
@@ -35,13 +38,7 @@ export default function UserCard({
     >
       <div className="flex items-center gap-3">
         <div className="h-12 w-12 shrink-0 overflow-hidden rounded-full bg-gradient-to-br from-indigo-100 to-emerald-100 ring-1 ring-white shadow-inner">
-          {avatarUrl ? (
-            <img src={avatarUrl} alt={name} className="h-full w-full object-cover" />
-          ) : (
-            <div className="grid h-full w-full place-items-center text-sm font-bold text-neutral-700">
-              {name.slice(0, 2).toUpperCase()}
-            </div>
-          )}
+          <img src={getAvatarUrl(avatarUrl, avatarSeed || name)} alt={name} className="h-full w-full object-cover" />
         </div>
         <div className="flex-1 space-y-1 text-left">
           <div className="flex items-center justify-between">

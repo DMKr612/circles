@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { CATEGORIES, GAME_LIST } from "@/lib/constants";
 import { Search, Users, Tag, MapPin, Globe, Loader2, Megaphone, CalendarClock, MessageCircle, ArrowRight, Map } from "lucide-react";
-import type { Announcement } from "@/lib/announcements";
+import { isAnnouncementVisibleForViewer, type Announcement } from "@/lib/announcements";
 import type { BrowseGroupRow } from "@/types";
 
 type MomentCard = {
@@ -128,23 +128,32 @@ export default function BrowsePage() {
   useEffect(() => {
     let active = true;
     (async () => {
-      const { data, error } = await supabase
-        .from('announcements')
-        .select('*')
-        .order('datetime', { ascending: true })
-        .limit(50);
-      if (error) throw error;
-      if (!active) return;
-      const now = Date.now();
-      const filtered = (data || []).filter((evt: any) => {
-        const start = new Date(evt.datetime);
-        if (Number.isNaN(start.getTime())) return false;
-        const expiry = new Date(start);
-        expiry.setHours(23, 59, 59, 999);
-        expiry.setDate(expiry.getDate() + 1);
-        return expiry.getTime() >= now;
-      }) as Announcement[];
-      setAnnouncements(filtered);
+      try {
+        const { data: auth } = await supabase.auth.getUser();
+        const viewerId = auth?.user?.id ?? null;
+        const viewerEmail = auth?.user?.email ?? null;
+
+        const { data, error } = await supabase
+          .from('announcements')
+          .select('*')
+          .order('datetime', { ascending: true })
+          .limit(50);
+        if (error) throw error;
+        if (!active) return;
+        const now = Date.now();
+        const filtered = (data || []).filter((evt: any) => {
+          if (!isAnnouncementVisibleForViewer(evt, { viewerId, viewerEmail, nowMs: now })) return false;
+          const start = new Date(evt.datetime);
+          if (Number.isNaN(start.getTime())) return false;
+          const expiry = new Date(start);
+          expiry.setHours(23, 59, 59, 999);
+          expiry.setDate(expiry.getDate() + 1);
+          return expiry.getTime() >= now;
+        }) as Announcement[];
+        setAnnouncements(filtered);
+      } catch (e) {
+        console.error("browse announcements load error", e);
+      }
     })();
     return () => { active = false; };
   }, []);

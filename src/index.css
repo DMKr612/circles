@@ -75,6 +75,14 @@ img { max-width: 100%; height: auto; display: block; }
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+@keyframes navIconFloat {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50% { transform: translate3d(0, -2px, 0); }
+}
+.nav-icon-click-anim {
+  animation: navIconFloat 0.9s ease-in-out infinite;
+  will-change: transform;
+}
 .page-transition { animation: pageFade 0.24s ease; }
 
 /* Respect device safe areas for bottom navs/CTAs */

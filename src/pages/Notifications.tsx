@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate } from "react-router-dom";
-import { Calendar, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageCircle, CheckSquare, UserPlus, Mail, Users, X, Megaphone, MapPin, CalendarClock, Star } from "lucide-react";
+import { Calendar, Check, CheckCircle2, ChevronLeft, ChevronRight, MessageCircle, CheckSquare, Mail, Users, Megaphone, Star } from "lucide-react";
 import { useAuth } from "@/App";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
+import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 
 type CalendarEntry = {
   id: string;
@@ -18,6 +19,137 @@ type CalendarEntry = {
   votes: number;
 };
 
+type ActivityType = "meetup_scheduled" | "poll_created" | "mention" | "rating_needed";
+
+type ActivityEntry = {
+  id: string;
+  type: ActivityType;
+  date: Date;
+  title: string;
+  description: string;
+  startsAt?: string;
+  actionLabel?: "View" | "Vote" | "Open chat" | "Rate" | "Confirm";
+  actionTo: string;
+};
+
+type ActivityDraft = {
+  id: string;
+  type: ActivityType;
+  createdAt: string;
+  groupId: string;
+  groupTitle: string;
+  startsAt?: string | null;
+  place?: string | null;
+  text?: string | null;
+};
+
+const UUID_REGEX =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
+const RAW_ENTITY_REGEX =
+  /\b(?:group[_\s-]?polls?|group[_\s-]?events?|group[_\s-]?votes?|rating[_\s-]?pairs?|profiles?|announcements?|table|column)\b/gi;
+
+function cleanActivityText(value: string | null | undefined, max = 120): string {
+  const cleaned = String(value || "")
+    .replace(UUID_REGEX, "")
+    .replace(/\bPOLL:\s*/gi, "")
+    .replace(RAW_ENTITY_REGEX, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .trim();
+  if (cleaned.length <= max) return cleaned;
+  return `${cleaned.slice(0, max - 1)}…`;
+}
+
+function formatActivityDateTime(iso: string | null | undefined): string {
+  if (!iso) return "Time TBD";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Time TBD";
+  const weekday = d.toLocaleDateString(undefined, { weekday: "short" });
+  const day = d.toLocaleDateString(undefined, { day: "2-digit" });
+  const month = d.toLocaleDateString(undefined, { month: "short" });
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${weekday} ${day} ${month} · ${time}`;
+}
+
+function titleCaseWords(value: string): string {
+  return String(value || "")
+    .replace(/\b[a-z]/g, (m) => m.toUpperCase())
+    .trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildMentionRegex(name: string | null | undefined, email: string | null | undefined): RegExp | null {
+  const fromName = String(name || "").trim();
+  const fromEmail = String(email || "").trim().split("@")[0] || "";
+  const first = fromName.split(/\s+/).filter(Boolean)[0] || "";
+  const candidates = Array.from(new Set([fromName, first, fromEmail].filter((v) => v.length >= 2)));
+  if (!candidates.length) return null;
+  const pattern = candidates.map(escapeRegExp).join("|");
+  return new RegExp(`@\\s*(?:${pattern})\\b`, "i");
+}
+
+function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
+  const groupTitle = titleCaseWords(cleanActivityText(draft.groupTitle, 42) || "Circle") || "Circle";
+  const createdDate = new Date(draft.createdAt);
+  const safeDate = Number.isNaN(createdDate.getTime()) ? new Date() : createdDate;
+  const startsAt = draft.startsAt || draft.createdAt;
+
+  if (draft.type === "meetup_scheduled") {
+    const startsMs = new Date(draft.startsAt || draft.createdAt).getTime();
+    const needsConfirm =
+      Number.isFinite(startsMs) &&
+      startsMs > Date.now() &&
+      startsMs - Date.now() <= 72 * 60 * 60 * 1000;
+    return {
+      id: draft.id,
+      type: draft.type,
+      date: safeDate,
+      title: `New meetup in ${groupTitle}`,
+      description: formatActivityDateTime(startsAt),
+      startsAt,
+      actionLabel: needsConfirm ? "Confirm" : "View",
+      actionTo: draft.groupId ? `/group/${draft.groupId}` : "/groups/mine",
+    };
+  }
+
+  if (draft.type === "poll_created") {
+    return {
+      id: draft.id,
+      type: draft.type,
+      date: safeDate,
+      title: `New vote in ${groupTitle}`,
+      description: cleanActivityText(draft.text || "Vote for the next meetup time.", 120) || "Vote for the next meetup time.",
+      actionLabel: "Vote",
+      actionTo: draft.groupId ? `/group/${draft.groupId}#poll` : "/groups/mine",
+    };
+  }
+
+  if (draft.type === "mention") {
+    return {
+      id: draft.id,
+      type: draft.type,
+      date: safeDate,
+      title: `You were mentioned in ${groupTitle}`,
+      description: cleanActivityText(draft.text || "Someone mentioned you.", 120) || "Someone mentioned you.",
+      actionLabel: "Open chat",
+      actionTo: draft.groupId ? `/chats?groupId=${draft.groupId}` : "/chats",
+    };
+  }
+
+  return {
+    id: draft.id,
+    type: "rating_needed",
+    date: safeDate,
+    title: "Rate your last meetup",
+    description: `${groupTitle} • ${formatActivityDateTime(draft.startsAt || draft.createdAt)}`,
+    actionLabel: "Rate",
+    actionTo: draft.groupId ? `/group/${draft.groupId}` : "/groups/mine",
+  };
+}
+
 export default function NotificationsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -30,6 +162,8 @@ export default function NotificationsPage() {
   const [invites, setInvites] = useState<any[]>([]);
   const [polls, setPolls] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
+  const [groupEvents, setGroupEvents] = useState<any[]>([]);
+  const [myRatingLog, setMyRatingLog] = useState<any[]>([]);
   const [votes, setVotes] = useState<any[]>([]);
   const [ratings, setRatings] = useState<any[]>([]);
   const [reconnectRatings, setReconnectRatings] = useState<Record<string, { stars: number; nextAllowedAt: string | null; editUsed: boolean; busy?: boolean; err?: string }>>({});
@@ -38,8 +172,7 @@ export default function NotificationsPage() {
   const [viewOpen, setViewOpen] = useState(false);
 
   // UI State
-  const [showOlder, setShowOlder] = useState(false);
-  const [calendarOpen, setCalendarOpen] = useState(false);
+  const [selectedTab, setSelectedTab] = useState<"activity" | "calendar">("activity");
   const [calendarLoading, setCalendarLoading] = useState(false);
   const [calendarEntries, setCalendarEntries] = useState<CalendarEntry[]>([]);
   const [calendarError, setCalendarError] = useState<string | null>(null);
@@ -52,6 +185,44 @@ export default function NotificationsPage() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [showUpcoming, setShowUpcoming] = useState(true);
   const [announcements, setAnnouncements] = useState<any[]>([]);
+  const [confirmingActionIds, setConfirmingActionIds] = useState<string[]>([]);
+  const [dismissedActionIds, setDismissedActionIds] = useState<string[]>([]);
+  const dismissedActionStorageKey = user ? `circles.dismissedActionRequired.${user.id}` : null;
+
+  useEffect(() => {
+    if (!dismissedActionStorageKey) {
+      setDismissedActionIds([]);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(dismissedActionStorageKey);
+      if (!raw) {
+        setDismissedActionIds([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setDismissedActionIds(parsed.filter((v) => typeof v === "string"));
+      } else {
+        setDismissedActionIds([]);
+      }
+    } catch {
+      setDismissedActionIds([]);
+    }
+  }, [dismissedActionStorageKey]);
+
+  useEffect(() => {
+    if (!dismissedActionStorageKey) return;
+    try {
+      localStorage.setItem(dismissedActionStorageKey, JSON.stringify(dismissedActionIds.slice(-300)));
+    } catch {
+      // best effort persistence; skip on storage errors
+    }
+  }, [dismissedActionIds, dismissedActionStorageKey]);
+
+  const dismissAction = useCallback((id: string) => {
+    setDismissedActionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
 
   const parseLocation = (location: string) => {
     const match = location.match(/^(.*?)(\s*\(([^)]+)\))?\s*$/);
@@ -94,7 +265,7 @@ export default function NotificationsPage() {
             .in("status", ["active", "accepted"]),
           supabase
             .from("announcements")
-            .select("id, title, description, datetime, location, group_id")
+            .select("id, title, description, datetime, location, group_id, created_at, created_by")
             .order("datetime", { ascending: true })
             .limit(5),
           supabase
@@ -124,7 +295,12 @@ export default function NotificationsPage() {
 
         const inv = invRes.data;
         const myGroups = myGroupsRes.data;
-        const anns = annRes.data || [];
+        const anns = (annRes.data || []).filter((a: any) =>
+          isAnnouncementVisibleForViewer(a, {
+            viewerId: userId,
+            viewerEmail: user?.email ?? null,
+          })
+        );
         const reconnectRaw = reconnectRes.data || [];
         const ratingsRaw = ratingsRes.data || [];
         const reqIds = Array.from(new Set(reconnectRaw.map((r: any) => r.requester_id).filter(Boolean)));
@@ -187,10 +363,11 @@ export default function NotificationsPage() {
 
         let fetchedPolls: any[] = [];
         let fetchedMsgs: any[] = [];
-        let fetchedVotes: any[] = [];
+        let fetchedGroupEvents: any[] = [];
+        let fetchedMyRatings: any[] = [];
 
         if (gIds.length > 0) {
-          const [pRes, mRes, vRes] = await Promise.all([
+          const [pRes, mRes, eRes, myRRes] = await Promise.all([
             supabase
               .from("group_polls" as any)
               .select("id, title, group_id, created_at, groups(title)")
@@ -199,29 +376,38 @@ export default function NotificationsPage() {
               .order("created_at", { ascending: false }),
             supabase
               .from("group_messages" as any)
-              .select("group_id, created_at, groups(title)")
+              .select("id, group_id, sender_id, content, created_at, groups(title)")
               .in("group_id", gIds)
               .neq("sender_id", userId)
               .order("created_at", { ascending: false })
-              .limit(50),
+              .limit(120),
             supabase
-              .from("group_votes" as any)
-              .select("poll_id, option_id, created_at, group_polls(id, title, group_id, groups(title)), group_poll_options(id, label)")
-              .eq("user_id", userId)
+              .from("group_events" as any)
+              .select("id, group_id, title, starts_at, place, created_at, groups(title)")
+              .in("group_id", gIds)
               .order("created_at", { ascending: false })
-              .limit(200)
+              .limit(160),
+            supabase
+              .from("rating_pairs")
+              .select("updated_at, created_at")
+              .eq("rater_id", userId)
+              .order("updated_at", { ascending: false })
+              .limit(60),
           ]);
 
           fetchedPolls = pRes.data || [];
           fetchedMsgs = mRes.data || [];
-          fetchedVotes = vRes.data || [];
+          fetchedGroupEvents = eRes.data || [];
+          fetchedMyRatings = myRRes.data || [];
         }
 
         setFriendReqs(friendRequests || []);
         setInvites(inv || []);
         setPolls(fetchedPolls);
         setMessages(fetchedMsgs);
-        setVotes(fetchedVotes);
+        setGroupEvents(fetchedGroupEvents);
+        setMyRatingLog(fetchedMyRatings);
+        setVotes([]);
         setAnnouncements(anns);
       } catch (e) {
         console.error("Error loading notifications", e);
@@ -351,136 +537,127 @@ export default function NotificationsPage() {
   }, [user]);
 
   useEffect(() => {
-    if (calendarOpen) {
-      const today = new Date();
-      setSelectedDate(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`);
-    }
-    if (calendarOpen && !calendarEntries.length) {
-      loadCalendar();
-    }
-  }, [calendarOpen, calendarEntries.length, loadCalendar]);
+    if (selectedTab !== "calendar") return;
+    const today = new Date();
+    setSelectedDate(`${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`);
+    if (!calendarEntries.length) loadCalendar();
+  }, [selectedTab, calendarEntries.length, loadCalendar]);
 
   const pad = (n: number) => String(n).padStart(2, "0");
   const keyFromDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const keyFromISO = (iso: string) => keyFromDate(new Date(iso));
 
-  // --- Process Data (Grouping & Sorting) ---
+  // --- Process Data (4 strict activity types + sectioning) ---
 
-  const processedEvents = useMemo(() => {
-    const events: any[] = [];
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+  const processedActivity = useMemo(() => {
+    const drafts: ActivityDraft[] = [];
+    const nowTs = Date.now();
+    const maxAgeMs = 21 * 24 * 60 * 60 * 1000;
 
-    // A. Friend Requests
-    friendReqs.forEach(r => {
-      events.push({
-        id: `fr-${r.id}`,
-        type: 'friend_req',
-        date: new Date(r.created_at),
-        data: r
-      });
+    const uniquePolls = new Map<string, any>();
+    (polls || []).forEach((p: any) => {
+      if (!p?.id || uniquePolls.has(p.id)) return;
+      uniquePolls.set(p.id, p);
     });
-
-    reconnectReqs.forEach(r => {
-      events.push({
-        id: `reconnect-${r.id}`,
-        type: 'reconnect_req',
-        date: new Date(r.created_at),
-        data: r
-      });
-    });
-
-    // B. Group Invites
-    invites.forEach(i => {
-      events.push({
-        id: `inv-${i.group_id}`,
-        type: 'invite',
-        date: new Date(i.created_at),
-        data: i
-      });
-    });
-
-    // C. Polls (Deduplicated by ID)
-    const uniquePolls = new Map();
-    polls.forEach(p => {
-      if (!uniquePolls.has(p.id)) {
-        uniquePolls.set(p.id, p);
-      }
-    });
-    
     Array.from(uniquePolls.values()).forEach((p: any) => {
-      events.push({
+      const createdTs = new Date(p.created_at).getTime();
+      if (!Number.isFinite(createdTs)) return;
+      if (nowTs - createdTs > maxAgeMs) return;
+      drafts.push({
         id: `poll-${p.id}`,
-        type: 'poll',
-        date: new Date(p.created_at),
-        data: p
+        type: "poll_created",
+        createdAt: p.created_at,
+        groupId: p.group_id || "",
+        groupTitle: p.groups?.title || "Circle",
+        text: p.title || null,
       });
     });
 
-    // D. Messages (WHATSAPP STYLE AGGREGATION)
-    // Group messages by Group ID. Instead of showing 5 rows, show "5 new messages"
-    const msgGroups: Record<string, { count: number, latest: Date, groupName: string }> = {};
-    
-    messages.forEach(m => {
-      const gid = m.group_id;
-      if (!msgGroups[gid]) {
-        msgGroups[gid] = { 
-          count: 0, 
-          latest: new Date(m.created_at), 
-          groupName: m.groups?.title || "Unknown Group" 
-        };
+    (groupEvents || []).forEach((ev: any) => {
+      const createdTs = new Date(ev.created_at || ev.starts_at).getTime();
+      if (!Number.isFinite(createdTs)) return;
+      if (nowTs - createdTs > maxAgeMs) return;
+      drafts.push({
+        id: `meetup-${ev.id}`,
+        type: "meetup_scheduled",
+        createdAt: ev.created_at || ev.starts_at,
+        groupId: ev.group_id || "",
+        groupTitle: ev.groups?.title || "Circle",
+        startsAt: ev.starts_at || null,
+        place: ev.place || null,
+        text: ev.title || null,
+      });
+    });
+
+    const mentionRegex = buildMentionRegex(user?.user_metadata?.name || null, user?.email || null);
+    if (mentionRegex) {
+      (messages || []).forEach((m: any) => {
+        const content = String(m?.content || "");
+        if (!mentionRegex.test(content)) return;
+        const createdTs = new Date(m.created_at).getTime();
+        if (!Number.isFinite(createdTs)) return;
+        if (nowTs - createdTs > maxAgeMs) return;
+        drafts.push({
+          id: `mention-${m.id || `${m.group_id}-${m.created_at}`}`,
+          type: "mention",
+          createdAt: m.created_at,
+          groupId: m.group_id || "",
+          groupTitle: m.groups?.title || "Circle",
+          text: content,
+        });
+      });
+    }
+
+    const latestPastMeetup = (groupEvents || [])
+      .filter((ev: any) => !!ev?.starts_at)
+      .filter((ev: any) => {
+        const ts = new Date(ev.starts_at).getTime();
+        return Number.isFinite(ts) && ts < nowTs && nowTs - ts <= 14 * 24 * 60 * 60 * 1000;
+      })
+      .sort((a: any, b: any) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime())[0];
+
+    const lastRatedTs = Math.max(
+      0,
+      ...(myRatingLog || [])
+        .map((r: any) => new Date(r?.updated_at || r?.created_at).getTime())
+        .filter((v: number) => Number.isFinite(v))
+    );
+
+    if (latestPastMeetup) {
+      const meetupTs = new Date(latestPastMeetup.starts_at).getTime();
+      if (!lastRatedTs || lastRatedTs < meetupTs) {
+        drafts.push({
+          id: `rating-needed-${latestPastMeetup.id}`,
+          type: "rating_needed",
+          createdAt: latestPastMeetup.created_at || latestPastMeetup.starts_at,
+          groupId: latestPastMeetup.group_id || "",
+          groupTitle: latestPastMeetup.groups?.title || "Circle",
+          startsAt: latestPastMeetup.starts_at,
+          place: latestPastMeetup.place || null,
+        });
       }
-      msgGroups[gid].count++;
-      // keep track of newest message time for sorting
-      const mDate = new Date(m.created_at);
-      if (mDate > msgGroups[gid].latest) msgGroups[gid].latest = mDate;
+    }
+
+    const items = drafts
+      .map(formatActivityEntry)
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+
+    const seen = new Set<string>();
+    const deduped = items.filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
     });
 
-    Object.keys(msgGroups).forEach(gid => {
-      events.push({
-        id: `msg-group-${gid}`,
-        type: 'message_summary',
-        date: msgGroups[gid].latest,
-        data: { 
-          group_id: gid, 
-          title: msgGroups[gid].groupName, 
-          count: msgGroups[gid].count 
-        }
-      });
-    });
+    const actionRequired = deduped.filter((e) =>
+      e.type === "poll_created" ||
+      e.type === "rating_needed" ||
+      (e.type === "meetup_scheduled" && e.actionLabel === "Confirm")
+    );
+    const updates = deduped.filter((e) => !actionRequired.some((a) => a.id === e.id));
 
-    // E. Votes (always show own votes regardless of poll create time)
-    votes.forEach(v => {
-      events.push({
-        id: `vote-${v.poll_id}-${v.option_id}-${v.created_at}`,
-        type: 'vote',
-        date: new Date(v.created_at),
-        data: v
-      });
-    });
-
-    // F. Ratings received
-    ratings.forEach(r => {
-      const when = r.updated_at || r.created_at;
-      if (!when) return;
-      events.push({
-        id: `rating-${r.rater_id}-${when}`,
-        type: 'rating',
-        date: new Date(when),
-        data: r
-      });
-    });
-
-    // Sort all by date descending
-    events.sort((a, b) => b.date.getTime() - a.date.getTime());
-
-    // Split into same-day vs older (based on local midnight)
-    const recent = events.filter(e => e.date.getTime() >= startOfToday.getTime());
-    const older = events.filter(e => e.date.getTime() < startOfToday.getTime());
-
-    return { recent, older };
-  }, [friendReqs, reconnectReqs, invites, polls, messages, votes, ratings]);
-
+    return { actionRequired, updates };
+  }, [polls, groupEvents, messages, myRatingLog, user?.email, user?.user_metadata?.name]);
   const upcomingEntries = useMemo(() => {
     const now = Date.now();
     return calendarEntries
@@ -524,6 +701,15 @@ export default function NotificationsPage() {
     if (!selectedDate) return [];
     return eventsByDay[selectedDate] || [];
   }, [eventsByDay, selectedDate]);
+  const selectedDateLabel = useMemo(() => {
+    if (!selectedDate) return null;
+    const d = new Date(`${selectedDate}T12:00:00`);
+    if (Number.isNaN(d.getTime())) return null;
+    const weekday = d.toLocaleDateString(undefined, { weekday: "short" });
+    const day = d.toLocaleDateString(undefined, { day: "numeric" });
+    const month = d.toLocaleDateString(undefined, { month: "short" });
+    return `${weekday}, ${day} ${month}`;
+  }, [selectedDate]);
 
   const todayKey = keyFromDate(new Date());
   const monthLabel = calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -551,6 +737,54 @@ export default function NotificationsPage() {
     return upcomingEntries.filter((e) => keyFromISO(e.startsAt) !== selectedDate);
   }, [upcomingEntries, selectedDate]);
 
+  const inviteActions = useMemo(() => {
+    return (invites || [])
+      .map((i: any) => ({
+        id: `invite-${i.group_id}`,
+        date: new Date(i.created_at),
+        groupId: i.group_id as string,
+        groupTitle: titleCaseWords(cleanActivityText(i.groups?.title || "Circle", 42) || "Circle") || "Circle",
+      }))
+      .filter((i) => !!i.groupId && Number.isFinite(i.date.getTime()))
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [invites]);
+
+  const actionRequiredRows = useMemo(() => {
+    const inviteRows = inviteActions.map((inv) => ({
+      kind: "invite" as const,
+      id: inv.id,
+      date: inv.date,
+      invite: inv,
+    }));
+    const eventRows = processedActivity.actionRequired
+      .filter((ev) => !dismissedActionIds.includes(ev.id) || confirmingActionIds.includes(ev.id))
+      .map((ev) => ({
+      kind: "event" as const,
+      id: ev.id,
+      date: ev.date,
+      event: ev,
+      }));
+    return [...inviteRows, ...eventRows].sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [inviteActions, processedActivity.actionRequired, dismissedActionIds, confirmingActionIds]);
+
+  const updateRows = useMemo(() => {
+    const eventRows = processedActivity.updates.map((ev) => ({
+      kind: "event" as const,
+      id: ev.id,
+      date: ev.date,
+      event: ev,
+    }));
+    const announcementRows = (announcements || []).map((a: any) => ({
+      kind: "announcement" as const,
+      id: `announcement-${a.id}`,
+      date: new Date(a.datetime),
+      announcement: a,
+    }));
+    return [...eventRows, ...announcementRows]
+      .filter((row) => Number.isFinite(row.date.getTime()))
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [processedActivity.updates, announcements]);
+
   function timeUntil(startIso: string) {
     const now = Date.now();
     const t = new Date(startIso).getTime();
@@ -564,6 +798,14 @@ export default function NotificationsPage() {
     const days = Math.floor(hours / 24);
     const remH = hours % 24;
     return `in ${days}d ${remH}h`;
+  }
+
+  function formatUpcomingSlot(startIso: string): string {
+    const d = new Date(startIso);
+    if (Number.isNaN(d.getTime())) return "Time TBD";
+    const weekday = d.toLocaleDateString(undefined, { weekday: "short" });
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+    return `${weekday} · ${time}`;
   }
 
   // --- Handlers ---
@@ -657,159 +899,85 @@ export default function NotificationsPage() {
 
   // --- Render Helpers ---
 
-  const renderEvent = (e: any) => {
-    const isRecent = (Date.now() - e.date.getTime()) < (24 * 60 * 60 * 1000);
-    
+  const renderEvent = (e: ActivityEntry, options?: { showAction?: boolean; dismissOnAction?: boolean }) => {
+    const showAction = options?.showAction ?? false;
+    const dismissOnAction = options?.dismissOnAction ?? false;
+    const isMeetupConfirmCard = showAction && e.type === "meetup_scheduled" && e.actionLabel === "Confirm";
+    const isConfirming = confirmingActionIds.includes(e.id);
+    const timeLabel = formatActivityDateTime(e.date.toISOString());
+    const startsInLabel = e.startsAt ? `Starts ${timeUntil(e.startsAt)}` : null;
+
+    const handleActionClick = () => {
+      if (e.actionLabel === "Confirm") {
+        if (isConfirming) return;
+        setConfirmingActionIds((prev) => (prev.includes(e.id) ? prev : [...prev, e.id]));
+        // Persist dismissal immediately so it won't reappear after route change/reload.
+        dismissAction(e.id);
+        setTimeout(() => {
+          setConfirmingActionIds((prev) => prev.filter((id) => id !== e.id));
+        }, 260);
+        return;
+      }
+      if (dismissOnAction) dismissAction(e.id);
+      navigate(e.actionTo);
+    };
+
     return (
-      <div key={e.id} className="bg-white border border-neutral-100 p-3 rounded-2xl flex items-center gap-3 shadow-sm mb-3 animate-in fade-in slide-in-from-bottom-2">
-        {/* Icon Column */}
+      <div
+        key={e.id}
+        className={`flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm animate-in fade-in slide-in-from-bottom-2 transition-all duration-200 ${
+          isConfirming
+            ? "pointer-events-none -translate-y-2 opacity-0"
+            : "hover:-translate-y-0.5 hover:shadow-md"
+        }`}
+      >
         <div className={`h-10 w-10 shrink-0 rounded-full flex items-center justify-center ${
-          e.type === 'friend_req' ? 'bg-purple-100 text-purple-600' :
-          e.type === 'reconnect_req' ? 'bg-rose-100 text-rose-600' :
-          e.type === 'invite' ? 'bg-amber-100 text-amber-600' :
-          e.type === 'poll' ? 'bg-blue-100 text-blue-600' :
-          e.type === 'rating' ? 'bg-amber-100 text-amber-600' :
-          e.type === 'vote' ? 'bg-emerald-100 text-emerald-600' :
-          'bg-emerald-100 text-emerald-600'
+          e.type === "meetup_scheduled" ? "bg-emerald-100 text-emerald-600" :
+          e.type === "poll_created" ? "bg-indigo-100 text-indigo-600" :
+          e.type === "mention" ? "bg-sky-100 text-sky-600" :
+          "bg-amber-100 text-amber-600"
         }`}>
-          {e.type === 'friend_req' && <UserPlus className="h-5 w-5" />}
-          {e.type === 'reconnect_req' && <Mail className="h-5 w-5" />}
-          {e.type === 'invite' && <Mail className="h-5 w-5" />}
-          {e.type === 'poll' && <CheckSquare className="h-5 w-5" />}
-          {e.type === 'rating' && <Star className="h-5 w-5" />}
-          {e.type === 'vote' && <CheckSquare className="h-5 w-5" />}
-          {e.type === 'message_summary' && <MessageCircle className="h-5 w-5" />}
+          {e.type === "meetup_scheduled" && <Calendar className="h-5 w-5" />}
+          {e.type === "poll_created" && <CheckSquare className="h-5 w-5" />}
+          {e.type === "mention" && <MessageCircle className="h-5 w-5" />}
+          {e.type === "rating_needed" && <Star className="h-5 w-5" />}
         </div>
 
-        {/* Content Column */}
-        <div className="flex-1 min-w-0">
-          
-          {/* Friend Request */}
-          {e.type === 'friend_req' && (
-            <>
-              <div className="text-sm font-bold text-neutral-900">{e.data.profiles?.name || "User"}</div>
-              <div className="text-xs text-neutral-500">Sent you a friend request</div>
-              <div className="mt-2 flex gap-2">
-                <button onClick={() => handleAcceptFriend(e.data.id, e.data.user_id_a)} className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold">Accept</button>
-              </div>
-            </>
-          )}
-
-          {e.type === 'reconnect_req' && (
-            <>
-              <div className="text-sm font-bold text-neutral-900">{e.data.profiles?.name || "User"}</div>
-              <div className="text-xs text-neutral-500">Wants to reconnect</div>
-              {e.data.message && (
-                <div className="mt-1 text-xs text-neutral-600">&quot;{e.data.message}&quot;</div>
-              )}
-              <div className="mt-2 flex gap-2">
-                <button onClick={() => handleAcceptReconnect(e.data)} className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold">Accept</button>
-                <button onClick={() => handleDeclineReconnect(e.data)} className="bg-neutral-100 text-neutral-700 px-3 py-1 rounded-full text-xs font-bold">Decline</button>
-              </div>
-              {e.data.requester_id && (
-                <div className="mt-3 rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2">
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Update rating</div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <div className="flex items-center gap-1">
-                      {Array.from({ length: 6 }).map((_, i) => {
-                        const n = i + 1;
-                        const ratingState = reconnectRatings[e.data.requester_id] || { stars: 0, busy: false };
-                        const hover = reconnectHover[e.data.requester_id] ?? null;
-                        const active = (hover ?? ratingState.stars) >= n;
-                        const canRate = e.data.profiles?.allow_ratings !== false;
-                        return (
-                          <button
-                            key={n}
-                            disabled={ratingState.busy || !canRate}
-                            onMouseEnter={() => setReconnectHover(prev => ({ ...prev, [e.data.requester_id]: n }))}
-                            onMouseLeave={() => setReconnectHover(prev => ({ ...prev, [e.data.requester_id]: null }))}
-                            onClick={() => rateReconnectUser(e.data.requester_id, n)}
-                            className={`text-lg ${active ? "text-amber-500" : "text-neutral-300"} ${ratingState.busy || !canRate ? "cursor-not-allowed" : "hover:scale-110 transition-transform"}`}
-                            aria-label={`Rate ${n} star${n > 1 ? "s" : ""}`}
-                          >
-                            ★
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="text-[11px] text-neutral-500">
-                      {Number((reconnectRatings[e.data.requester_id]?.stars ?? 0)).toFixed(0)} / 6
-                    </div>
-                  </div>
-                  {e.data.profiles?.allow_ratings === false && (
-                    <div className="mt-1 text-[10px] text-neutral-400">Ratings disabled.</div>
-                  )}
-                  {reconnectRatings[e.data.requester_id]?.err && (
-                    <div className="mt-1 text-[10px] text-red-600">{reconnectRatings[e.data.requester_id]?.err}</div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Group Invite */}
-          {e.type === 'invite' && (
-            <>
-              <div className="text-sm font-bold text-neutral-900">{e.data.groups?.title}</div>
-              <div className="text-xs text-neutral-500">You were invited to join</div>
-              <div className="mt-2 flex gap-2">
-                <button onClick={() => handleJoinGroup(e.data.group_id)} className="bg-black text-white px-3 py-1 rounded-full text-xs font-bold">Join</button>
-              </div>
-            </>
-          )}
-
-          {/* Poll */}
-          {e.type === 'poll' && (
-            <div onClick={() => navigate(`/group/${e.data.group_id}`)} className="cursor-pointer">
-              <div className="text-sm font-bold text-neutral-900">{e.data.title}</div>
-              <div className="text-xs text-neutral-500 flex items-center gap-1">
-                Vote in <span className="font-medium text-neutral-700">{e.data.groups?.title}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Vote */}
-          {e.type === 'vote' && (
-            <div onClick={() => navigate(`/group/${e.data.group_polls?.group_id || e.data.group_polls?.group_id}`)} className="cursor-pointer">
-              <div className="text-sm font-bold text-neutral-900">You voted</div>
-              <div className="text-xs text-neutral-500">
-                {e.data.group_polls?.title ? `Poll: ${e.data.group_polls.title}` : 'Poll'}
-              </div>
-              <div className="text-xs text-neutral-500">
-                {e.data.group_poll_options?.label ? `Choice: ${e.data.group_poll_options.label}` : ''}
-              </div>
-              <div className="text-xs text-neutral-500">
-                {e.data.group_polls?.groups?.title ? `Group: ${e.data.group_polls.groups.title}` : ''}
-              </div>
-            </div>
-          )}
-
-          {/* Rating */}
-          {e.type === 'rating' && (
-            <div onClick={() => openProfileView(e.data.rater_id)} className="cursor-pointer">
-              <div className="text-sm font-bold text-neutral-900">{e.data.profiles?.name || "Someone"} rated you</div>
-              <div className="text-xs text-neutral-500 flex items-center gap-1">
-                <Star className="h-3.5 w-3.5 text-amber-500" />
-                <span>{Number(e.data.stars ?? 0)} / 6</span>
-              </div>
-            </div>
-          )}
-
-          {/* Message Summary (WhatsApp Style) */}
-          {e.type === 'message_summary' && (
-            <div onClick={() => navigate(`/group/${e.data.group_id}`)} className="cursor-pointer">
-              <div className="text-sm font-bold text-neutral-900">{e.data.title}</div>
-              <div className="text-xs text-neutral-500 font-medium">
-                {e.data.count} new message{e.data.count > 1 ? 's' : ''}
-              </div>
-            </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-bold text-neutral-900">{e.title}</div>
+          <div className="mt-0.5 text-xs text-neutral-600">{e.description}</div>
+          {isMeetupConfirmCard ? (
+            <div className="mt-1 text-[10px] text-neutral-400">{startsInLabel || "Starts soon"}</div>
+          ) : (
+            <div className="mt-1 text-[10px] text-neutral-400">{timeLabel}</div>
           )}
         </div>
 
-        {/* Time Column */}
-        <div className="text-[10px] text-neutral-400 whitespace-nowrap self-start">
-       {isRecent ? e.date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : e.date.toLocaleDateString()}
-        </div>
+        {showAction && e.actionLabel && (
+          <button
+            type="button"
+            onClick={handleActionClick}
+            disabled={isConfirming}
+            className={`shrink-0 rounded-full px-3.5 py-2 text-[11px] font-bold disabled:cursor-not-allowed disabled:opacity-70 ${
+              e.type === "poll_created"
+                ? "bg-indigo-600 text-white hover:bg-indigo-700"
+                : e.type === "rating_needed"
+                  ? "bg-amber-500 text-white hover:bg-amber-600"
+                  : e.type === "meetup_scheduled" && e.actionLabel === "Confirm"
+                    ? "self-center inline-flex items-center gap-1 bg-emerald-600 text-white hover:bg-emerald-700"
+                    : "border border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-100"
+            }`}
+          >
+            {e.actionLabel === "Confirm" ? (
+              <>
+                <Check className="h-3.5 w-3.5" />
+                Confirm
+              </>
+            ) : (
+              e.actionLabel
+            )}
+          </button>
+        )}
       </div>
     );
   };
@@ -864,209 +1032,179 @@ export default function NotificationsPage() {
     return <div className="pt-24 text-center text-neutral-400 text-sm">Checking for updates...</div>;
   }
 
-  const { recent, older } = processedEvents;
-  const isEmpty = recent.length === 0 && older.length === 0 && announcements.length === 0;
+  const hasActivityItems =
+    processedActivity.actionRequired.length > 0 ||
+    inviteActions.length > 0 ||
+    processedActivity.updates.length > 0 ||
+    announcements.length > 0;
 
   return (
     <div className="mx-auto w-full max-w-xl px-4 py-8 pb-32">
-      <div className="mb-6 flex items-center justify-between gap-3">
+      <div className="mb-3">
         <h1 className="text-2xl font-extrabold text-neutral-900">Activity</h1>
+      </div>
+
+      <div className="mb-8 inline-flex rounded-full border border-neutral-200 bg-neutral-100/90 p-1 shadow-inner">
         <button
-          onClick={() => {
-            setCalendarOpen(true);
-            if (!calendarEntries.length) loadCalendar();
-          }}
-          className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-bold text-neutral-800 shadow-sm transition-all hover:-translate-y-[1px] hover:shadow-md"
+          type="button"
+          onClick={() => setSelectedTab("activity")}
+          className={`rounded-full px-4 py-1.5 text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-1 ${
+            selectedTab === "activity"
+              ? "bg-white font-semibold text-neutral-900 shadow-sm"
+              : "font-medium text-neutral-500 hover:text-neutral-700"
+          }`}
         >
-          <Calendar className="h-4 w-4" />
+          Activity
+        </button>
+        <button
+          type="button"
+          onClick={() => setSelectedTab("calendar")}
+          className={`rounded-full px-4 py-1.5 text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-1 ${
+            selectedTab === "calendar"
+              ? "bg-white font-semibold text-neutral-900 shadow-sm"
+              : "font-medium text-neutral-500 hover:text-neutral-700"
+          }`}
+        >
           Calendar
         </button>
       </div>
-      <p className="mb-6 text-sm text-neutral-600">
-        Things to respond to today: new polls, announcements, and mentions that need your attention.
-      </p>
 
-      {announcements.length > 0 && (
-        <div className="mb-8 space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-neutral-500">
-            <Megaphone className="h-4 w-4 text-amber-600" />
-            Announcements
-          </div>
-          {announcements.map((a) => {
-            const when = new Date(a.datetime);
-            const { label } = parseLocation(a.location || "");
-            const maps = mapLinks(a.location || "");
-            const detailPath = a.group_id ? `/group/${a.group_id}` : `/announcements#${a.id}`;
-            return (
-              <div
-                key={a.id}
-                role="button"
-                tabIndex={0}
-                onClick={() => navigate(detailPath)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    navigate(detailPath);
-                  }
-                }}
-                className="rounded-2xl border border-amber-100 bg-white p-4 shadow-sm cursor-pointer"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center gap-2">
-                      <Megaphone className="h-4 w-4 text-amber-600" />
-                      <div className="text-sm font-bold text-neutral-900">{a.title}</div>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm text-neutral-600">
-                      <CalendarClock className="h-4 w-4" />
-                      <span>{when.toLocaleDateString([], { month: "short", day: "numeric" })} · {when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-700">
-                      <MapPin className="h-4 w-4" />
-                      <span className="font-medium">{label}</span>
-                      <a
-                        className="rounded-full border border-neutral-200 px-2 py-[4px] text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
-                        href={maps.google}
-                        onClick={(e) => e.stopPropagation()}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Google Maps
-                      </a>
-                      <a
-                        className="rounded-full border border-neutral-200 px-2 py-[4px] text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
-                        href={maps.apple}
-                        onClick={(e) => e.stopPropagation()}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Apple Maps
-                      </a>
-                    </div>
-                    <div className="text-sm text-neutral-600 line-clamp-3">{a.description}</div>
-                  </div>
-                  <span className="text-[11px] font-bold uppercase tracking-wide text-amber-600">No cap</span>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); navigate(detailPath); }}
-                    className="rounded-full border border-neutral-200 bg-white px-3 py-2 text-xs font-bold text-neutral-800 hover:border-neutral-300"
-                  >
-                    See details
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); a.group_id && navigate(`/chats?groupId=${a.group_id}`); }}
-                    disabled={!a.group_id}
-                    className={`rounded-full px-3 py-2 text-xs font-bold ${
-                      a.group_id
-                        ? "border border-neutral-900 bg-neutral-900 text-white hover:-translate-y-[1px] hover:shadow-sm"
-                        : "border border-neutral-200 bg-neutral-100 text-neutral-400"
-                    }`}
-                  >
-                    Open chat
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {isEmpty && (
-        <div className="flex flex-col items-center justify-center py-12 text-center">
-          <div className="h-16 w-16 bg-neutral-100 rounded-full flex items-center justify-center mb-4">
-            <span className="text-2xl">💤</span>
-          </div>
-          <h3 className="text-neutral-900 font-bold">All caught up</h3>
-          <p className="text-neutral-500 text-sm">No activity yet.</p>
-        </div>
-      )}
-
-      {/* Recent Section */}
-      {recent.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3">New</h2>
-          {recent.map(renderEvent)}
-        </div>
-      )}
-
-      {/* Older Section (Collapsible) */}
-      {older.length > 0 && (
-        <div>
-          <button 
-            onClick={() => setShowOlder(!showOlder)}
-            className="flex items-center gap-2 text-xs font-bold text-neutral-400 uppercase tracking-wider mb-3 hover:text-neutral-600 transition-colors w-full"
-          >
-            {showOlder ? <ChevronUp className="h-4 w-4"/> : <ChevronDown className="h-4 w-4"/>}
-            Earlier ({older.length})
-          </button>
-          
-          {showOlder && (
-            <div className="animate-in slide-in-from-top-2 fade-in duration-300">
-              {older.map(renderEvent)}
+      {selectedTab === "activity" && (
+        <>
+          {!hasActivityItems && (
+            <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-6 text-center text-sm text-neutral-600">
+              You’re all caught up.
             </div>
           )}
-        </div>
+
+          {hasActivityItems && (
+            <div className="space-y-10">
+              <section>
+                <h2 className="mb-4 text-sm font-semibold text-neutral-700">Action Required</h2>
+                <div className="space-y-3">
+                  {actionRequiredRows.map((row) =>
+                    row.kind === "invite" ? (
+                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+                          <Mail className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-neutral-900">Respond to invite in {row.invite.groupTitle}</div>
+                          <div className="mt-0.5 text-xs text-neutral-600">You were invited to join this circle.</div>
+                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleJoinGroup(row.invite.groupId)}
+                          className="shrink-0 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-[11px] font-bold text-neutral-800 hover:bg-neutral-100"
+                        >
+                          Respond
+                        </button>
+                      </div>
+                    ) : (
+                      renderEvent(row.event, { showAction: true, dismissOnAction: true })
+                    )
+                  )}
+
+                  {actionRequiredRows.length === 0 && (
+                    <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-500">
+                      Nothing pending.
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section>
+                <h2 className="mb-4 text-sm font-semibold text-neutral-700">Updates</h2>
+                <div className="space-y-3">
+                  {updateRows.map((row) => {
+                    if (row.kind === "event") return renderEvent(row.event, { showAction: row.event.type === "mention", dismissOnAction: false });
+                    const a = row.announcement;
+                    const detailPath = a.group_id ? `/group/${a.group_id}` : `/announcements#${a.id}`;
+                    return (
+                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+                          <Megaphone className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-neutral-900">Announcement posted</div>
+                          <div className="mt-0.5 line-clamp-2 text-xs text-neutral-600">{cleanActivityText(a.title || a.description || "Circles update", 120)}</div>
+                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => navigate(detailPath)}
+                          className="shrink-0 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-[11px] font-bold text-neutral-800 hover:bg-neutral-100"
+                        >
+                          View
+                        </button>
+                      </div>
+                    );
+                  })}
+
+                  {updateRows.length === 0 && (
+                    <div className="flex min-h-[120px] flex-col items-center justify-center rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-center">
+                      <CheckCircle2 className="mb-2 h-5 w-5 text-emerald-600" />
+                      <p className="text-sm font-medium text-neutral-700">You’re all caught up.</p>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          )}
+        </>
       )}
 
-      {calendarOpen && (
-        <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-black/60 backdrop-blur-sm px-4 py-6 md:items-center">
-          <div className="relative w-full max-w-4xl rounded-3xl bg-white p-6 shadow-2xl">
-            <button
-              onClick={() => setCalendarOpen(false)}
-              className="absolute right-3 top-3 rounded-full p-2 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-700"
-            >
-              <X className="h-5 w-5" />
-            </button>
+      {selectedTab === "calendar" && (
+        <section className="rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-6">
+          <div className="mb-4">
+            <div className="text-lg font-bold text-neutral-900">Calendar</div>
+            <p className="text-sm text-neutral-500">Month view, upcoming plans, and past meetups.</p>
+          </div>
 
-            <div className="mb-4">
-              <div className="text-lg font-bold text-neutral-900">Activity Calendar</div>
-              <p className="text-sm text-neutral-500">Poll suggestions (blue) and confirmed dates (green) at a glance.</p>
+          {calendarError && (
+            <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+              {calendarError}
             </div>
+          )}
 
-            {calendarError && (
-              <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
-                {calendarError}
-              </div>
-            )}
-
-            {calendarLoading ? (
-              <div className="flex flex-col items-center justify-center gap-3 py-10 text-neutral-500">
-                <div className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-700" />
-                Kalender wird geladen...
-              </div>
-            ) : (
-              <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+          {calendarLoading ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-10 text-neutral-500">
+              <div className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-700" />
+              Loading calendar...
+            </div>
+          ) : !calendarEntries.length ? (
+            <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-6 text-center text-sm text-neutral-600">
+              No events scheduled yet.
+            </div>
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
                 <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => changeMonth(-1)}
-                        className="rounded-full border border-neutral-200 bg-white p-2 text-neutral-600 hover:bg-neutral-100"
+                        className="rounded-full border border-neutral-200 bg-neutral-50 p-2 text-neutral-500 transition hover:bg-white hover:text-neutral-700"
                       >
                         <ChevronLeft className="h-4 w-4" />
                       </button>
-                      <div className="text-lg font-bold text-neutral-900">{monthLabel}</div>
+                      <div className="text-xl font-extrabold tracking-tight text-neutral-900">{monthLabel}</div>
                       <button
                         onClick={() => changeMonth(1)}
-                        className="rounded-full border border-neutral-200 bg-white p-2 text-neutral-600 hover:bg-neutral-100"
+                        className="rounded-full border border-neutral-200 bg-neutral-50 p-2 text-neutral-500 transition hover:bg-white hover:text-neutral-700"
                       >
                         <ChevronRight className="h-4 w-4" />
                       </button>
                     </div>
-                    <div className="flex items-center gap-2 text-[11px] font-semibold text-neutral-500">
-                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-sky-500" /> Poll open</span>
-                      <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Confirmed</span>
-                    </div>
                     <button
                       onClick={resetToCurrentMonth}
-                      className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-bold text-neutral-700 hover:bg-neutral-100"
+                      className="rounded-full border border-neutral-200 bg-transparent px-3 py-1 text-xs font-semibold text-neutral-600 transition hover:bg-white"
                     >
                       Today
                     </button>
                   </div>
 
-                  <div className="mb-2 grid grid-cols-7 text-center text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                  <div className="mb-3 grid grid-cols-7 text-center text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
                     {weekdayLabels.map((w) => (
                       <div key={w} className="py-1">{w}</div>
                     ))}
@@ -1077,65 +1215,74 @@ export default function NotificationsPage() {
                       const dayEvents = eventsByDay[key] || [];
                       const isToday = key === todayKey;
                       const isSelected = selectedDate === key;
+                      const hasPlanned = dayEvents.some((ev) => ev.phase === "planned");
+                      const hasConfirmed = dayEvents.some((ev) => ev.phase === "confirmed");
+
                       return (
                         <button
                           key={key}
                           onClick={() => setSelectedDate(key)}
-                          className={`min-h-[88px] rounded-xl border bg-white p-2 text-left transition-all ${
+                          className={`min-h-[88px] rounded-xl border bg-white p-2 text-center transition-all duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 ${
                             inMonth ? "border-neutral-200" : "border-neutral-100 text-neutral-400"
-                          } ${isSelected ? "ring-2 ring-neutral-900 border-neutral-300" : "hover:border-neutral-300"} ${isToday ? "shadow-[inset_0_0_0_1px_rgba(0,0,0,0.08)]" : ""}`}
+                          } ${isSelected ? "scale-[1.02] border-emerald-500 bg-emerald-50/70 shadow-sm" : "hover:scale-[1.01] hover:border-neutral-300"} ${isToday ? "shadow-[inset_0_0_0_1px_rgba(16,185,129,0.18)]" : ""}`}
                         >
-                          <div className="mb-1 flex items-center justify-between text-xs font-semibold">
-                            <span className={`${inMonth ? "text-neutral-900" : "text-neutral-400"}`}>{date.getDate()}</span>
-                            {isToday && <span className="rounded-full bg-neutral-900 px-2 py-[2px] text-[10px] font-bold text-white">Heute</span>}
-                          </div>
-                          <div className="space-y-1">
-                            {dayEvents.slice(0, 3).map((ev) => (
-                              <div key={ev.id} className="flex items-center gap-1 rounded-lg bg-neutral-50 px-2 py-1 text-[11px] font-semibold text-neutral-700">
-                                <span className={`h-2 w-2 rounded-full ${ev.phase === "confirmed" ? "bg-emerald-500" : "bg-sky-500"}`} />
-                                <span className="truncate">{ev.title}</span>
+                          <div className="flex h-full flex-col items-center justify-between">
+                            <div className="flex flex-col items-center">
+                              <span className={`text-sm font-semibold ${inMonth ? "text-neutral-900" : "text-neutral-400"}`}>{date.getDate()}</span>
+                              {isToday && <span className="mt-0.5 text-[10px] font-semibold text-emerald-500">Today</span>}
+                            </div>
+                            {dayEvents.length > 0 ? (
+                              <div className="mt-2 flex items-center justify-center gap-1.5">
+                                {hasPlanned && <span className="h-2 w-2 rounded-full bg-sky-500" />}
+                                {hasConfirmed && <span className="h-2 w-2 rounded-full bg-emerald-500" />}
                               </div>
-                            ))}
-                            {dayEvents.length > 3 && (
-                              <div className="text-[10px] font-semibold text-neutral-500">+{dayEvents.length - 3} mehr</div>
+                            ) : (
+                              <span className="h-2" />
                             )}
                           </div>
                         </button>
                       );
                     })}
                   </div>
+
+                  <div className="mt-4 flex items-center justify-center gap-4 text-[10px] font-medium text-neutral-500">
+                    <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-sky-500" /> Poll open</span>
+                    <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Confirmed</span>
+                  </div>
                 </div>
 
-                <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-6">
                   <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
-                    <div className="mb-2 flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-neutral-800">Selected Day</h3>
-                      {selectedDate && (
-                        <span className="text-xs font-semibold text-neutral-500">
-                          {new Date(`${selectedDate}T12:00:00`).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })}
-                        </span>
-                      )}
+                    <div className="mb-3">
+                      <div className="text-base font-bold text-neutral-900">{selectedDateLabel || "Select a date"}</div>
+                      <p className="text-xs text-neutral-500">
+                        {selectedDate
+                          ? selectedDayEvents.length === 0
+                            ? "No events scheduled"
+                            : `${selectedDayEvents.length} event${selectedDayEvents.length === 1 ? "" : "s"} scheduled`
+                          : "Select a date to view events and actions."}
+                      </p>
                     </div>
                     <div className="space-y-3">
                       {selectedDayEvents.length
                         ? selectedDayEvents.map((entry) => renderCalendarEntry(entry, Date.now()))
-                        : <p className="text-sm text-neutral-500">Choose a date to see details.</p>}
+                        : <p className="text-sm text-neutral-500">Select a date to view events and actions.</p>}
                     </div>
                   </div>
 
                   <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
                   <div className="mb-2 flex items-center justify-between">
                     <h3 className="text-sm font-semibold text-neutral-800">Upcoming</h3>
-                    <div className="flex items-center gap-2">
+                    <div className="ml-4 flex items-center gap-3">
                       <button
                         onClick={() => setShowUpcoming((v) => !v)}
-                        className="text-xs font-semibold text-neutral-500 hover:text-neutral-800"
+                        className="rounded-full px-2 py-0.5 text-xs font-semibold text-neutral-500 hover:bg-white hover:text-neutral-800"
                       >
                         {showUpcoming ? "Hide" : "Show"}
                       </button>
                       <button
                         onClick={loadCalendar}
-                        className="text-xs font-semibold text-neutral-500 hover:text-neutral-800"
+                        className="rounded-full px-2 py-0.5 text-xs font-semibold text-neutral-500 hover:bg-white hover:text-neutral-800"
                       >
                         Refresh
                       </button>
@@ -1148,20 +1295,19 @@ export default function NotificationsPage() {
                               <div
                                 key={`up-${entry.id}`}
                                 onClick={() => navigate(`/group/${entry.groupId}`)}
-                                className="flex items-center justify-between rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-800 hover:border-neutral-300"
+                                className="rounded-xl border border-emerald-100 bg-emerald-50/40 px-3 py-2 text-sm text-neutral-800 transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-sm"
                               >
-                                <div className="min-w-0">
-                                  <div className="font-semibold truncate">{entry.title}</div>
-                                  <div className="text-[11px] text-neutral-500 truncate">
-                                    {new Date(entry.startsAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-                                    {" • "}
-                                    {timeUntil(entry.startsAt)}
+                                <div className="flex items-start gap-2">
+                                  <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                                  <div className="min-w-0">
+                                    <div className="truncate font-bold text-neutral-900">{titleCaseWords(entry.groupTitle)}</div>
+                                    <div className="mt-0.5 text-[11px] text-neutral-600">{formatUpcomingSlot(entry.startsAt)}</div>
+                                    <div className="mt-0.5 text-[10px] text-neutral-400">{timeUntil(entry.startsAt)}</div>
                                   </div>
                                 </div>
-                                <span className={`ml-2 h-2 w-2 rounded-full ${entry.phase === "confirmed" ? "bg-emerald-500" : "bg-sky-500"}`} />
                               </div>
                             ))
-                          : <p className="text-sm text-neutral-500">No scheduled activities.</p>}
+                          : <p className="text-sm text-neutral-500">No events scheduled yet.</p>}
                       </div>
                     )}
                   </div>
@@ -1174,14 +1320,13 @@ export default function NotificationsPage() {
                     <div className="space-y-2 max-h-[240px] overflow-auto pr-1">
                       {pastEntries.length
                         ? pastEntries.slice(0, 12).map((entry) => renderCalendarEntry(entry, Date.now()))
-                        : <p className="text-sm text-neutral-500">Nothing yet.</p>}
+                        : <p className="text-sm text-neutral-500">No events scheduled yet.</p>}
                     </div>
                   </div>
                 </div>
               </div>
-            )}
-          </div>
-        </div>
+          )}
+        </section>
       )}
       <ViewOtherProfileModal
         isOpen={viewOpen}

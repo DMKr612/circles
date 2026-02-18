@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { getAvatarUrl } from "@/lib/avatar";
 import type { Message } from "@/types";
 import { useAuth } from "@/App";
 import { useGroupPresence } from "@/hooks/useGroupPresence";
@@ -712,9 +713,13 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
   const avatar = (uid: string) => {
     const p = profiles.get(uid);
-    if (p?.avatar_url) return <img src={p.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow-sm" />;
-    const label = (p?.name || uid.slice(0, 2)).slice(0, 2).toUpperCase();
-    return <div className="h-8 w-8 rounded-full border border-neutral-200 bg-neutral-100 flex items-center justify-center text-[10px] text-neutral-600 font-bold">{label}</div>;
+    return (
+      <img
+        src={getAvatarUrl(p?.avatar_url, p?.user_id || uid)}
+        alt={displayName(uid)}
+        className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow-sm"
+      />
+    );
   };
 
   const onDrop = (ev: React.DragEvent<HTMLDivElement>) => {
@@ -799,13 +804,11 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                 return (
                   <li key={m.user_id} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-neutral-50 transition-colors">
                     <div className="relative">
-                      {m.avatar_url ? (
-                        <img src={m.avatar_url} alt="" className="h-8 w-8 rounded-full object-cover border border-neutral-100" />
-                      ) : (
-                        <div className="h-8 w-8 rounded-full bg-neutral-100 flex items-center justify-center text-[10px] font-bold text-neutral-500">
-                          {(m.name || "").slice(0,2).toUpperCase() || "?"}
-                        </div>
-                      )}
+                      <img
+                        src={getAvatarUrl(m.avatar_url, m.user_id)}
+                        alt={(m.name && m.name.trim()) || "Player"}
+                        className="h-8 w-8 rounded-full object-cover border border-neutral-100"
+                      />
                       {isOnline && (
                         <span className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-emerald-500 border-2 border-white" />
                       )}

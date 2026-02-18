@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ANNOUNCEMENT_ADMINS, type Announcement } from "@/lib/announcements";
+import { ANNOUNCEMENT_ADMINS, isAnnouncementVisibleForViewer, type Announcement } from "@/lib/announcements";
 import { ArrowLeft, CalendarClock, Megaphone, MessageCircle, MapPin, Trash2, Edit2, Plus, Map } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
@@ -67,6 +67,7 @@ export default function AnnouncementsPage() {
   const [joinBusy, setJoinBusy] = useState<Set<string>>(new Set());
   const [isAdmin, setIsAdmin] = useState(false);
   const [uid, setUid] = useState<string | null>(null);
+  const [viewerEmail, setViewerEmail] = useState<string | null>(null);
   const [form, setForm] = useState<Partial<Announcement>>({});
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -90,13 +91,14 @@ export default function AnnouncementsPage() {
   useEffect(() => {
     (async () => {
       const { data: u } = await supabase.auth.getUser();
-      const email = u?.user?.email || "";
+      const email = (u?.user?.email || "").trim().toLowerCase();
       setUid(u?.user?.id || null);
-      if (email && ANNOUNCEMENT_ADMINS.includes(email)) setIsAdmin(true);
+      setViewerEmail(email || null);
+      setIsAdmin(!!email && ANNOUNCEMENT_ADMINS.includes(email));
     })();
   }, []);
 
-  // Load announcements from DB (filtered for non-expired)
+  // Load announcements from DB (hidden after 15 days for non-creators)
   const loadEvents = async () => {
     setLoadingEvents(true);
     setEventsErr(null);
@@ -145,7 +147,10 @@ export default function AnnouncementsPage() {
         }
       }
 
-      setEvents(rows);
+      const visibleRows = rows.filter((evt) =>
+        isAnnouncementVisibleForViewer(evt, { viewerId: uid, viewerEmail })
+      );
+      setEvents(visibleRows);
     } catch (e: any) {
       setEventsErr(e?.message || "Failed to load announcements");
     } finally {
@@ -153,7 +158,7 @@ export default function AnnouncementsPage() {
     }
   };
 
-  useEffect(() => { loadEvents(); }, []);
+  useEffect(() => { loadEvents(); }, [uid, viewerEmail, isAdmin]);
 
   // Persist joined announcements for the in-app activity calendar
   const persist = (ids: Set<string>) => {
@@ -277,6 +282,7 @@ export default function AnnouncementsPage() {
       link: form.link || null,
       group_id: isUuid(form.group_id as string) ? (form.group_id as string) : null,
     };
+    if (!editId && uid) payload.created_by = uid;
     try {
       // Auto-create a circle for this announcement if none linked
       if (!payload.group_id && uid) {

@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { X, Upload, Sparkles, Moon, Sun, MonitorSmartphone, Bell, Trash2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { CATEGORIES, GAME_LIST } from "@/lib/constants";
 // @ts-ignore: package ships without TS types in this setup
 import { City } from 'country-state-city';
 // FIX: Use a relative path from `components/` to `src/lib/`
 import { supabase } from "@/lib/supabase";
+import { getAvatarUrl } from "@/lib/avatar";
 import { useAuth } from "@/App";
 
 // Demo stubs for toast calls
@@ -21,6 +23,7 @@ interface SettingsModalProps {
 export default function SettingsModal({ isOpen, onClose, onSave, variant = "modal" }: SettingsModalProps) {
   const { user } = useAuth();
   const uid = user?.id || null;
+  const queryClient = useQueryClient();
   
   // Settings modal state
   const [sName, setSName] = useState<string>("");
@@ -45,6 +48,20 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
   const [deCities, setDeCities] = useState<string[]>([]);
   const [citiesLoaded, setCitiesLoaded] = useState(false);
   const isPage = variant === "page";
+  const avatarSeedBase = useMemo(() => uid || user?.email || sName || "circles-user", [uid, user?.email, sName]);
+  const avatarChoices = useMemo(() => {
+    const seeds = [
+      avatarSeedBase,
+      `${avatarSeedBase}-sun`,
+      `${avatarSeedBase}-moon`,
+      `${avatarSeedBase}-river`,
+      `${avatarSeedBase}-forest`,
+      `${avatarSeedBase}-coffee`,
+      `${avatarSeedBase}-chess`,
+      `${avatarSeedBase}-music`,
+    ];
+    return seeds.map((seed) => ({ seed, url: getAvatarUrl(null, seed) }));
+  }, [avatarSeedBase]);
   const interestSuggestions = useMemo(() => {
     const items = [
       ...CATEGORIES.filter(c => c !== "All"),
@@ -94,7 +111,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
 
     (async () => {
       if (!uid) {
-        onClose(); // Should not happen if modal is opened from profile
+        setSettingsMsg("Please sign in again.");
         return;
       }
       
@@ -133,23 +150,38 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
 
   async function saveSettings(e?: React.FormEvent) {
     if (e) e.preventDefault();
-    if (!uid) return;
+    if (!uid) {
+      setSettingsMsg("Please sign in to save changes.");
+      return;
+    }
     setSettingsMsg(null);
     setSettingsSaving(true);
     try {
       // sanitize
       const name = sName.trim();
-      const city = sCity.trim();
-      if (!city) { setSettingsMsg("Please choose a city."); setSettingsSaving(false); return; }
+      const city = sCity.trim() || null;
       const timezone = sTimezone.trim() || "UTC";
       const interests = sInterests.split(",").map(s => s.trim()).filter(Boolean);
+      const avatar = String(avatarUrl || "").trim() || null;
 
       const { error: updateError } = await supabase
         .from("profiles")
-        .update({ name, city, timezone, interests, allow_ratings: allowRatings, gender: sGender })
-        .eq("user_id", uid);
+        .upsert(
+          {
+            user_id: uid,
+            name,
+            city,
+            timezone,
+            interests,
+            allow_ratings: allowRatings,
+            gender: sGender,
+            avatar_url: avatar,
+          },
+          { onConflict: "user_id" }
+        );
 
       if (updateError) throw updateError;
+      await queryClient.invalidateQueries({ queryKey: ["profile", uid] });
       
       // Save theme/notifs to localStorage
       localStorage.setItem('theme', sTheme);
@@ -159,7 +191,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
 
       setSettingsMsg("Saved.");
       success('Profile saved');
-      onSave({ name, avatarUrl }); // Pass new data back to Profile page
+      onSave({ name, avatarUrl: avatar }); // Pass new data back to Profile page
       
       // Auto-close after 1 sec
       setTimeout(() => {
@@ -181,6 +213,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
     if (!uid) return;
     try {
       await supabase.from('profiles').update({ allow_ratings: next }).eq('user_id', uid);
+      await queryClient.invalidateQueries({ queryKey: ["profile", uid] });
     } catch {}
   }
 
@@ -198,6 +231,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
       if (url) {
         await supabase.from('profiles').update({ avatar_url: url }).eq('user_id', uid);
         setAvatarUrl(url);
+        await queryClient.invalidateQueries({ queryKey: ["profile", uid] });
         onSave({ name: sName, avatarUrl: url }); // Update parent immediately
       }
     } catch (e) {
@@ -290,7 +324,11 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
         <div className="grid gap-4 rounded-2xl border border-neutral-100 bg-white/80 p-4 shadow-sm">
           <div className="flex items-center gap-3">
             <div className="h-12 w-12 rounded-full bg-gradient-to-br from-emerald-100 to-blue-100 border border-white shadow-inner overflow-hidden grid place-items-center text-sm font-bold text-emerald-700">
-              {avatarUrl ? <img src={avatarUrl} className="h-full w-full object-cover" /> : initials}
+              <img
+                src={getAvatarUrl(avatarUrl, avatarSeedBase)}
+                alt={sName || "Profile"}
+                className="h-full w-full object-cover"
+              />
             </div>
             <div className="flex flex-1 items-center gap-2">
               <input
@@ -308,6 +346,33 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
               {avatarUploading && <span className="text-xs text-neutral-500">Uploading…</span>}
             </div>
           </div>
+          <div>
+            <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-neutral-500">Quick avatar choices</label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {avatarChoices.map((opt) => {
+                const selected = avatarUrl === opt.url;
+                return (
+                  <button
+                    key={opt.seed}
+                    type="button"
+                    onClick={() => setAvatarUrl(opt.url)}
+                    className={`h-10 w-10 overflow-hidden rounded-full border-2 transition ${selected ? "border-emerald-500 ring-2 ring-emerald-200" : "border-neutral-200 hover:border-neutral-300"}`}
+                    aria-label={`Choose avatar ${opt.seed}`}
+                    title="Choose avatar"
+                  >
+                    <img src={opt.url} alt="" className="h-full w-full object-cover" />
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => setAvatarUrl(null)}
+                className={`rounded-full border px-3 py-2 text-xs font-semibold transition ${!avatarUrl ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-neutral-200 text-neutral-700 hover:border-neutral-300"}`}
+              >
+                Auto
+              </button>
+            </div>
+          </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="mb-1 block text-xs font-bold uppercase tracking-wide text-neutral-500">City</label>
@@ -319,7 +384,6 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
                 className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-neutral-300 focus:outline-none"
                 placeholder="Start typing… e.g., Berlin"
                 list="cities-de"
-                required
               />
               <datalist id="cities-de">
                 {deCities.map((c) => (

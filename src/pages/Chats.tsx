@@ -5,6 +5,8 @@ import { useLocation } from "react-router-dom";
 import { MessageSquare, Users, ArrowLeft, Send, Search as SearchIcon, Filter, Heart, Megaphone } from "lucide-react";
 import Spinner from "@/components/ui/Spinner";
 import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
+import { getAvatarUrl } from "@/lib/avatar";
+import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 
 // Lazy load the existing group chat component
 const ChatPanel = lazy(() => import("../components/ChatPanel"));
@@ -81,6 +83,7 @@ export default function Chats() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setLoading(false); return; }
       setMe(user.id);
+      const viewerEmail = user.email ?? null;
 
       // Load Favorites from LocalStorage
       const favs = new Set(JSON.parse(localStorage.getItem("chat_favorites") || "[]"));
@@ -117,24 +120,31 @@ export default function Chats() {
       // Process Announcements (linked circles) for quick access
       const { data: anns } = await supabase
         .from("announcements")
-        .select("id, group_id, title, description")
+        .select("id, group_id, title, description, datetime, created_at, created_by")
         .not("group_id", "is", null)
         .order("datetime", { ascending: false })
-        .limit(20);
-      (anns || []).forEach((a: any) => {
-        if (!a.group_id) return;
-        // Avoid duplicates if already in list
-        if (items.find(i => i.type === 'group' && i.id === a.group_id)) return;
-        items.push({
-          type: 'announcement',
-          id: a.group_id,
-          name: a.title || "Announcement",
-          avatar_url: null,
-          subtitle: "Announcement",
-          isFavorite: false,
-          category: 'announcement',
+        .limit(50);
+      (anns || [])
+        .filter((a: any) =>
+          isAnnouncementVisibleForViewer(a, {
+            viewerId: user.id,
+            viewerEmail,
+          })
+        )
+        .forEach((a: any) => {
+          if (!a.group_id) return;
+          // Avoid duplicates if already in list
+          if (items.find(i => i.type === 'group' && i.id === a.group_id)) return;
+          items.push({
+            type: 'announcement',
+            id: a.group_id,
+            name: a.title || "Announcement",
+            avatar_url: null,
+            subtitle: "Announcement",
+            isFavorite: false,
+            category: 'announcement',
+          });
         });
-      });
 
       // Process Friends
       if (friends?.length) {
@@ -436,8 +446,8 @@ export default function Chats() {
                         ? 'bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700'
                         : 'bg-gradient-to-br from-neutral-100 to-neutral-200 text-neutral-600'}
                   `}>
-                    {item.type === 'dm' && item.avatar_url ? (
-                      <img src={item.avatar_url} alt="" className="h-full w-full object-cover rounded-2xl" />
+                    {item.type === 'dm' ? (
+                      <img src={getAvatarUrl(item.avatar_url, item.id)} alt={item.name} className="h-full w-full object-cover rounded-2xl" />
                     ) : (
                       item.type === 'group' ? <Users className="h-5 w-5" /> : item.type === 'announcement' ? <Megaphone className="h-5 w-5" /> : item.name.slice(0,1).toUpperCase()
                     )}
@@ -522,8 +532,8 @@ export default function Chats() {
                   ? 'bg-amber-100 text-amber-700'
                   : 'bg-neutral-100 text-neutral-600'
             }`}>
-              {selected.type === 'dm' && selected.avatar_url ? (
-                <img src={selected.avatar_url} alt="" className="h-full w-full object-cover rounded-2xl" />
+              {selected.type === 'dm' ? (
+                <img src={getAvatarUrl(selected.avatar_url, selected.id)} alt={selected.name} className="h-full w-full object-cover rounded-2xl" />
               ) : (
                 selected.type === 'group' ? '#' : selected.type === 'announcement' ? '!' : selected.name.slice(0,1)
               )}
@@ -628,11 +638,11 @@ export default function Chats() {
                           {!isMine && (
                             <div className="w-6 h-6 shrink-0 mb-1">
                               {showAvatar && (
-                                selected.avatar_url ?
-                                <img src={selected.avatar_url} className="w-6 h-6 rounded-full object-cover shadow-sm ring-1 ring-white/70" /> :
-                                <div className="w-6 h-6 rounded-full bg-neutral-200 flex items-center justify-center text-[9px] font-bold text-neutral-600 ring-1 ring-white/70">
-                                  {selected.name.slice(0,1)}
-                                </div>
+                                <img
+                                  src={getAvatarUrl(selected.avatar_url, selected.id)}
+                                  alt={selected.name}
+                                  className="w-6 h-6 rounded-full object-cover shadow-sm ring-1 ring-white/70"
+                                />
                               )}
                             </div>
                           )}

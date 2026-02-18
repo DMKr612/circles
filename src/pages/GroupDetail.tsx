@@ -2,6 +2,8 @@ import { useEffect, useState, useMemo, lazy, Suspense, useRef } from "react";
 import { useParams, useNavigate, Link, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { checkGroupJoinBlock, joinBlockMessage } from "../lib/ratings";
+import { getAvatarUrl } from "@/lib/avatar";
+import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 import type { Group, Poll, PollOption, GroupMember, GroupEvent, GroupMoment } from "../types";
 import { 
   MapPin, Users, Calendar, Clock, Share2, MessageCircle, 
@@ -28,6 +30,8 @@ type GroupAnnouncement = {
   title: string;
   description: string;
   datetime: string;
+  created_at?: string | null;
+  created_by?: string | null;
   duration_minutes?: number | null;
   location: string;
   activities?: string[];
@@ -434,14 +438,25 @@ export default function GroupDetail() {
     let cancelled = false;
     (async () => {
       if (!group?.id) return;
+      const { data: auth } = await supabase.auth.getUser();
+      const viewerId = auth?.user?.id ?? null;
+      const viewerEmail = auth?.user?.email ?? null;
       const { data, error } = await supabase
         .from('announcements')
-        .select('id, title, description, datetime, duration_minutes, location, activities, link, group_id')
+        .select('id, title, description, datetime, created_at, created_by, duration_minutes, location, activities, link, group_id')
         .eq('group_id', group.id)
         .order('datetime', { ascending: true })
-        .limit(5);
+        .limit(20);
       if (cancelled || error) return;
-      setAnnouncements((data || []) as GroupAnnouncement[]);
+      const visible = (data || [])
+        .filter((a: any) =>
+          isAnnouncementVisibleForViewer(a, {
+            viewerId,
+            viewerEmail,
+          })
+        )
+        .slice(0, 5);
+      setAnnouncements(visible as GroupAnnouncement[]);
     })();
     return () => { cancelled = true; };
   }, [group?.id]);
@@ -1306,11 +1321,7 @@ export default function GroupDetail() {
                     <div className="flex -space-x-2 overflow-hidden cursor-pointer" onClick={() => setMembersOpen(true)}>
                          {members.slice(0, 5).map(m => (
                             <div key={m.user_id} className="h-8 w-8 rounded-full ring-2 ring-white bg-neutral-100 flex items-center justify-center text-[10px] font-bold text-neutral-500" title={m.name || "User"}>
-                                {m.avatar_url ? (
-                                    <img src={m.avatar_url} alt="" className="h-full w-full object-cover rounded-full" />
-                                ) : (
-                                    (m.name || "?").slice(0,1)
-                                )}
+                                <img src={getAvatarUrl(m.avatar_url, m.user_id)} alt={m.name || "User"} className="h-full w-full object-cover rounded-full" />
                             </div>
                          ))}
                          {memberCount > 5 && <div className="h-8 w-8 rounded-full ring-2 ring-white bg-neutral-50 flex items-center justify-center text-[10px] font-bold text-neutral-400">+{memberCount - 5}</div>}
@@ -1450,11 +1461,7 @@ export default function GroupDetail() {
                  >
                     <div className="flex items-center gap-3">
                        <div className="h-10 w-10 rounded-full bg-neutral-200 flex items-center justify-center overflow-hidden">
-                          {m.avatar_url ? (
-                             <img src={m.avatar_url} className="w-full h-full object-cover" />
-                          ) : (
-                             <span className="text-sm font-bold text-neutral-500">{(m.name || "?").slice(0,1)}</span>
-                          )}
+                          <img src={getAvatarUrl(m.avatar_url, m.user_id)} alt={m.name || "User"} className="w-full h-full object-cover" />
                        </div>
                        <div>
                          <div className="text-sm font-bold text-neutral-900">{m.name || "User"}</div>
