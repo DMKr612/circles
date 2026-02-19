@@ -16,15 +16,15 @@
     "@capacitor/geolocation": "^7.1.6",
     "@supabase/supabase-js": "^2.57.2",
     "@tanstack/react-query": "^5.90.11",
+    "@vitejs/plugin-react": "^5.0.0",
     "country-state-city": "^3.2.1",
     "framer-motion": "^11.18.2",
     "lucide-react": "^0.554.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.30.1",
-    "vite-plugin-compression": "^0.5.1",
     "vite": "^7.2.4",
-    "@vitejs/plugin-react": "^5.0.0"
+    "vite-plugin-compression": "^0.5.1"
   },
   "devDependencies": {
     "@capacitor/android": "^7.4.3",

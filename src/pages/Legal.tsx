@@ -1,12 +1,26 @@
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 
 export default function Legal() {
+  const navigate = useNavigate();
+
+  function goBack() {
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate("/");
+  }
+
   return (
     <div className="min-h-screen bg-white p-6 max-w-2xl mx-auto">
-      <Link to="/onboarding" className="inline-flex items-center gap-2 text-neutral-600 mb-6 hover:text-black">
+      <button
+        type="button"
+        onClick={goBack}
+        className="inline-flex items-center gap-2 text-neutral-600 mb-6 hover:text-black"
+      >
         <ArrowLeft className="h-4 w-4" /> Back
-      </Link>
+      </button>
       
       <h1 className="text-3xl font-bold mb-6">Legal & Privacy</h1>
       

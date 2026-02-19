@@ -34,6 +34,7 @@ const Profile = lazy(() => import("./pages/Profile"));
 const ProfileCreation = lazy(() => import("./pages/ProfileCreation"));
 const GroupsByGame = lazy(() => import("./pages/groups/GroupsByGame"));
 const MyGroups = lazy(() => import("./pages/groups/MyGroups"));
+const Landing = lazy(() => import("./pages/Landing"));
 const Onboarding = lazy(() => import("./pages/Onboarding"));
 const JoinByCode = lazy(() => import("./pages/JoinByCode"));
 const NotificationsPage = lazy(() => import("./pages/Notifications"));
@@ -157,10 +158,6 @@ function GroupRedirect() {
   return <Navigate to={`/group/${id}`} replace />;
 }
 
-function LandingRedirect() {
-  return <Navigate to="/onboarding" replace />;
-}
-
 /* =========================
    App
    ========================= */
@@ -203,7 +200,7 @@ export default function App() {
               fallback={<LoadingScreen />}
             >
               <Routes>
-                <Route path="/" element={<LandingRedirect />} />
+                <Route path="/" element={<Landing />} />
                 <Route path="/onboarding" element={<Onboarding />} />
                 <Route path="/legal" element={<Legal />} />
                 <Route path="/invite/:code" element={<JoinByCode />} />
@@ -237,7 +234,7 @@ export default function App() {
                 </Route>
 
                 <Route path="/groups/:id" element={<GroupRedirect />} />
-                <Route path="*" element={<Navigate to="/onboarding" replace />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Suspense>
           </AppErrorBoundary>
