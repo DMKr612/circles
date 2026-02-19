@@ -128,6 +128,13 @@ function toStars(score: number) {
   return Math.round((score / 20) * 10) / 10;
 }
 
+function countWords(value: string): number {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
 type Props = {
   open: boolean;
   onClose: () => void;
@@ -177,6 +184,31 @@ export default function PersonalityQuizModal({
       } = await supabase.auth.getUser();
       if (userError || !user) throw new Error("Sign in required.");
 
+      const { data: profileRow, error: profileError } = await supabase
+        .from("profiles")
+        .select("name, city, bio, age")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (profileError) throw profileError;
+
+      const meta = (user.user_metadata || {}) as Record<string, unknown>;
+      const name = String((profileRow as any)?.name || meta.name || meta.full_name || "").trim();
+      const city = String((profileRow as any)?.city || meta.city || "").trim();
+      const bio = String((profileRow as any)?.bio || meta.bio || "").trim();
+      const email = String(user.email || "").trim();
+      const ageRaw = (profileRow as any)?.age ?? meta.age ?? null;
+      const ageNum = Number(ageRaw);
+      const age = Number.isFinite(ageNum) ? Math.round(ageNum) : null;
+
+      if (!email) throw new Error("Email is required. Please sign in again.");
+      if (name.length < 2) throw new Error("Please add your name in Settings first.");
+      if (!city) throw new Error("Please add your city in Settings first.");
+      if (!bio) throw new Error("Please add your bio in Settings first.");
+      if (countWords(bio) < 10) throw new Error("Your bio must be at least 10 words.");
+      if (age === null || age < 13 || age > 120) {
+        throw new Error("Please add a valid age (13-120) in Settings first.");
+      }
+
       const finalResult = computeSocialRhythmResult(answers, user.id);
       const traitsPayload = {
         ...finalResult,
@@ -188,18 +220,42 @@ export default function PersonalityQuizModal({
       });
       if (error) throw error;
 
-      // Non-blocking backend processing: stores quiz_results + sends email.
-      try {
-        const fnRes = await supabase.functions.invoke("submit-quiz-result", {
-          body: { answers },
-        });
-        if (fnRes.error) {
-          console.warn("[quiz] submit-quiz-result failed", fnRes.error.message);
-        } else if (fnRes.data && fnRes.data.email_sent === false) {
-          console.warn("[quiz] result saved but email failed", fnRes.data);
+      // Required backend processing: stores quiz_results + sends result email.
+      const fnRes = await supabase.functions.invoke("submit-quiz-result", {
+        body: {
+          answers,
+          participant: {
+            name,
+            email,
+            age,
+            city,
+            bio,
+          },
+        },
+      });
+      if (fnRes.error) {
+        let detail = fnRes.error.message;
+        const context = (fnRes.error as any)?.context;
+        if (context && typeof context.clone === "function") {
+          try {
+            const raw = await context.clone().text();
+            if (raw) detail = `${detail} | ${raw}`;
+          } catch {
+            // ignore body parse errors
+          }
         }
-      } catch (fnErr) {
-        console.warn("[quiz] submit-quiz-result invoke exception", fnErr);
+        throw new Error(`Saved profile, but failed to send quiz result: ${detail}`);
+      }
+      if (!fnRes.data?.ok) {
+        const detail = typeof fnRes.data?.error === "string" ? fnRes.data.error : "Unknown function error";
+        throw new Error(`Saved profile, but quiz result function failed: ${detail}`);
+      }
+      if (fnRes.data?.email_sent === false) {
+        const detail =
+          typeof fnRes.data?.email_error === "string" && fnRes.data.email_error.trim()
+            ? fnRes.data.email_error.trim()
+            : "email_send_failed";
+        throw new Error(`Saved profile, but email could not be sent: ${detail}`);
       }
 
       const prof = Array.isArray(data) ? data[0] : data;

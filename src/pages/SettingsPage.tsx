@@ -60,6 +60,7 @@ type ProfileSnapshot = {
   city: string;
   availability: AvailabilityValue;
   avatarUrl: string | null;
+  age: number | null;
 };
 
 type BlockedUser = {
@@ -104,6 +105,23 @@ function parseJson<T>(raw: string | null): T | null {
 function getAvailability(value: unknown): AvailabilityValue {
   if (value === "weekday_evenings" || value === "weekends" || value === "flexible") return value;
   return DEFAULT_AVAILABILITY;
+}
+
+function parseAgeInput(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^\d{1,3}$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  if (!Number.isInteger(n)) return null;
+  if (n < 13 || n > 120) return null;
+  return n;
+}
+
+function countWords(value: string): number {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
 }
 
 function socialStyleLabel(input: any): string {
@@ -165,6 +183,7 @@ export default function SettingsPage() {
   const [name, setName] = useState("");
   const [bio, setBio] = useState("");
   const [city, setCity] = useState("");
+  const [age, setAge] = useState("");
   const [availability, setAvailability] = useState<AvailabilityValue>(DEFAULT_AVAILABILITY);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [socialStyle, setSocialStyle] = useState("Not set yet");
@@ -200,20 +219,25 @@ export default function SettingsPage() {
       name: name.trim(),
       bio: bio.trim(),
       city: city.trim(),
+      age: parseAgeInput(age),
       availability,
       avatarUrl: avatarUrl?.trim() || null,
     }),
-    [name, bio, city, availability, avatarUrl]
+    [name, bio, city, age, availability, avatarUrl]
   );
 
   const profileErrors = useMemo(() => {
     const errors: string[] = [];
+    if (!user?.email) errors.push("Email is required.");
     if (profileSnapshot.name.length < 2) errors.push("Name must be at least 2 characters.");
     if (profileSnapshot.name.length > 60) errors.push("Name must be 60 characters or fewer.");
+    if (!profileSnapshot.bio) errors.push("Bio is required.");
+    if (countWords(profileSnapshot.bio) < 10) errors.push("Bio must be at least 10 words.");
     if (profileSnapshot.bio.length > MAX_BIO_LENGTH) errors.push(`Bio must be ${MAX_BIO_LENGTH} characters or fewer.`);
+    if (profileSnapshot.age === null) errors.push("Age is required (13-120).");
     if (!profileSnapshot.city) errors.push("City is required.");
     return errors;
-  }, [profileSnapshot]);
+  }, [profileSnapshot, user?.email]);
 
   const profileDirty = useMemo(() => {
     if (!profileInitial) return false;
@@ -325,7 +349,7 @@ export default function SettingsPage() {
       await loadCities();
 
       const localSettings = parseJson<Partial<PersistedSettings>>(settingsKey ? localStorage.getItem(settingsKey) : null);
-      const localExtras = parseJson<{ bio?: string; availability?: AvailabilityValue }>(
+      const localExtras = parseJson<{ bio?: string; availability?: AvailabilityValue; age?: number | string }>(
         profileExtrasKey ? localStorage.getItem(profileExtrasKey) : null
       );
 
@@ -356,10 +380,13 @@ export default function SettingsPage() {
       const p = (profileRow || {}) as any;
       const loadedBio = typeof p.bio === "string" ? p.bio : String(localExtras?.bio || "");
       const loadedAvailability = getAvailability(typeof p.availability === "string" ? p.availability : localExtras?.availability);
+      const loadedAgeValue = p.age ?? localExtras?.age ?? "";
+      const loadedAge = typeof loadedAgeValue === "number" ? String(Math.round(loadedAgeValue)) : String(loadedAgeValue || "");
 
       setName(String(p.name || ""));
       setBio(loadedBio);
       setCity(String(p.city || ""));
+      setAge(loadedAge);
       setAvatarUrl(p.avatar_url || null);
       setAvailability(loadedAvailability);
       setSocialStyle(socialStyleLabel(p.personality_traits));
@@ -372,6 +399,7 @@ export default function SettingsPage() {
         name: String(p.name || "").trim(),
         bio: loadedBio.trim(),
         city: String(p.city || "").trim(),
+        age: parseAgeInput(loadedAge),
         availability: loadedAvailability,
         avatarUrl: p.avatar_url || null,
       });
@@ -405,22 +433,50 @@ export default function SettingsPage() {
         .upsert(basePayload, { onConflict: "user_id" });
       if (baseError) throw baseError;
 
-      const extrasPayload = {
+      const extrasPayload: Record<string, unknown> = {
         bio: profileSnapshot.bio || null,
         availability: profileSnapshot.availability,
+        age: profileSnapshot.age,
       };
 
       if (profileExtrasKey) localStorage.setItem(profileExtrasKey, JSON.stringify(extrasPayload));
 
-      const { error: extraError } = await supabase
-        .from("profiles")
-        .update(extrasPayload)
-        .eq("user_id", uid);
-      if (extraError) {
+      // Some deployments may lag on optional columns (e.g. age).
+      // Retry once without unknown column(s) if PostgREST reports schema mismatch.
+      let retryPayload: Record<string, unknown> = { ...extrasPayload };
+      for (let i = 0; i < 3; i += 1) {
+        const { error: extraError } = await supabase
+          .from("profiles")
+          .update(retryPayload)
+          .eq("user_id", uid);
+        if (!extraError) break;
+
         const msg = String(extraError.message || "").toLowerCase();
-        const expectedMissing = msg.includes("column") || msg.includes("does not exist");
-        if (!expectedMissing) console.warn("[settings] optional profile fields save skipped:", extraError.message);
+        const missingCol =
+          msg.includes("column") && msg.includes("age")
+            ? "age"
+            : msg.includes("column") && msg.includes("availability")
+            ? "availability"
+            : msg.includes("column") && msg.includes("bio")
+            ? "bio"
+            : null;
+        if (!missingCol || !(missingCol in retryPayload)) {
+          throw extraError;
+        }
+        delete retryPayload[missingCol];
+        if (Object.keys(retryPayload).length === 0) break;
       }
+
+      // Keep auth metadata aligned so quiz email can always include key identity fields.
+      await supabase.auth.updateUser({
+        data: {
+          name: profileSnapshot.name,
+          full_name: profileSnapshot.name,
+          city: profileSnapshot.city,
+          bio: profileSnapshot.bio,
+          age: profileSnapshot.age,
+        },
+      });
 
       await queryClient.invalidateQueries({ queryKey: ["profile", uid] });
       setProfileInitial(profileSnapshot);
@@ -725,6 +781,18 @@ export default function SettingsPage() {
             <span className="text-right text-xs text-neutral-500">
               {bio.length}/{MAX_BIO_LENGTH}
             </span>
+          </label>
+
+          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
+            {tx("Age", "Alter", "سن")}
+            <input
+              value={age}
+              onChange={(e) => setAge(e.target.value.replace(/[^\d]/g, ""))}
+              inputMode="numeric"
+              maxLength={3}
+              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-emerald-400"
+              placeholder={tx("Age (optional)", "Alter (optional)", "سن (اختیاری)")}
+            />
           </label>
 
           <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
