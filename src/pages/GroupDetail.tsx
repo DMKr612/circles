@@ -441,9 +441,31 @@ export default function GroupDetail() {
       const { data: auth } = await supabase.auth.getUser();
       const viewerId = auth?.user?.id ?? null;
       const viewerEmail = auth?.user?.email ?? null;
+      let viewerCity: string | null = null;
+      let viewerCoords: { lat: number; lng: number } | null = null;
+      if (viewerId) {
+        const profileRes = await supabase
+          .from("profiles")
+          .select("city, lat, lng")
+          .eq("user_id", viewerId)
+          .maybeSingle();
+        if (!profileRes.error) {
+          viewerCity = profileRes.data?.city || null;
+          if (typeof profileRes.data?.lat === "number" && typeof profileRes.data?.lng === "number") {
+            viewerCoords = { lat: profileRes.data.lat, lng: profileRes.data.lng };
+          }
+        } else if (profileRes.error?.code === "42703") {
+          const fallbackProfile = await supabase
+            .from("profiles")
+            .select("city")
+            .eq("user_id", viewerId)
+            .maybeSingle();
+          if (!fallbackProfile.error) viewerCity = fallbackProfile.data?.city || null;
+        }
+      }
       const { data, error } = await supabase
         .from('announcements')
-        .select('id, title, description, datetime, created_at, created_by, duration_minutes, location, activities, link, group_id')
+        .select('id, title, description, datetime, created_at, created_by, duration_minutes, location, activities, link, group_id, scope_type, country, city, lat, lng, radius_km')
         .eq('group_id', group.id)
         .order('datetime', { ascending: true })
         .limit(20);
@@ -453,6 +475,8 @@ export default function GroupDetail() {
           isAnnouncementVisibleForViewer(a, {
             viewerId,
             viewerEmail,
+            viewerCity,
+            viewerCoords,
           })
         )
         .slice(0, 5);

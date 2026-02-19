@@ -41,6 +41,7 @@ const Chats = lazy(() => import("./pages/Chats"));
 const Legal = lazy(() => import("./pages/Legal"));
 const AuthCallback = lazy(() => import("./pages/AuthCallback"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const PersonalityQuizPage = lazy(() => import("./pages/PersonalityQuizPage"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
 
 /* =========================
@@ -226,6 +227,7 @@ export default function App() {
                   <Route path="/profile" element={<Profile />} />
                   <Route path="/profile/:userId" element={<Profile />} />
                   <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/quiz" element={<PersonalityQuizPage />} />
                   <Route path="/create" element={<CreateGroup />} />
                   <Route path="/group/:id" element={<GroupDetail />} />
                   <Route path="/groups/game/:game" element={<GroupsByGame />} />

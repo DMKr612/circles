@@ -4,6 +4,7 @@ import { ANNOUNCEMENT_ADMINS, isAnnouncementVisibleForViewer, type Announcement 
 import { ArrowLeft, CalendarClock, Megaphone, MessageCircle, MapPin, Trash2, Edit2, Plus, Map } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
+import { geocodePlace } from "@/lib/geocode";
 
 function formatEventRange(evt: Announcement): string {
   const start = new Date(evt.datetime);
@@ -68,6 +69,8 @@ export default function AnnouncementsPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [uid, setUid] = useState<string | null>(null);
   const [viewerEmail, setViewerEmail] = useState<string | null>(null);
+  const [viewerCity, setViewerCity] = useState<string | null>(null);
+  const [viewerCoords, setViewerCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [form, setForm] = useState<Partial<Announcement>>({});
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -75,6 +78,34 @@ export default function AnnouncementsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
   const [eventsErr, setEventsErr] = useState<string | null>(null);
+
+  const createAnnouncementGroup = async (
+    title: string,
+    description: string,
+    location: string | null,
+    creatorId: string
+  ): Promise<string | null> => {
+    const geo = location ? await geocodePlace(location) : null;
+    const groupPayload: Record<string, any> = {
+      title,
+      description,
+      creator_id: creatorId,
+      host_id: creatorId,
+      city: location || null,
+      lat: geo?.lat ?? null,
+      lng: geo?.lng ?? null,
+      is_online: false,
+      capacity: null,
+    };
+
+    let insertRes = await supabase.from("groups").insert(groupPayload).select("id").maybeSingle();
+    if (insertRes.error?.code === "42703") {
+      const { lat: _lat, lng: _lng, ...legacyPayload } = groupPayload;
+      insertRes = await supabase.from("groups").insert(legacyPayload).select("id").maybeSingle();
+    }
+    if (insertRes.error) throw insertRes.error;
+    return insertRes.data?.id || null;
+  };
 
   // Load joined announcements from local storage (activity calendar)
   useEffect(() => {
@@ -95,6 +126,23 @@ export default function AnnouncementsPage() {
       setUid(u?.user?.id || null);
       setViewerEmail(email || null);
       setIsAdmin(!!email && ANNOUNCEMENT_ADMINS.includes(email));
+
+      if (u?.user?.id) {
+        const full = await supabase
+          .from("profiles")
+          .select("city, lat, lng")
+          .eq("user_id", u.user.id)
+          .maybeSingle();
+        if (!full.error) {
+          setViewerCity(full.data?.city || null);
+          if (typeof full.data?.lat === "number" && typeof full.data?.lng === "number") {
+            setViewerCoords({ lat: full.data.lat, lng: full.data.lng });
+          }
+        } else if (full.error?.code === "42703") {
+          const fallback = await supabase.from("profiles").select("city").eq("user_id", u.user.id).maybeSingle();
+          if (!fallback.error) setViewerCity(fallback.data?.city || null);
+        }
+      }
     })();
   }, []);
 
@@ -116,23 +164,16 @@ export default function AnnouncementsPage() {
         let mutated = false;
         for (const a of rows) {
           if (!a.group_id) {
-            const { data: g, error: gErr } = await supabase
-              .from('groups')
-              .insert({
-                title: a.title,
-                description: a.description,
-                creator_id: uid,
-                host_id: uid,
-                city: a.location || null,
-                is_online: false,
-                capacity: null,
-              })
-              .select('id')
-              .maybeSingle();
-            if (!gErr && g?.id) {
+            const newGroupId = await createAnnouncementGroup(
+              a.title,
+              a.description,
+              a.location || null,
+              uid
+            );
+            if (newGroupId) {
               mutated = true;
-              await supabase.from('announcements').update({ group_id: g.id }).eq('id', a.id);
-              a.group_id = g.id;
+              await supabase.from('announcements').update({ group_id: newGroupId }).eq('id', a.id);
+              a.group_id = newGroupId;
             }
           }
         }
@@ -148,7 +189,12 @@ export default function AnnouncementsPage() {
       }
 
       const visibleRows = rows.filter((evt) =>
-        isAnnouncementVisibleForViewer(evt, { viewerId: uid, viewerEmail })
+        isAnnouncementVisibleForViewer(evt, {
+          viewerId: uid,
+          viewerEmail,
+          viewerCity,
+          viewerCoords,
+        })
       );
       setEvents(visibleRows);
     } catch (e: any) {
@@ -158,7 +204,7 @@ export default function AnnouncementsPage() {
     }
   };
 
-  useEffect(() => { loadEvents(); }, [uid, viewerEmail, isAdmin]);
+  useEffect(() => { loadEvents(); }, [uid, viewerEmail, viewerCity, viewerCoords, isAdmin]);
 
   // Persist joined announcements for the in-app activity calendar
   const persist = (ids: Set<string>) => {
@@ -286,21 +332,8 @@ export default function AnnouncementsPage() {
     try {
       // Auto-create a circle for this announcement if none linked
       if (!payload.group_id && uid) {
-        const { data: g, error: gErr } = await supabase
-          .from('groups')
-          .insert({
-            title,
-            description,
-            creator_id: uid,
-            host_id: uid,
-            city: location || null,
-            is_online: false,
-            capacity: null,
-          })
-          .select('id')
-          .maybeSingle();
-        if (gErr) throw gErr;
-        if (g?.id) payload.group_id = g.id;
+        const linkedGroupId = await createAnnouncementGroup(title, description, location || null, uid);
+        if (linkedGroupId) payload.group_id = linkedGroupId;
       }
 
       const upsert = async (body: any) => {

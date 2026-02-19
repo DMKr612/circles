@@ -118,9 +118,30 @@ export default function Chats() {
       });
 
       // Process Announcements (linked circles) for quick access
+      let viewerCity: string | null = null;
+      let viewerCoords: { lat: number; lng: number } | null = null;
+      const profileRes = await supabase
+        .from("profiles")
+        .select("city, lat, lng")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (!profileRes.error) {
+        viewerCity = profileRes.data?.city || null;
+        if (typeof profileRes.data?.lat === "number" && typeof profileRes.data?.lng === "number") {
+          viewerCoords = { lat: profileRes.data.lat, lng: profileRes.data.lng };
+        }
+      } else if (profileRes.error?.code === "42703") {
+        const fallbackProfile = await supabase
+          .from("profiles")
+          .select("city")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (!fallbackProfile.error) viewerCity = fallbackProfile.data?.city || null;
+      }
+
       const { data: anns } = await supabase
         .from("announcements")
-        .select("id, group_id, title, description, datetime, created_at, created_by")
+        .select("id, group_id, title, description, datetime, created_at, created_by, scope_type, country, city, lat, lng, radius_km")
         .not("group_id", "is", null)
         .order("datetime", { ascending: false })
         .limit(50);
@@ -129,6 +150,8 @@ export default function Chats() {
           isAnnouncementVisibleForViewer(a, {
             viewerId: user.id,
             viewerEmail,
+            viewerCity,
+            viewerCoords,
           })
         )
         .forEach((a: any) => {

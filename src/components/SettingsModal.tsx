@@ -291,6 +291,23 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
       setDeleteBusy(false);
     }
   }
+
+  function showFirstStepsAgain() {
+    if (!uid) return;
+    const seenKey = `circles_first_steps_${uid}`;
+    const stateKey = `circles_first_steps_state_${uid}`;
+    const collapseKey = `circles_first_steps_collapsed_${uid}`;
+    try {
+      localStorage.removeItem(seenKey);
+      localStorage.removeItem(collapseKey);
+      localStorage.setItem(stateKey, JSON.stringify([false, false, false, false]));
+      window.dispatchEvent(new Event("circles:show-checklist"));
+      setSettingsMsg("First steps are visible again.");
+      success("First steps shown");
+    } catch {
+      setSettingsMsg("Could not update first steps visibility.");
+    }
+  }
   
   if (!isOpen && !isPage) return null;
 
@@ -307,7 +324,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
         <div className="flex items-start justify-between">
           <div>
             <div className="text-xl font-bold text-neutral-900 flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-emerald-500" /> Edit Profile
+              <Sparkles className="h-5 w-5 text-emerald-500" /> Settings
             </div>
             <p className="text-sm text-neutral-500">Freshen up your details, theme, and notifications.</p>
           </div>
@@ -514,6 +531,23 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
           </div>
         </div>
 
+        {/* Onboarding */}
+        <div className="rounded-2xl border border-emerald-100 bg-emerald-50/60 p-4 shadow-sm">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-emerald-900">First steps banner</div>
+              <div className="text-[11px] text-emerald-800/80">Show the setup reminder on your Profile again.</div>
+            </div>
+            <button
+              type="button"
+              onClick={showFirstStepsAgain}
+              className="rounded-xl border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50"
+            >
+              Show first steps again
+            </button>
+          </div>
+        </div>
+
         {/* Danger zone */}
         <div className="rounded-2xl border border-red-100 bg-red-50/70 p-4 shadow-sm">
           <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-red-600">
@@ -543,7 +577,7 @@ export default function SettingsModal({ isOpen, onClose, onSave, variant = "moda
         </div>
 
         {settingsMsg && (
-          <div className={`mt-1 rounded-xl border px-3 py-2 text-sm ${settingsMsg === 'Saved.' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+          <div className={`mt-1 rounded-xl border px-3 py-2 text-sm ${(settingsMsg === 'Saved.' || settingsMsg === 'First steps are visible again.') ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
             {settingsMsg}
           </div>
         )}

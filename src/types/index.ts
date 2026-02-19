@@ -15,6 +15,10 @@ export type Profile = {
   rating_avg?: number;
   rating_count?: number;
   verification_level?: number | null;
+  lat?: number | null;
+  lng?: number | null;
+  location_updated_at?: string | null;
+  location_source?: "gps" | "manual" | null;
 };
 
 export type Group = {
@@ -36,6 +40,8 @@ export type Group = {
   online_link: string | null;
   created_at: string;
   code?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 };
 
 export type GroupMember = {
@@ -122,6 +128,8 @@ export type GroupRow = {
   created_at: string;
   game: string | null;
   code?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 };
 
 export type BrowseGroupRow = {
@@ -134,6 +142,8 @@ export type BrowseGroupRow = {
   created_at: string;
   game: string | null;
   code?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 };
 
 export type MyGroupRow = {
@@ -147,6 +157,8 @@ export type MyGroupRow = {
   created_at: string;
   game: string | null;
   code?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 };
 
 export type GroupEvent = {

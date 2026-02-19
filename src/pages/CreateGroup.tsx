@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useNavigate, Link } from "react-router-dom";
+import { geocodePlace } from "@/lib/geocode";
 
 // map for quick lookups when rendering selected chips
 const EMPTY_ARR: string[] = [];
@@ -350,27 +351,42 @@ async function refreshFriendData(userId: string) {
 
     // insert only columns that certainly exist; let triggers/defaults handle the rest
     const cleanedCity = (cityCanonical ?? null);
-    const row = {
+    const geo = cleanedCity ? await geocodePlace(cleanedCity) : null;
+    const row: Record<string, any> = {
       title: title.trim(),
       description: (description.trim().replace(/\s+$/, "") || null),
       category: (category || "").toLowerCase(),
       game: gameId,                          // allowed_games.id
       city: cleanedCity,                     // <-- persist city to DB
+      lat: geo?.lat ?? null,
+      lng: geo?.lng ?? null,
       capacity: cap,
       visibility: 'public',                  // baseline readable
       host_id: uid,                          // required for RLS/host policies
-    } as const;
+    };
 
-    const { data: created, error } = await supabase
+    let createdRes = await supabase
       .from("groups")
       .insert([row])
       .select("id")
       .maybeSingle();
 
-    if (error) {
-      alert(String(error.message ?? "Unknown error"));
+    // Backward compatibility before location columns migration is applied.
+    if (createdRes.error?.code === "42703") {
+      const { lat: _lat, lng: _lng, ...legacyRow } = row;
+      createdRes = await supabase
+        .from("groups")
+        .insert([legacyRow])
+        .select("id")
+        .maybeSingle();
+    }
+
+    if (createdRes.error) {
+      alert(String(createdRes.error.message ?? "Unknown error"));
       return;
     }
+
+    const created = createdRes.data;
 
     if (!created?.id) {
       alert("Group created but ID missing. Try refreshing.");

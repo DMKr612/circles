@@ -265,7 +265,7 @@ export default function NotificationsPage() {
             .in("status", ["active", "accepted"]),
           supabase
             .from("announcements")
-            .select("id, title, description, datetime, location, group_id, created_at, created_by")
+            .select("id, title, description, datetime, location, group_id, created_at, created_by, scope_type, country, city, lat, lng, radius_km")
             .order("datetime", { ascending: true })
             .limit(5),
           supabase
@@ -295,10 +295,34 @@ export default function NotificationsPage() {
 
         const inv = invRes.data;
         const myGroups = myGroupsRes.data;
+
+        let viewerCity: string | null = null;
+        let viewerCoords: { lat: number; lng: number } | null = null;
+        const profileRes = await supabase
+          .from("profiles")
+          .select("city, lat, lng")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!profileRes.error) {
+          viewerCity = profileRes.data?.city || null;
+          if (typeof profileRes.data?.lat === "number" && typeof profileRes.data?.lng === "number") {
+            viewerCoords = { lat: profileRes.data.lat, lng: profileRes.data.lng };
+          }
+        } else if (profileRes.error?.code === "42703") {
+          const fallbackProfile = await supabase
+            .from("profiles")
+            .select("city")
+            .eq("user_id", userId)
+            .maybeSingle();
+          if (!fallbackProfile.error) viewerCity = fallbackProfile.data?.city || null;
+        }
+
         const anns = (annRes.data || []).filter((a: any) =>
           isAnnouncementVisibleForViewer(a, {
             viewerId: userId,
             viewerEmail: user?.email ?? null,
+            viewerCity,
+            viewerCoords,
           })
         );
         const reconnectRaw = reconnectRes.data || [];

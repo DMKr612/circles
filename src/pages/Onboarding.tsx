@@ -227,15 +227,22 @@ export default function Onboarding() {
     }
     try {
       setAuthBusy(true);
-      localStorage.setItem("onboardingSeen", "1");
       if (authMode === "signup") {
-        const { error } = await supabase.auth.signUp({ email: email.trim(), password: password.trim() });
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password: password.trim() });
         if (error) throw error;
-        // Do not navigate here; onAuthStateChange will redirect appropriately
+        localStorage.setItem("onboardingSeen", "1");
+        if (data?.user && data?.session) {
+          navigate("/profile", { replace: true });
+        } else {
+          setAuthErr("Check your email to confirm your account, then sign in.");
+        }
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: password.trim() });
+        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: password.trim() });
         if (error) throw error;
-        // Do not navigate here; onAuthStateChange will redirect appropriately
+        localStorage.setItem("onboardingSeen", "1");
+        if (data?.user) {
+          navigate("/profile", { replace: true });
+        }
       }
     } catch (err: any) {
       setAuthErr(err?.message ?? "Authentication failed");

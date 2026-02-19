@@ -2,12 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   Calendar,
+  Check,
+  CheckCircle2,
   ChevronRight,
+  Compass,
   Ellipsis,
   MapPin,
+  MessageCircle,
   Pencil,
   Star,
   Users,
+  UserPlus,
+  X,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/App";
@@ -69,6 +75,51 @@ type PublicProfile = {
   name: string | null;
   avatar_url: string | null;
 };
+
+type FirstStep = {
+  label: string;
+  sub: string;
+  primary: string;
+  to: string;
+  secondary?: string;
+  secondaryTo?: string;
+  optional?: boolean;
+  icon: any;
+};
+
+const FIRST_STEPS: FirstStep[] = [
+  {
+    label: "Find or create a Circle",
+    sub: "Join something nearby or start your own",
+    primary: "Find nearby circles",
+    to: "/browse",
+    secondary: "Start a circle",
+    secondaryTo: "/create",
+    icon: Compass,
+  },
+  {
+    label: "Set your city & availability",
+    sub: "So we can match you to better circles",
+    primary: "Open settings",
+    to: "/settings",
+    icon: MapPin,
+  },
+  {
+    label: "Say hello",
+    sub: "Open a chat and introduce yourself",
+    primary: "Open chat",
+    to: "/chats",
+    icon: MessageCircle,
+  },
+  {
+    label: "Invite one person (optional)",
+    sub: "Circles grow faster with familiar faces",
+    primary: "Invite someone",
+    to: "/chats",
+    optional: true,
+    icon: UserPlus,
+  },
+];
 
 function fmtWeekdayTime(iso: string | null): string {
   if (!iso) return "No time selected";
@@ -203,6 +254,93 @@ export default function Profile() {
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [meetupsCount, setMeetupsCount] = useState(0);
   const [loadingPage, setLoadingPage] = useState(true);
+  const [firstStepsState, setFirstStepsState] = useState<boolean[]>([false, false, false, false]);
+  const [showFirstStepsBanner, setShowFirstStepsBanner] = useState(false);
+  const [firstStepsModalOpen, setFirstStepsModalOpen] = useState(false);
+
+  const firstStepsSeenKey = useMemo(() => (uid ? `circles_first_steps_${uid}` : null), [uid]);
+  const firstStepsStateKey = useMemo(() => (uid ? `circles_first_steps_state_${uid}` : null), [uid]);
+  const completedFirstSteps = useMemo(() => firstStepsState.filter(Boolean).length, [firstStepsState]);
+  const activeFirstStep = useMemo(() => {
+    const idx = firstStepsState.findIndex((v) => !v);
+    return idx === -1 ? FIRST_STEPS.length - 1 : idx;
+  }, [firstStepsState]);
+
+  useEffect(() => {
+    if (!uid) {
+      setShowFirstStepsBanner(false);
+      setFirstStepsState([false, false, false, false]);
+      return;
+    }
+
+    const seen = firstStepsSeenKey ? localStorage.getItem(firstStepsSeenKey) : null;
+    setShowFirstStepsBanner(!seen);
+
+    if (!firstStepsStateKey) {
+      setFirstStepsState([false, false, false, false]);
+      return;
+    }
+
+    try {
+      const raw = localStorage.getItem(firstStepsStateKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length === FIRST_STEPS.length) {
+          setFirstStepsState(parsed.map(Boolean));
+          return;
+        }
+      }
+    } catch {}
+
+    setFirstStepsState([false, false, false, false]);
+  }, [uid, firstStepsSeenKey, firstStepsStateKey]);
+
+  useEffect(() => {
+    if (!firstStepsStateKey) return;
+    localStorage.setItem(firstStepsStateKey, JSON.stringify(firstStepsState));
+  }, [firstStepsState, firstStepsStateKey]);
+
+  useEffect(() => {
+    if (!firstStepsSeenKey) return;
+    if (completedFirstSteps >= FIRST_STEPS.length) {
+      localStorage.setItem(firstStepsSeenKey, "1");
+      setShowFirstStepsBanner(false);
+      setFirstStepsModalOpen(false);
+    }
+  }, [completedFirstSteps, firstStepsSeenKey]);
+
+  useEffect(() => {
+    const handleShow = () => {
+      if (firstStepsSeenKey) localStorage.removeItem(firstStepsSeenKey);
+      setShowFirstStepsBanner(true);
+    };
+    window.addEventListener("circles:show-checklist", handleShow as EventListener);
+    return () => window.removeEventListener("circles:show-checklist", handleShow as EventListener);
+  }, [firstStepsSeenKey]);
+
+  const dismissFirstSteps = () => {
+    if (firstStepsSeenKey) localStorage.setItem(firstStepsSeenKey, "1");
+    setShowFirstStepsBanner(false);
+    setFirstStepsModalOpen(false);
+  };
+
+  const toggleFirstStep = (idx: number) => {
+    setFirstStepsState((prev) => {
+      const next = [...prev];
+      if (idx < 0 || idx >= next.length) return next;
+      next[idx] = !next[idx];
+      return next;
+    });
+  };
+
+  const openFirstStepRoute = (idx: number, useSecondary = false) => {
+    const step = FIRST_STEPS[idx];
+    if (!step) return;
+    const to = useSecondary ? step.secondaryTo : step.to;
+    if (!to) return;
+    setFirstStepsModalOpen(false);
+    navigate(to);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -698,7 +836,7 @@ export default function Profile() {
               className="inline-flex h-9 shrink-0 items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
             >
               <Pencil className="h-4 w-4" />
-              Edit
+              Settings
             </button>
           </div>
 
@@ -720,6 +858,33 @@ export default function Profile() {
             </div>
           </div>
         </section>
+
+        {showFirstStepsBanner && completedFirstSteps < FIRST_STEPS.length && (
+          <section className="rounded-2xl border border-emerald-200 bg-emerald-50/50 px-4 py-3">
+            <div className="flex min-h-[56px] items-center justify-between gap-3">
+              <p className="truncate text-sm font-semibold text-emerald-900">
+                Finish setting up your Circle ({completedFirstSteps}/{FIRST_STEPS.length})
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFirstStepsModalOpen(true)}
+                  className="rounded-full bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                >
+                  Continue
+                </button>
+                <button
+                  type="button"
+                  onClick={dismissFirstSteps}
+                  className="rounded-full p-1.5 text-emerald-700/70 hover:bg-emerald-100 hover:text-emerald-900"
+                  aria-label="Dismiss setup banner"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
 
         <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
           <div className="mb-4 flex items-center justify-between">
@@ -889,6 +1054,95 @@ export default function Profile() {
         </section>
 
       </div>
+
+      {firstStepsModalOpen && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/35 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-emerald-100 bg-white p-5 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-lg font-bold text-neutral-900">Finish setting up your Circle</p>
+                <p className="text-xs text-neutral-600">
+                  {completedFirstSteps}/{FIRST_STEPS.length} completed
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFirstStepsModalOpen(false)}
+                className="rounded-full p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700"
+                aria-label="Close onboarding"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mb-4 h-1.5 overflow-hidden rounded-full bg-neutral-100">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-all"
+                style={{ width: `${(completedFirstSteps / FIRST_STEPS.length) * 100}%` }}
+              />
+            </div>
+
+            <div className="space-y-2.5">
+              {FIRST_STEPS.map((step, idx) => {
+                const done = firstStepsState[idx];
+                const isActive = idx === activeFirstStep;
+                return (
+                  <div
+                    key={step.label}
+                    className={`rounded-xl border p-3 ${
+                      done
+                        ? "border-emerald-200 bg-emerald-50/70"
+                        : isActive
+                          ? "border-emerald-200 bg-emerald-50/40"
+                          : "border-neutral-200 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <button
+                        type="button"
+                        onClick={() => toggleFirstStep(idx)}
+                        className={`mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full border ${
+                          done ? "border-emerald-500 bg-emerald-500 text-white" : "border-neutral-300 bg-white text-transparent"
+                        }`}
+                        aria-label={done ? "Mark step incomplete" : "Mark step complete"}
+                      >
+                        <Check className="h-3 w-3" />
+                      </button>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <step.icon className="h-4 w-4 text-neutral-500" />
+                          <p className="truncate text-sm font-semibold text-neutral-900">{step.label}</p>
+                          {step.optional && <span className="text-[10px] font-semibold text-neutral-500">Optional</span>}
+                          {done && <CheckCircle2 className="ml-auto h-4 w-4 text-emerald-600" />}
+                        </div>
+                        <p className="mt-1 text-xs text-neutral-600">{step.sub}</p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openFirstStepRoute(idx)}
+                            className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+                          >
+                            {step.primary}
+                          </button>
+                          {step.secondary && step.secondaryTo && (
+                            <button
+                              type="button"
+                              onClick={() => openFirstStepRoute(idx, true)}
+                              className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-700 hover:bg-neutral-50"
+                            >
+                              {step.secondary}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

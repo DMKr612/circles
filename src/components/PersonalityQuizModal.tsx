@@ -1,115 +1,131 @@
 import React, { useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { X, Sparkles, Star } from "lucide-react";
+import { CheckCircle2, Sparkles, Star, X } from "lucide-react";
+import {
+  computeSocialRhythmResult,
+  isQuizCompleteByResponses,
+  responsesToAnswersObject,
+  type QuizAnswer,
+  type SocialRhythmResult,
+} from "@/lib/socialRhythmQuiz";
 
 type Question = {
   id: number;
-  text: string;
-  trait: TraitKey;
-  reverse?: boolean;
+  title: string;
+  scenario: string;
+  measure: string;
+  options: Array<{
+    key: QuizAnswer;
+    text: string;
+  }>;
 };
-
-type TraitKey = "extraversion" | "agreeableness" | "conscientiousness" | "neuroticism" | "openness";
 
 const QUESTIONS: Question[] = [
-  { id: 1, text: "is talkative", trait: "extraversion" },
-  { id: 2, text: "is generally trusting", trait: "agreeableness" },
-  { id: 3, text: "tends to be lazy", trait: "conscientiousness", reverse: true },
-  { id: 4, text: "is relaxed, handles stress well", trait: "neuroticism", reverse: true },
-  { id: 5, text: "has few artistic interests", trait: "openness", reverse: true },
-  { id: 6, text: "is reserved", trait: "extraversion", reverse: true },
-  { id: 7, text: "is considerate and kind to almost everyone", trait: "agreeableness" },
-  { id: 8, text: "does things efficiently", trait: "conscientiousness" },
-  { id: 9, text: "gets nervous easily", trait: "neuroticism" },
-  { id: 10, text: "has an active imagination", trait: "openness" },
+  {
+    id: 1,
+    title: "The Energy Reflex",
+    scenario:
+      "It’s Friday evening. You just finished a long, mentally exhausting week. A Circle near you is hosting a lively meetup tonight. Your immediate reaction is:",
+    measure: "Baseline arousal & stimulation tolerance",
+    options: [
+      { key: "A", text: "I feel my body sink a bit. I need quiet time first." },
+      { key: "B", text: "I’m tired, but I could go for a short while." },
+      { key: "C", text: "I feel a small boost of energy. This might wake me up." },
+    ],
+  },
+  {
+    id: 2,
+    title: "Group Size Comfort",
+    scenario: "You arrive at a meetup and see 7 people already talking. You naturally:",
+    measure: "Group-size comfort & social entry behavior",
+    options: [
+      { key: "A", text: "Look for one person to connect with first." },
+      { key: "B", text: "Join a smaller cluster within the group." },
+      { key: "C", text: "Jump into the group conversation directly." },
+    ],
+  },
+  {
+    id: 3,
+    title: "Social Endurance",
+    scenario: "After 90 minutes at a meetup, you usually feel:",
+    measure: "Social stamina duration",
+    options: [
+      { key: "A", text: "Ready to head home and recharge." },
+      { key: "B", text: "Comfortable but nearing my limit." },
+      { key: "C", text: "Just getting warmed up." },
+    ],
+  },
+  {
+    id: 4,
+    title: "Noise & Environment Sensitivity",
+    scenario: "At a crowded, loud location:",
+    measure: "Environmental stimulation tolerance",
+    options: [
+      { key: "A", text: "I struggle to focus and feel overstimulated." },
+      { key: "B", text: "I can manage if conversations are clear." },
+      { key: "C", text: "I enjoy the buzz and energy." },
+    ],
+  },
+  {
+    id: 5,
+    title: "Planning vs Spontaneity",
+    scenario: "A Circle suggests moving the meetup to a new place last minute. You:",
+    measure: "Structure need & predictability tolerance",
+    options: [
+      { key: "A", text: "Feel uneasy and prefer sticking to the plan." },
+      { key: "B", text: "Adjust if it makes sense." },
+      { key: "C", text: "Like the spontaneity." },
+    ],
+  },
+  {
+    id: 6,
+    title: "Conversation Depth",
+    scenario: "In social settings, you prefer conversations that are:",
+    measure: "Conversation depth preference",
+    options: [
+      { key: "A", text: "Meaningful and focused." },
+      { key: "B", text: "A mix of meaningful and light." },
+      { key: "C", text: "Playful, fast-paced, and humorous." },
+    ],
+  },
+  {
+    id: 7,
+    title: "New Social Situations",
+    scenario: "When meeting new people in a Circle:",
+    measure: "Social initiation speed",
+    options: [
+      { key: "A", text: "I observe first before engaging." },
+      { key: "B", text: "I engage gradually as comfort builds." },
+      { key: "C", text: "I initiate interaction quickly." },
+    ],
+  },
+  {
+    id: 8,
+    title: "Recovery Pattern",
+    scenario: "After attending a 2-hour meetup, you usually:",
+    measure: "Recovery mechanism (true battery effect)",
+    options: [
+      { key: "A", text: "Need alone time to reset." },
+      { key: "B", text: "Need a short break but can continue the evening." },
+      { key: "C", text: "Feel energized and open to more." },
+    ],
+  },
 ];
 
-const TRAIT_ADJECTIVES: Record<TraitKey, { high: string; low: string }> = {
-  extraversion: { high: "Extroverted", low: "Introverted" },
-  agreeableness: { high: "Agreeable", low: "Direct" },
-  conscientiousness: { high: "Organized", low: "Flexible" },
-  neuroticism: { high: "Calm", low: "Vigilant" },
-  openness: { high: "Curious", low: "Practical" },
-};
+const DIMENSION_ROWS: Array<{
+  key: keyof SocialRhythmResult["dimensions"];
+  label: string;
+  unitLabel: (r: SocialRhythmResult) => string;
+}> = [
+  { key: "stim", label: "Stimulation", unitLabel: (r) => r.labels.stim },
+  { key: "group_size", label: "Group Size", unitLabel: (r) => r.labels.group_size },
+  { key: "endurance", label: "Endurance", unitLabel: (r) => r.labels.endurance },
+  { key: "structure", label: "Planning", unitLabel: (r) => r.labels.structure },
+  { key: "connection", label: "Conversation", unitLabel: (r) => r.labels.connection },
+];
 
 function toStars(score: number) {
   return Math.round((score / 20) * 10) / 10;
-}
-
-function deriveBadge(topTrait: TraitKey): { name: string; description: string } {
-  switch (topTrait) {
-    case "conscientiousness":
-      return { name: "The Architect", description: "Plans ahead and keeps groups on track." };
-    case "extraversion":
-      return { name: "The Socialite", description: "Energizes rooms and keeps conversations flowing." };
-    case "agreeableness":
-      return { name: "The Anchor", description: "Grounded, supportive, and easy to team with." };
-    case "openness":
-      return { name: "The Explorer", description: "Curious mind who loves new ideas." };
-    default:
-      return { name: "The Strategist", description: "Thoughtful, steady, and reliable." };
-  }
-}
-
-function normalizeResponses(responses: Record<number, number>) {
-  const sums: Record<TraitKey, number> = {
-    extraversion: 0,
-    agreeableness: 0,
-    conscientiousness: 0,
-    neuroticism: 0,
-    openness: 0,
-  };
-  const counts: Record<TraitKey, number> = {
-    extraversion: 0,
-    agreeableness: 0,
-    conscientiousness: 0,
-    neuroticism: 0,
-    openness: 0,
-  };
-
-  QUESTIONS.forEach((q) => {
-    const raw = responses[q.id] ?? 3;
-    const val = q.reverse ? 6 - raw : raw;
-    sums[q.trait] += val;
-    counts[q.trait] += 1;
-  });
-
-  const averages: Record<TraitKey, number> = {
-    extraversion: sums.extraversion / Math.max(1, counts.extraversion),
-    agreeableness: sums.agreeableness / Math.max(1, counts.agreeableness),
-    conscientiousness: sums.conscientiousness / Math.max(1, counts.conscientiousness),
-    neuroticism: sums.neuroticism / Math.max(1, counts.neuroticism),
-    openness: sums.openness / Math.max(1, counts.openness),
-  };
-
-  const percents: Record<TraitKey, number> = {
-    extraversion: Math.round(((averages.extraversion - 1) / 4) * 100),
-    agreeableness: Math.round(((averages.agreeableness - 1) / 4) * 100),
-    conscientiousness: Math.round(((averages.conscientiousness - 1) / 4) * 100),
-    neuroticism: Math.round(((averages.neuroticism - 1) / 4) * 100),
-    openness: Math.round(((averages.openness - 1) / 4) * 100),
-  };
-
-  const ordered = Object.entries(averages).sort((a, b) => b[1] - a[1]) as Array<[TraitKey, number]>;
-  const top = ordered[0]?.[0] ?? "agreeableness";
-  const second = ordered[1]?.[0] ?? "openness";
-
-  const summary = `${averages.extraversion >= 3 ? TRAIT_ADJECTIVES.extraversion.high : TRAIT_ADJECTIVES.extraversion.low} | ${averages.agreeableness >= 3 ? TRAIT_ADJECTIVES.agreeableness.high : TRAIT_ADJECTIVES.agreeableness.low}`;
-  const badge = deriveBadge(top);
-
-  return {
-    badge,
-    summary,
-    top,
-    second,
-    scores: {
-      extraversion: { average: averages.extraversion, percent: percents.extraversion, adjective: averages.extraversion >= 3 ? TRAIT_ADJECTIVES.extraversion.high : TRAIT_ADJECTIVES.extraversion.low },
-      agreeableness: { average: averages.agreeableness, percent: percents.agreeableness, adjective: averages.agreeableness >= 3 ? TRAIT_ADJECTIVES.agreeableness.high : TRAIT_ADJECTIVES.agreeableness.low },
-      conscientiousness: { average: averages.conscientiousness, percent: percents.conscientiousness, adjective: averages.conscientiousness >= 3 ? TRAIT_ADJECTIVES.conscientiousness.high : TRAIT_ADJECTIVES.conscientiousness.low },
-      neuroticism: { average: averages.neuroticism, percent: percents.neuroticism, adjective: averages.neuroticism >= 3 ? TRAIT_ADJECTIVES.neuroticism.high : TRAIT_ADJECTIVES.neuroticism.low },
-      openness: { average: averages.openness, percent: percents.openness, adjective: averages.openness >= 3 ? TRAIT_ADJECTIVES.openness.high : TRAIT_ADJECTIVES.openness.low },
-    },
-  };
 }
 
 type Props = {
@@ -117,30 +133,79 @@ type Props = {
   onClose: () => void;
   currentScore?: number;
   onCompleted?: (payload: { personality_traits: any; reputation_score: number }) => void;
+  mode?: "modal" | "page";
 };
 
-export default function PersonalityQuizModal({ open, onClose, onCompleted, currentScore = 0 }: Props) {
-  const [responses, setResponses] = useState<Record<number, number>>({});
+export default function PersonalityQuizModal({
+  open,
+  onClose,
+  onCompleted,
+  currentScore = 0,
+  mode = "modal",
+}: Props) {
+  const [responses, setResponses] = useState<Record<number, QuizAnswer>>({});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const preview = useMemo(() => normalizeResponses(responses), [responses]);
+  const answeredCount = useMemo(
+    () =>
+      Object.values(responses).filter((v) => v === "A" || v === "B" || v === "C")
+        .length,
+    [responses]
+  );
+  const isComplete = useMemo(() => isQuizCompleteByResponses(responses), [responses]);
+
+  const preview = useMemo(() => {
+    const answers = responsesToAnswersObject(responses);
+    if (!answers) return null;
+    return computeSocialRhythmResult(answers, null);
+  }, [responses]);
 
   async function submit() {
-    setBusy(true);
     setErr(null);
+    const answers = responsesToAnswersObject(responses);
+    if (!answers) {
+      setErr("Please answer all 8 questions.");
+      return;
+    }
+
+    setBusy(true);
     try {
-      const payload = {
-        ...preview,
-        completed_at: new Date().toISOString(),
-        raw_answers: responses,
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+      if (userError || !user) throw new Error("Sign in required.");
+
+      const finalResult = computeSocialRhythmResult(answers, user.id);
+      const traitsPayload = {
+        ...finalResult,
+        completed_at: finalResult.timestamp,
       };
-      const { data, error } = await supabase.rpc("save_personality_traits", { p_traits: payload });
+
+      const { data, error } = await supabase.rpc("save_personality_traits", {
+        p_traits: traitsPayload,
+      });
       if (error) throw error;
+
+      // Non-blocking backend processing: stores quiz_results + sends email.
+      try {
+        const fnRes = await supabase.functions.invoke("submit-quiz-result", {
+          body: { answers },
+        });
+        if (fnRes.error) {
+          console.warn("[quiz] submit-quiz-result failed", fnRes.error.message);
+        } else if (fnRes.data && fnRes.data.email_sent === false) {
+          console.warn("[quiz] result saved but email failed", fnRes.data);
+        }
+      } catch (fnErr) {
+        console.warn("[quiz] submit-quiz-result invoke exception", fnErr);
+      }
+
       const prof = Array.isArray(data) ? data[0] : data;
       if (onCompleted && prof) {
         onCompleted({
-          personality_traits: (prof as any)?.personality_traits ?? payload,
+          personality_traits: (prof as any)?.personality_traits ?? traitsPayload,
           reputation_score: Number((prof as any)?.reputation_score ?? 0),
         });
       }
@@ -154,105 +219,158 @@ export default function PersonalityQuizModal({ open, onClose, onCompleted, curre
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-6 md:items-center" onClick={onClose}>
-      <div
-        className="w-full max-w-3xl rounded-3xl bg-white shadow-2xl ring-1 ring-neutral-200/80 overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-start justify-between border-b border-neutral-100 px-6 py-4">
-          <div>
-            <div className="flex items-center gap-2 text-lg font-bold text-neutral-900">
-              <Sparkles className="h-5 w-5 text-amber-500" />
-              Discover your Social Style
-            </div>
-            <p className="text-sm text-neutral-600">10 quick questions. Earn +20 rating and unlock your badge.</p>
+  const panel = (
+    <div className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl ring-1 ring-neutral-200/80">
+      <div className="flex items-start justify-between border-b border-neutral-100 px-6 py-4">
+        <div>
+          <div className="flex items-center gap-2 text-lg font-bold text-neutral-900">
+            <Sparkles className="h-5 w-5 text-amber-500" />
+            Social Rhythm Quiz
           </div>
-          <button onClick={onClose} className="rounded-full bg-neutral-100 p-2 text-neutral-500 hover:text-neutral-800">
-            <X className="h-5 w-5" />
+          <p className="text-sm text-neutral-600">8 scenario questions. Pick A, B, or C.</p>
+        </div>
+        <button
+          onClick={onClose}
+          className="rounded-full bg-neutral-100 p-2 text-neutral-500 hover:text-neutral-800"
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+
+      <div className="grid gap-6 p-6 md:grid-cols-[1.25fr_0.75fr]">
+        <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+          {QUESTIONS.map((q) => (
+            <div key={q.id} className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4 shadow-sm">
+              <div className="mb-2">
+                <div className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">
+                  Q{q.id} · {q.title}
+                </div>
+                <div className="mt-1 text-sm font-semibold text-neutral-900">{q.scenario}</div>
+                <div className="mt-1 text-xs text-neutral-500">Measures: {q.measure}</div>
+              </div>
+
+              <div className="space-y-2">
+                {q.options.map((opt) => {
+                  const active = responses[q.id] === opt.key;
+                  return (
+                    <button
+                      key={`${q.id}-${opt.key}`}
+                      type="button"
+                      onClick={() => setResponses((prev) => ({ ...prev, [q.id]: opt.key }))}
+                      className={`flex w-full items-start gap-3 rounded-xl border px-3 py-2 text-left transition ${
+                        active
+                          ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                          : "border-neutral-200 bg-white text-neutral-700 hover:border-neutral-300"
+                      }`}
+                    >
+                      <span
+                        className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs font-bold ${
+                          active ? "bg-emerald-600 text-white" : "bg-neutral-100 text-neutral-600"
+                        }`}
+                      >
+                        {opt.key}
+                      </span>
+                      <span className="text-sm">{opt.text}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-4 rounded-2xl border border-neutral-100 bg-white/80 p-4 shadow-inner">
+          <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4">
+            <div className="mb-1 text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">
+              Social Rhythm Profile
+            </div>
+            <div className="text-xl font-bold text-neutral-900">{preview?.style || "Answer all questions"}</div>
+            <div className="text-sm text-neutral-600">
+              {preview
+                ? `Energy: ${preview.labels.stim} · Group size: ${preview.labels.group_size}`
+                : "Results appear after all 8 questions are answered."}
+            </div>
+            <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-100">
+              <Sparkles className="h-3.5 w-3.5" /> +20 Rating boost
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-neutral-100 bg-neutral-50/80 p-4">
+            <div className="mb-2 text-xs font-bold uppercase tracking-[0.14em] text-neutral-600">5 Dimensions</div>
+            {!preview ? (
+              <p className="text-sm text-neutral-600">Complete all answers to calculate your dimension scores.</p>
+            ) : (
+              <div className="space-y-2 text-sm text-neutral-700">
+                {DIMENSION_ROWS.map((row) => {
+                  const value = preview.dimensions[row.key];
+                  return (
+                    <div key={row.key} className="flex items-center justify-between gap-2">
+                      <span className="text-xs text-neutral-600">{row.label}</span>
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 w-24 overflow-hidden rounded-full bg-neutral-200">
+                          <div
+                            className="h-full bg-gradient-to-r from-emerald-500 to-emerald-600"
+                            style={{ width: `${value}%` }}
+                          />
+                        </div>
+                        <span className="text-[11px] font-semibold text-neutral-700">
+                          {value} · {row.unitLabel(preview)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/80 p-4">
+            <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900">
+              <Star className="h-4 w-4 text-indigo-600" /> Your projected Rating
+            </div>
+            <div className="mt-2 flex items-center gap-2 text-lg font-bold text-neutral-900">
+              {toStars(currentScore).toFixed(1)} → {toStars(Math.min(100, currentScore + 20)).toFixed(1)}★
+            </div>
+            <p className="text-xs text-neutral-600">Boost applies immediately after saving.</p>
+          </div>
+
+          <div className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-600">
+            {isComplete ? (
+              <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                All questions answered
+              </span>
+            ) : (
+              <span>{answeredCount}/{QUESTIONS.length} answered</span>
+            )}
+          </div>
+
+          {err && (
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>
+          )}
+
+          <button
+            onClick={submit}
+            disabled={busy || !isComplete}
+            className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-700 disabled:opacity-60"
+          >
+            {busy ? "Saving..." : "Save my Social Rhythm"}
           </button>
         </div>
-
-        <div className="grid gap-6 p-6 md:grid-cols-[1.2fr_0.8fr]">
-          <div className="space-y-3 max-h-[70vh] overflow-y-auto pr-1">
-            {QUESTIONS.map((q) => (
-              <div key={q.id} className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4 shadow-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-xs font-semibold uppercase tracking-[0.12em] text-neutral-500">Q{q.id}</div>
-                    <div className="text-sm font-semibold text-neutral-900">I see myself as someone who {q.text}.</div>
-                  </div>
-                  <div className="flex items-center gap-2 text-[11px] text-neutral-500">
-                    <span>Disagree</span>
-                    <input
-                      type="range"
-                      min={1}
-                      max={5}
-                      step={1}
-                      value={responses[q.id] ?? 3}
-                      onChange={(e) => setResponses((prev) => ({ ...prev, [q.id]: Number(e.target.value) }))}
-                      className="accent-emerald-600"
-                    />
-                    <span>Agree</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="flex flex-col gap-4 rounded-2xl border border-neutral-100 bg-white/80 p-4 shadow-inner">
-            <div className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50 to-white p-4">
-              <div className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700 mb-1">Your Badge</div>
-              <div className="text-xl font-bold text-neutral-900">{preview.badge.name}</div>
-              <div className="text-sm text-neutral-600">{preview.badge.description}</div>
-              <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-emerald-800 ring-1 ring-emerald-100">
-                <Sparkles className="h-3.5 w-3.5" /> +20 Rating boost
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-neutral-100 bg-neutral-50/80 p-4">
-              <div className="text-xs font-bold uppercase tracking-[0.14em] text-neutral-600 mb-2">Summary</div>
-              <div className="text-sm font-semibold text-neutral-900">{preview.summary}</div>
-              <div className="mt-3 space-y-2 text-sm text-neutral-700">
-                {(Object.keys(preview.scores) as TraitKey[]).map((t) => (
-                  <div key={t} className="flex items-center justify-between gap-2">
-                    <span className="capitalize text-neutral-600">{t}</span>
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-28 rounded-full bg-neutral-200 overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-emerald-500 to-emerald-600"
-                          style={{ width: `${preview.scores[t].percent}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-semibold text-neutral-800">{preview.scores[t].adjective}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-indigo-100 bg-indigo-50/80 p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-neutral-900">
-                <Star className="h-4 w-4 text-indigo-600" /> Your projected Rating
-              </div>
-              <div className="mt-2 flex items-center gap-2 text-lg font-bold text-neutral-900">
-                {toStars(currentScore).toFixed(1)} → {toStars(Math.min(100, currentScore + 20)).toFixed(1)}★
-              </div>
-              <p className="text-xs text-neutral-600">Boost applies immediately after saving.</p>
-            </div>
-
-            {err && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>}
-
-            <button
-              onClick={submit}
-              disabled={busy}
-              className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-bold text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-700 disabled:opacity-60"
-            >
-              {busy ? "Saving..." : "Save my Social Style"}
-            </button>
-          </div>
-        </div>
       </div>
+    </div>
+  );
+
+  if (mode === "page") {
+    return <div className="mx-auto w-full max-w-4xl">{panel}</div>;
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-6 md:items-center"
+      onClick={onClose}
+    >
+      <div onClick={(e) => e.stopPropagation()}>{panel}</div>
     </div>
   );
 }
