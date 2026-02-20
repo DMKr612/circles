@@ -27,7 +27,7 @@ export function useGroupPresence(groupId: string | undefined, myUserId: string |
             .from('group_members')
             .upsert(
               { group_id: groupId, user_id: myUserId, role: 'member', status: 'active' },
-              { onConflict: 'group_id,user_id' }
+              { onConflict: 'group_id,user_id', ignoreDuplicates: true }
             );
           membershipEnsured = true;
         }

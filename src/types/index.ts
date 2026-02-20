@@ -47,7 +47,7 @@ export type Group = {
 export type GroupMember = {
   user_id: string;
   group_id: string;
-  role: string | null; // 'host', 'member'
+  role: string | null; // 'host', 'cohost', 'member'
   status: string;      // 'active', 'pending'
   last_joined_at?: string | null;
   created_at: string;

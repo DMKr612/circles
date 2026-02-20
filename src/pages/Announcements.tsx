@@ -62,6 +62,11 @@ const confirmAndAddEventToCalendar = (evt: Announcement) => {
 
 const isUuid = (val?: string | null) => !!val && /^[0-9a-fA-F-]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(val.trim());
 
+type AnnouncementForm = Omit<Partial<Announcement>, "activities"> & {
+  coords?: string | null;
+  activities?: string[] | string;
+};
+
 export default function AnnouncementsPage() {
   const [events, setEvents] = useState<Announcement[]>([]);
   const [joined, setJoined] = useState<Set<string>>(new Set());
@@ -71,7 +76,7 @@ export default function AnnouncementsPage() {
   const [viewerEmail, setViewerEmail] = useState<string | null>(null);
   const [viewerCity, setViewerCity] = useState<string | null>(null);
   const [viewerCoords, setViewerCoords] = useState<{ lat: number; lng: number } | null>(null);
-  const [form, setForm] = useState<Partial<Announcement>>({});
+  const [form, setForm] = useState<AnnouncementForm>({});
   const [editId, setEditId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
@@ -275,7 +280,7 @@ export default function AnnouncementsPage() {
       next.add(evt.id);
       setJoined(next);
       persist(next);
-      addEventToCalendar(evt);
+      confirmAndAddEventToCalendar(evt);
       scheduleReminder(evt);
     } finally {
       const nb = new Set(joinBusy);

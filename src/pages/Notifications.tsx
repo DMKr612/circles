@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { useNavigate } from "react-router-dom";
-import { Calendar, Check, CheckCircle2, ChevronLeft, ChevronRight, MessageCircle, CheckSquare, Mail, Users, Megaphone, Star } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Calendar, Check, CheckCircle2, ChevronLeft, ChevronRight, MessageCircle, CheckSquare, Mail, Users, Megaphone, Star, UserPlus } from "lucide-react";
 import { useAuth } from "@/App";
-import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
+import { getAvatarUrl } from "@/lib/avatar";
 
 type CalendarEntry = {
   id: string;
@@ -150,8 +150,77 @@ function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
   };
 }
 
+async function fetchFriendRequests(userId: string) {
+  const rpcRes = await supabase.rpc("get_my_friend_requests");
+  if (!rpcRes.error && Array.isArray(rpcRes.data)) {
+    return rpcRes.data.map((r: any) => ({
+      id: r.id,
+      user_id_a: r.sender_id,
+      created_at: r.created_at,
+      profiles: {
+        name: r.sender_name,
+        avatar_url: r.sender_avatar,
+      },
+    }));
+  }
+
+  if (rpcRes.error) {
+    console.warn("[notifications] get_my_friend_requests fallback", rpcRes.error.message);
+  }
+
+  const { data: pendingRows, error: pendingErr } = await supabase
+    .from("friendships")
+    .select("id,user_id_a,user_id_b,requested_by,created_at")
+    .eq("status", "pending")
+    .or(`user_id_a.eq.${userId},user_id_b.eq.${userId}`)
+    .neq("requested_by", userId)
+    .order("created_at", { ascending: false });
+
+  if (pendingErr || !pendingRows?.length) return [];
+
+  const senderIds = Array.from(
+    new Set(
+      pendingRows
+        .map((row: any) => row.requested_by || (row.user_id_a === userId ? row.user_id_b : row.user_id_a))
+        .filter(Boolean)
+    )
+  ) as string[];
+
+  let profileMap = new Map<string, { name: string | null; avatar_url: string | null }>();
+  if (senderIds.length) {
+    const { data: senderProfiles } = await supabase
+      .from("profiles")
+      .select("user_id,name,avatar_url")
+      .in("user_id", senderIds);
+    profileMap = new Map(
+      (senderProfiles || []).map((p: any) => [
+        p.user_id,
+        {
+          name: p.name ?? null,
+          avatar_url: p.avatar_url ?? null,
+        },
+      ])
+    );
+  }
+
+  return pendingRows.map((row: any) => {
+    const senderId = row.requested_by || (row.user_id_a === userId ? row.user_id_b : row.user_id_a);
+    const sender = profileMap.get(senderId);
+    return {
+      id: row.id,
+      user_id_a: senderId,
+      created_at: row.created_at,
+      profiles: {
+        name: sender?.name ?? "Someone",
+        avatar_url: sender?.avatar_url ?? null,
+      },
+    };
+  });
+}
+
 export default function NotificationsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
 
   const [loading, setLoading] = useState(true);
@@ -168,8 +237,6 @@ export default function NotificationsPage() {
   const [ratings, setRatings] = useState<any[]>([]);
   const [reconnectRatings, setReconnectRatings] = useState<Record<string, { stars: number; nextAllowedAt: string | null; editUsed: boolean; busy?: boolean; err?: string }>>({});
   const [reconnectHover, setReconnectHover] = useState<Record<string, number | null>>({});
-  const [viewUserId, setViewUserId] = useState<string | null>(null);
-  const [viewOpen, setViewOpen] = useState(false);
 
   // UI State
   const [selectedTab, setSelectedTab] = useState<"activity" | "calendar">("activity");
@@ -250,8 +317,8 @@ export default function NotificationsPage() {
       const bail = setTimeout(() => setLoading(false), 8000); // ensure UI frees if a query hangs
 
       try {
-        const [rpcRes, invRes, myGroupsRes, annRes, reconnectRes, ratingsRes] = await Promise.all([
-          supabase.rpc("get_my_friend_requests"),
+        const [friendRequests, invRes, myGroupsRes, annRes, reconnectRes, ratingsRes] = await Promise.all([
+          fetchFriendRequests(userId),
           supabase
             .from("group_members" as any)
             .select("group_id, created_at, groups(title)")
@@ -281,17 +348,6 @@ export default function NotificationsPage() {
             .order("updated_at", { ascending: false })
             .limit(20)
         ]);
-
-        const friendRequests = (rpcRes.data || []).map((r: any) => ({
-          id: r.id,
-          // map sender_id to user_id_a so the existing Accept button works
-          user_id_a: r.sender_id,
-          created_at: r.created_at,
-          profiles: {
-            name: r.sender_name,
-            avatar_url: r.sender_avatar
-          }
-        }));
 
         const inv = invRes.data;
         const myGroups = myGroupsRes.data;
@@ -442,6 +498,25 @@ export default function NotificationsPage() {
     }
 
     loadData();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const uid = user.id;
+    const channel = supabase
+      .channel(`friend-requests:${uid}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "friendships" }, async (payload) => {
+        const row: any = (payload as any).new || (payload as any).old;
+        if (!row) return;
+        if (row.user_id_a !== uid && row.user_id_b !== uid) return;
+        const next = await fetchFriendRequests(uid);
+        setFriendReqs(next || []);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
 
   const loadCalendar = useCallback(async () => {
@@ -761,6 +836,20 @@ export default function NotificationsPage() {
     return upcomingEntries.filter((e) => keyFromISO(e.startsAt) !== selectedDate);
   }, [upcomingEntries, selectedDate]);
 
+  const friendRequestActions = useMemo(() => {
+    return (friendReqs || [])
+      .map((r: any) => ({
+        id: `friend-${r.id || r.user_id_a}`,
+        requestId: r.id as string,
+        fromId: r.user_id_a as string,
+        fromName: titleCaseWords(cleanActivityText(r.profiles?.name || "Someone", 40) || "Someone"),
+        fromAvatar: r.profiles?.avatar_url || null,
+        date: new Date(r.created_at || Date.now()),
+      }))
+      .filter((r) => !!r.fromId && Number.isFinite(r.date.getTime()))
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [friendReqs]);
+
   const inviteActions = useMemo(() => {
     return (invites || [])
       .map((i: any) => ({
@@ -774,6 +863,12 @@ export default function NotificationsPage() {
   }, [invites]);
 
   const actionRequiredRows = useMemo(() => {
+    const friendRows = friendRequestActions.map((friend) => ({
+      kind: "friend" as const,
+      id: friend.id,
+      date: friend.date,
+      friend,
+    }));
     const inviteRows = inviteActions.map((inv) => ({
       kind: "invite" as const,
       id: inv.id,
@@ -788,8 +883,8 @@ export default function NotificationsPage() {
       date: ev.date,
       event: ev,
       }));
-    return [...inviteRows, ...eventRows].sort((a, b) => b.date.getTime() - a.date.getTime());
-  }, [inviteActions, processedActivity.actionRequired, dismissedActionIds, confirmingActionIds]);
+    return [...friendRows, ...inviteRows, ...eventRows].sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [friendRequestActions, inviteActions, processedActivity.actionRequired, dismissedActionIds, confirmingActionIds]);
 
   const updateRows = useMemo(() => {
     const eventRows = processedActivity.updates.map((ev) => ({
@@ -835,8 +930,33 @@ export default function NotificationsPage() {
   // --- Handlers ---
 
   async function handleAcceptFriend(id: string, fromId: string) {
-    await supabase.rpc("accept_friend", { from_id: fromId });
-    setFriendReqs(prev => prev.filter(r => r.id !== id));
+    if (!user) return;
+    const { error } = await supabase.rpc("accept_friend", { from_id: fromId });
+    if (error) {
+      console.error("Failed to accept friend request", error);
+      return;
+    }
+    setFriendReqs(prev => prev.filter(r => r.id !== id && r.user_id_a !== fromId));
+    try {
+      await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("user_id", user.id)
+        .eq("kind", "friend_request")
+        .eq("payload->>from_id", fromId)
+        .eq("is_read", false);
+    } catch {
+      // best effort; friendship state is already updated
+    }
+  }
+
+  async function handleDeclineFriend(id: string, fromId: string) {
+    const { error } = await supabase.rpc("remove_friend", { other_id: fromId });
+    if (error) {
+      console.error("Failed to decline friend request", error);
+      return;
+    }
+    setFriendReqs(prev => prev.filter(r => r.id !== id && r.user_id_a !== fromId));
   }
 
   async function handleAcceptReconnect(req: any) {
@@ -877,8 +997,9 @@ export default function NotificationsPage() {
 
   function openProfileView(otherId?: string | null) {
     if (!otherId) return;
-    setViewUserId(otherId);
-    setViewOpen(true);
+    navigate(`/users/${otherId}`, {
+      state: { from: `${location.pathname}${location.search}${location.hash}` },
+    });
   }
 
   function updateReconnectRating(
@@ -1058,6 +1179,7 @@ export default function NotificationsPage() {
 
   const hasActivityItems =
     processedActivity.actionRequired.length > 0 ||
+    friendRequestActions.length > 0 ||
     inviteActions.length > 0 ||
     processedActivity.updates.length > 0 ||
     announcements.length > 0;
@@ -1107,7 +1229,45 @@ export default function NotificationsPage() {
                 <h2 className="mb-4 text-sm font-semibold text-neutral-700">Action Required</h2>
                 <div className="space-y-3">
                   {actionRequiredRows.map((row) =>
-                    row.kind === "invite" ? (
+                    row.kind === "friend" ? (
+                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
+                        <button
+                          type="button"
+                          onClick={() => openProfileView(row.friend.fromId)}
+                          className="relative h-10 w-10 shrink-0 rounded-full ring-1 ring-neutral-200 overflow-hidden"
+                        >
+                          <img
+                            src={getAvatarUrl(row.friend.fromAvatar, row.friend.fromId)}
+                            alt={row.friend.fromName}
+                            className="h-full w-full object-cover"
+                          />
+                          <span className="absolute -bottom-1 -right-1 rounded-full bg-emerald-600 p-1 text-white">
+                            <UserPlus className="h-2.5 w-2.5" />
+                          </span>
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-neutral-900">{row.friend.fromName} sent a friend request</div>
+                          <div className="mt-0.5 text-xs text-neutral-600">Accept to start direct messaging and see them in chats.</div>
+                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleDeclineFriend(row.friend.requestId, row.friend.fromId)}
+                            className="rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-[11px] font-bold text-neutral-700 hover:bg-neutral-100"
+                          >
+                            Decline
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAcceptFriend(row.friend.requestId, row.friend.fromId)}
+                            className="rounded-full bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700"
+                          >
+                            Accept
+                          </button>
+                        </div>
+                      </div>
+                    ) : row.kind === "invite" ? (
                       <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600">
                           <Mail className="h-5 w-5" />
@@ -1352,14 +1512,6 @@ export default function NotificationsPage() {
           )}
         </section>
       )}
-      <ViewOtherProfileModal
-        isOpen={viewOpen}
-        onClose={() => {
-          setViewOpen(false);
-          setViewUserId(null);
-        }}
-        viewUserId={viewUserId}
-      />
     </div>
   );
 }

@@ -4,7 +4,6 @@ import { useNavigate } from "react-router-dom";
 import { useLocation } from "react-router-dom";
 import { MessageSquare, Users, ArrowLeft, Send, Search as SearchIcon, Filter, Heart, Megaphone } from "lucide-react";
 import Spinner from "@/components/ui/Spinner";
-import ViewOtherProfileModal from "@/components/ViewOtherProfileModal";
 import { getAvatarUrl } from "@/lib/avatar";
 import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 
@@ -29,6 +28,52 @@ type DMMsg = {
   created_at: string;
 };
 
+type ChatFilter = "all" | "groups" | "dms" | "fav";
+type PersistedSelection = { type: ChatItem["type"]; id: string };
+
+const sameChatItem = (a: Pick<ChatItem, "id" | "type"> | null, b: Pick<ChatItem, "id" | "type"> | null) =>
+  !!a && !!b && a.id === b.id && a.type === b.type;
+
+const CHAT_SELECTION_KEY = "circles.chats.selected";
+
+function readPersistedSelection(): PersistedSelection | null {
+  try {
+    const raw = localStorage.getItem(CHAT_SELECTION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedSelection;
+    if (!parsed?.id) return null;
+    if (parsed.type !== "group" && parsed.type !== "dm" && parsed.type !== "announcement") return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedSelection(next: PersistedSelection | null) {
+  try {
+    if (!next) {
+      localStorage.removeItem(CHAT_SELECTION_KEY);
+      return;
+    }
+    localStorage.setItem(CHAT_SELECTION_KEY, JSON.stringify(next));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+async function isAcceptedFriendship(userA: string, userB: string) {
+  const { data, error } = await supabase
+    .from("friendships")
+    .select("status")
+    .or(`and(user_id_a.eq.${userA},user_id_b.eq.${userB}),and(user_id_a.eq.${userB},user_id_b.eq.${userA})`)
+    .maybeSingle();
+  if (error) {
+    console.warn("[chats] friendship check failed", error);
+    return false;
+  }
+  return data?.status === "accepted";
+}
+
 export default function Chats() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -39,19 +84,18 @@ export default function Chats() {
   // Selection State
   const [selected, setSelected] = useState<ChatItem | null>(null);
 
-  // Profile Modal State
-  const [viewProfileId, setViewProfileId] = useState<string | null>(null);
-
   // DM Specific State
   const [dmMessages, setDmMessages] = useState<DMMsg[]>([]);
   const [dmInput, setDmInput] = useState("");
   const [dmLoading, setDmLoading] = useState(false);
+  const [dmError, setDmError] = useState<string | null>(null);
   const dmListRef = useRef<HTMLDivElement>(null);
   const dmInputRef = useRef<HTMLInputElement>(null);
+  const dmDraftsRef = useRef<Record<string, string>>({});
 
-  const [filter, setFilter] = useState<"all" | "groups" | "dms" | "fav">("all");
+  const [filter, setFilter] = useState<ChatFilter>("all");
   const [search, setSearch] = useState("");
-  const shellStyle: CSSProperties = {
+  const shellStyle: CSSProperties & Record<`--${string}`, string> = {
     "--chat-surface": "rgba(255, 255, 255, 0.78)",
     "--chat-surface-strong": "rgba(255, 255, 255, 0.96)",
     "--chat-border": "rgba(148, 163, 184, 0.35)",
@@ -75,6 +119,14 @@ export default function Chats() {
     const el = dmListRef.current;
     if (!el) return;
     el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+  const appendDmMessage = (msg: DMMsg) => {
+    setDmMessages((prev) => {
+      if (prev.some((m) => m.id === msg.id)) return prev;
+      const next = [...prev, msg];
+      next.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      return next;
+    });
   };
 
   // 1. Load User & List (Groups + Friends)
@@ -102,11 +154,18 @@ export default function Chats() {
       ]);
 
       const items: ChatItem[] = [];
+      const seenKeys = new Set<string>();
+      const pushUnique = (item: ChatItem) => {
+        const key = `${item.type}:${item.id}`;
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+        items.push(item);
+      };
 
       // Process Groups
       (groups || []).forEach((g: any) => {
         if (g.groups) {
-          items.push({
+          pushUnique({
             type: 'group',
             id: g.groups.id,
             name: g.groups.title || "Group",
@@ -156,9 +215,9 @@ export default function Chats() {
         )
         .forEach((a: any) => {
           if (!a.group_id) return;
-          // Avoid duplicates if already in list
-          if (items.find(i => i.type === 'group' && i.id === a.group_id)) return;
-          items.push({
+          // Keep one thread entry per group id
+          if (items.find(i => i.id === a.group_id && (i.type === 'group' || i.type === 'announcement'))) return;
+          pushUnique({
             type: 'announcement',
             id: a.group_id,
             name: a.title || "Announcement",
@@ -181,7 +240,7 @@ export default function Chats() {
             .in("user_id", friendIds);
           
           profiles?.forEach((p: any) => {
-            items.push({
+            pushUnique({
               type: 'dm',
               id: p.user_id,
               name: p.name || "User",
@@ -209,15 +268,54 @@ export default function Chats() {
     load();
   }, []);
 
-  // Auto-select a group when opened with ?groupId=...
   useEffect(() => {
-    if (!location.search || list.length === 0 || selected) return;
+    setSelected((prev) => {
+      if (!prev) return prev;
+      const stillExists = list.some((item) => sameChatItem(item, prev));
+      return stillExists ? prev : null;
+    });
+  }, [list]);
+
+  // Auto-select chat when opened with ?chatType=...&chatId=...
+  // Legacy fallback still supports ?groupId=...
+  useEffect(() => {
+    if (list.length === 0) return;
+    const hasSelection = !!selected;
     const params = new URLSearchParams(location.search);
-    const gid = params.get("groupId");
-    if (!gid) return;
-    const found = list.find((i) => i.type === 'group' && i.id === gid);
-    if (found) setSelected(found);
+    const chatType = params.get("chatType");
+    const chatId = params.get("chatId");
+    const legacyGroupId = params.get("groupId");
+    const hasExplicitTarget = !!chatId || !!legacyGroupId;
+
+    if (hasSelection && !hasExplicitTarget) return;
+
+    let found: ChatItem | undefined;
+    if (chatId) {
+      if (chatType === "group" || chatType === "dm" || chatType === "announcement") {
+        found = list.find((i) => i.type === chatType && i.id === chatId);
+      } else {
+        found = list.find((i) => i.id === chatId);
+      }
+    } else if (legacyGroupId) {
+      found = list.find((i) => (i.type === "group" || i.type === "announcement") && i.id === legacyGroupId);
+    } else {
+      const persisted = readPersistedSelection();
+      if (persisted) {
+        found = list.find((i) => i.type === persisted.type && i.id === persisted.id);
+      }
+    }
+
+    if (!found) return;
+    setSelected((prev) => (sameChatItem(prev, found) ? prev : found));
   }, [location.search, list, selected]);
+
+  useEffect(() => {
+    if (!selected) {
+      writePersistedSelection(null);
+      return;
+    }
+    writePersistedSelection({ type: selected.type, id: selected.id });
+  }, [selected?.id, selected?.type]);
 
   // Toggle Favorite Handler
   const toggleFavorite = (id: string) => {
@@ -253,62 +351,101 @@ export default function Chats() {
 
   // Auto-select DM if location.state?.openDmId is provided
   useEffect(() => {
-    const openId = location.state?.openDmId;
-    if (openId && list.length > 0 && !selected) {
-      const found = list.find(i => i.id === openId && i.type === 'dm');
+    const openId = (location.state as { openDmId?: string } | null)?.openDmId;
+    if (!openId || selected || !me || loading) return;
+    let cancelled = false;
+
+    (async () => {
+      if (openId === me) {
+        navigate(`${location.pathname}${location.search}${location.hash}`, {
+          replace: true,
+          state: null,
+        });
+        return;
+      }
+
+      const canDm = await isAcceptedFriendship(me, openId);
+      if (cancelled) return;
+      if (!canDm) {
+        setDmError("Add this user as a friend before starting a direct message.");
+        window.alert("Add this user as a friend before starting a direct message.");
+        navigate(`${location.pathname}${location.search}${location.hash}`, {
+          replace: true,
+          state: null,
+        });
+        return;
+      }
+
+      const found = list.find((i) => i.id === openId && i.type === "dm");
       if (found) {
         setSelected(found);
       } else {
-        (async () => {
-          const { data: p } = await supabase
-            .from("profiles")
-            .select("name, avatar_url")
-            .eq("user_id", openId)
-            .single();
-          if (p) {
-            const favs = new Set(JSON.parse(localStorage.getItem("chat_favorites") || "[]"));
-            const newChat: ChatItem = {
-              type: "dm",
-              id: openId,
-              name: p.name || "User",
-              avatar_url: p.avatar_url,
-              subtitle: "Direct Message",
-              isFavorite: favs.has(openId)
-            };
-            setList((prev) => [newChat, ...prev]);
-            setSelected(newChat);
-          }
-        })();
+        const { data: p } = await supabase
+          .from("profiles")
+          .select("name, avatar_url")
+          .eq("user_id", openId)
+          .single();
+        if (cancelled) return;
+        if (p) {
+          const favs = new Set(JSON.parse(localStorage.getItem("chat_favorites") || "[]"));
+          const newChat: ChatItem = {
+            type: "dm",
+            id: openId,
+            name: p.name || "User",
+            avatar_url: p.avatar_url,
+            subtitle: "Direct Message",
+            isFavorite: favs.has(openId),
+          };
+          setList((prev) => [newChat, ...prev]);
+          setSelected(newChat);
+        }
       }
-      window.history.replaceState({}, "");
-    }
-  }, [location.state, list, selected]);
+
+      navigate(`${location.pathname}${location.search}${location.hash}`, {
+        replace: true,
+        state: null,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [location.state, location.pathname, location.search, location.hash, navigate, list, selected, me, loading]);
+
+  const selectedDmId = selected?.type === "dm" ? selected.id : null;
+
+  useEffect(() => {
+    if (!selectedDmId) return;
+    setDmError(null);
+    setDmInput(dmDraftsRef.current[selectedDmId] ?? "");
+    focusDmInput();
+  }, [selectedDmId]);
 
   // 2. Load DM Messages when a Friend is selected
   useEffect(() => {
-    if (!me || !selected || selected.type !== 'dm') return;
+    if (!me || !selectedDmId) return;
 
     let sub: any = null;
+    const otherId = selectedDmId;
     
     async function loadDMs() {
       setDmLoading(true);
-      const otherId = selected!.id;
-      
+
       const { data } = await supabase
         .from("direct_messages")
         .select("id, sender, receiver, content, created_at")
         .or(`and(sender.eq.${me},receiver.eq.${otherId}),and(sender.eq.${otherId},receiver.eq.${me})`)
         .order("created_at", { ascending: true })
         .limit(100);
-      
-      setDmMessages(data || []);
+
+      setDmMessages((data || []).slice().sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
       setDmLoading(false);
       setTimeout(() => scrollDmToBottom(), 100);
 
       sub = supabase.channel(`dm:${otherId}`)
         .on(
           'postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'direct_messages', filter: `or(and(sender.eq.${me},receiver.eq.${otherId}),and(sender.eq.${otherId},receiver.eq.${me}))` },
+          { event: 'INSERT', schema: 'public', table: 'direct_messages' },
           (payload) => {
             const newMsg = payload.new as DMMsg;
             const isMatch = 
@@ -316,7 +453,7 @@ export default function Chats() {
               (newMsg.sender === otherId && newMsg.receiver === me);
 
             if (isMatch) {
-              setDmMessages(prev => [...prev, newMsg]);
+              appendDmMessage(newMsg);
               setTimeout(() => scrollDmToBottom(), 100);
             }
           }
@@ -325,15 +462,16 @@ export default function Chats() {
     }
 
     const refreshOnFocus = async () => {
-      if (!me || !selected || selected.type !== 'dm') return;
-      const otherId = selected.id;
+      if (!me || !selectedDmId) return;
       const { data } = await supabase
         .from("direct_messages")
         .select("id, sender, receiver, content, created_at")
         .or(`and(sender.eq.${me},receiver.eq.${otherId}),and(sender.eq.${otherId},receiver.eq.${me})`)
         .order("created_at", { ascending: true })
         .limit(100);
-      if (data) setDmMessages(data);
+      if (data) {
+        setDmMessages(data.slice().sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+      }
     };
 
     loadDMs();
@@ -343,32 +481,57 @@ export default function Chats() {
       if (sub) supabase.removeChannel(sub);
       window.removeEventListener('focus', refreshOnFocus);
     };
-  }, [selected, me]);
+  }, [selectedDmId, me]);
 
   // Keep DM input focused when switching threads
   useEffect(() => {
-    if (selected?.type !== 'dm') return;
+    if (!selectedDmId) return;
     focusDmInput();
-  }, [selected]);
+  }, [selectedDmId]);
 
   // 3. Send DM
   const sendDM = async (preset?: string) => {
     const text = (preset ?? dmInput).trim();
-    if (!text || !me || !selected || selected.type !== 'dm') return;
+    if (!text || !me || !selectedDmId) return;
+    const canDm = await isAcceptedFriendship(me, selectedDmId);
+    if (!canDm) {
+      setDmError("You can only message accepted friends.");
+      window.alert("You can only message accepted friends.");
+      return;
+    }
+
     setDmInput("");
+    dmDraftsRef.current[selectedDmId] = "";
     focusDmInput();
-    await supabase.from("direct_messages").insert({
-      sender: me,
-      receiver: selected.id,
-      content: text
-    });
+    const { data, error } = await supabase
+      .from("direct_messages")
+      .insert({
+        sender: me,
+        receiver: selectedDmId,
+        content: text,
+      })
+      .select("id, sender, receiver, content, created_at")
+      .single();
+
+    if (error) {
+      setDmInput(text);
+      dmDraftsRef.current[selectedDmId] = text;
+      setDmError(error.message || "Could not send message.");
+      focusDmInput();
+      return;
+    }
+
+    setDmError(null);
+    if (data) {
+      appendDmMessage(data as DMMsg);
+      setTimeout(() => scrollDmToBottom(), 100);
+    }
   };
 
   const getFilteredList = () => {
     return list.filter(item => {
       if(filter === "groups" && item.type !== "group") return false;
       if(filter === "dms" && item.type !== "dm") return false;
-      if(filter === "private" && item.type !== "dm") return false; // legacy fallback
       if(filter === "fav" && !item.isFavorite) return false;
       if (!item.name) return false;
       if(!item.name.toLowerCase().includes(search.toLowerCase())) return false;
@@ -378,7 +541,7 @@ export default function Chats() {
 
   const filteredList = getFilteredList();
 
-  const FilterPill = ({ id, label }: { id: string; label: string }) => (
+  const FilterPill = ({ id, label }: { id: ChatFilter; label: string }) => (
     <button
       onClick={() => setFilter(id)}
       className={`
@@ -393,8 +556,8 @@ export default function Chats() {
     </button>
   );
 
-  // Component: The Chat List (Sidebar)
-  const ChatList = () => (
+  // Render: The Chat List (Sidebar)
+  const renderChatList = () => (
     <div className={`relative flex h-full min-h-0 flex-col w-full md:w-[340px] lg:w-[400px] ${selected ? 'hidden md:flex' : 'flex'} bg-[color:var(--chat-surface)] backdrop-blur-xl border border-[color:var(--chat-border)] md:rounded-[28px] shadow-none md:shadow-[0_30px_80px_rgba(15,23,42,0.12)] overflow-hidden`}>
       <div className="p-5 pt-6 pb-4 border-b border-[color:var(--chat-border)] bg-[color:var(--chat-surface-strong)] backdrop-blur-xl sticky top-0 z-20 md:rounded-t-[28px]">
         <div className="flex items-center justify-between mb-3">
@@ -442,21 +605,21 @@ export default function Chats() {
           <div className="px-3 py-3 space-y-2">
             {filteredList.map((item, index) => (
               <div
-                key={item.type + item.id}
+                key={`${item.type}:${item.id}`}
                 className="group relative page-transition"
                 style={listItemStagger(index)}
               >
                 <span
                   className={`
                     absolute left-2 top-1/2 -translate-y-1/2 h-8 w-1 rounded-full bg-gradient-to-b from-emerald-500 to-teal-400 transition-opacity
-                    ${selected?.id === item.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'}
+                    ${sameChatItem(selected, item) ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'}
                   `}
                 />
                 <button
                   onClick={() => setSelected(item)}
                   className={`
                     w-full flex items-center gap-3 p-3 pl-5 rounded-2xl text-left transition-all duration-200 border
-                    ${selected?.id === item.id
+                    ${sameChatItem(selected, item)
                       ? 'bg-white shadow-[0_12px_30px_rgba(15,23,42,0.08)] border-emerald-100/80'
                       : 'bg-white/40 border-transparent hover:bg-white/70 hover:border-white/70'}
                   `}
@@ -476,7 +639,7 @@ export default function Chats() {
                     )}
                   </div>
                   <div className="min-w-0 flex-1 pr-10">
-                    <div className={`truncate text-[15px] font-semibold ${selected?.id === item.id ? 'text-emerald-900' : 'text-neutral-900'}`}>
+                    <div className={`truncate text-[15px] font-semibold ${sameChatItem(selected, item) ? 'text-emerald-900' : 'text-neutral-900'}`}>
                       {item.name}
                     </div>
                     <div className="text-xs text-neutral-500 truncate mt-0.5">
@@ -506,8 +669,12 @@ export default function Chats() {
     </div>
   );
 
-  // Component: The Active Window (Right Pane)
-  const ActiveChat = () => {
+  // Render: The Active Window (Right Pane)
+  const renderActiveChat = () => {
+    const closeActiveChat = () => {
+      setSelected(null);
+    };
+
     if (!selected) {
       return (
         <div className="hidden md:flex flex-1 items-center justify-center">
@@ -530,7 +697,9 @@ export default function Chats() {
       if (selected.type === 'group' || selected.type === 'announcement') {
         navigate(`/group/${selected.id}`);
       } else if (selected.type === 'dm') {
-        setViewProfileId(selected.id);
+        navigate(`/users/${selected.id}`, {
+          state: { from: `${location.pathname}${location.search}${location.hash}` },
+        });
       }
     };
 
@@ -539,7 +708,7 @@ export default function Chats() {
         {/* Header */}
         <div className="relative h-[76px] border-b border-[color:var(--chat-border)] flex items-center px-4 gap-4 bg-[color:var(--chat-surface-strong)] backdrop-blur-xl shrink-0 z-20 md:rounded-t-[28px]">
           <div className="absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent via-emerald-400/40 to-transparent" />
-          <button onClick={() => setSelected(null)} className="md:hidden p-2 -ml-2 rounded-full hover:bg-white/80 transition-colors">
+          <button onClick={closeActiveChat} className="md:hidden p-2 -ml-2 rounded-full hover:bg-white/80 transition-colors">
             <ArrowLeft className="h-5 w-5 text-neutral-600" />
           </button>
 
@@ -575,7 +744,7 @@ export default function Chats() {
 
           <button
             onClick={() => toggleFavorite(selected.id)}
-            className="p-2 rounded-full bg-white/70 shadow-sm ring-1 ring-white/70 hover:bg-white transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-200"
+            className="rounded-xl border border-neutral-200 bg-white p-2 text-neutral-500 shadow-sm hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
             title={selected.isFavorite ? "Remove from Favorites" : "Add to Favorites"}
           >
             <Heart
@@ -616,7 +785,7 @@ export default function Chats() {
             // Custom DM Interface
             <div className="flex h-full min-h-0 flex-col relative z-10">
               <div ref={dmListRef} className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8 md:py-6">
-                <div className="mx-auto w-full max-w-3xl space-y-5">
+                <div className="mx-auto w-full max-w-2xl space-y-4">
                   {dmLoading && (
                     <div className="flex justify-center py-4">
                       <div className="bg-white/80 px-4 py-1.5 rounded-full text-xs font-semibold text-neutral-600 shadow-sm border border-white/70">
@@ -674,7 +843,7 @@ export default function Chats() {
                             px-4 py-2.5 text-sm shadow-sm relative
                             ${isMine
                               ? 'bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 text-white rounded-[20px] rounded-tr-sm shadow-[0_12px_30px_rgba(16,185,129,0.25)]'
-                              : 'bg-white/90 text-neutral-800 border border-white/70 rounded-[20px] rounded-tl-sm shadow-[0_8px_24px_rgba(15,23,42,0.08)]'}
+                              : 'bg-white text-neutral-800 border border-neutral-200 rounded-[20px] rounded-tl-sm shadow-[0_8px_20px_rgba(15,23,42,0.08)]'}
                           `}>
                             {m.content}
                             <div className={`text-[10px] mt-1 text-right font-semibold tracking-wide opacity-70 ${isMine ? 'text-emerald-50' : 'text-neutral-400'}`}>
@@ -691,17 +860,28 @@ export default function Chats() {
 
               {/* DM Input */}
               <div className="p-4 bg-[color:var(--chat-surface-strong)] border-t border-[color:var(--chat-border)] backdrop-blur-xl">
-                <div className="flex items-center gap-2 max-w-3xl mx-auto bg-white/75 border border-white/70 rounded-full px-2 py-2 focus-within:ring-2 focus-within:ring-emerald-500/20 focus-within:border-emerald-400 transition-all shadow-[inset_0_0_0_1px_rgba(255,255,255,0.5)]">
+                {dmError && (
+                  <div className="mx-auto mb-2 max-w-2xl rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+                    {dmError}
+                  </div>
+                )}
+                <div className="mx-auto flex max-w-2xl items-center gap-2 rounded-full border border-neutral-200 bg-white px-2 py-2 shadow-sm transition-all focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-500/20">
                   <input
                     ref={dmInputRef}
                     value={dmInput}
-                    onChange={(e) => setDmInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && sendDM()}
+                    onChange={(e) => {
+                      const next = e.target.value;
+                      setDmInput(next);
+                      if (selectedDmId) dmDraftsRef.current[selectedDmId] = next;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void sendDM();
+                    }}
                     placeholder="Type a message..."
                     className="flex-1 bg-transparent border-0 px-4 py-1 text-sm focus:ring-0 text-neutral-900 placeholder-neutral-400 outline-none"
                   />
                   <button
-                    onClick={sendDM}
+                    onClick={() => { void sendDM(); }}
                     disabled={!dmInput.trim()}
                     className={`
                       p-2.5 rounded-full transition-all duration-200 flex items-center justify-center shadow-sm
@@ -723,27 +903,18 @@ export default function Chats() {
 
   // Main Layout
   return (
-    <>
-      <div
-        className="relative w-full h-dvh overflow-hidden pb-[calc(96px+env(safe-area-inset-bottom))]"
-        style={shellStyle}
-      >
-        <div className="pointer-events-none absolute inset-0">
-          <div className="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.16),transparent_70%)] blur-3xl" />
-          <div className="absolute bottom-[-10rem] right-[-6rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,rgba(14,116,144,0.16),transparent_70%)] blur-3xl" />
-        </div>
-        <div className="relative flex w-full h-full min-h-0 gap-0 md:gap-5 lg:gap-7 px-0 md:px-6 py-0 md:py-6 page-transition">
-          <ChatList />
-          <ActiveChat />
-        </div>
+    <div
+      className="relative w-full h-dvh overflow-hidden pb-[calc(96px+env(safe-area-inset-bottom))]"
+      style={shellStyle}
+    >
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.16),transparent_70%)] blur-3xl" />
+        <div className="absolute bottom-[-10rem] right-[-6rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,rgba(14,116,144,0.16),transparent_70%)] blur-3xl" />
       </div>
-      
-      {/* 4. Render the Modal */}
-      <ViewOtherProfileModal
-        isOpen={!!viewProfileId}
-        onClose={() => setViewProfileId(null)}
-        viewUserId={viewProfileId}
-      />
-    </>
+      <div className="relative flex w-full h-full min-h-0 gap-0 md:gap-5 lg:gap-7 px-0 md:px-6 py-0 md:py-6 page-transition">
+        {renderChatList()}
+        {renderActiveChat()}
+      </div>
+    </div>
   );
 }

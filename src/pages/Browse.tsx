@@ -170,7 +170,16 @@ async function fetchProfileLocation(userId: string): Promise<ProfileLocation> {
     .maybeSingle();
 
   if (!full.error) {
-    const row = full.data || {};
+    const row = (full.data ??
+      null) as
+      | {
+          city?: string | null;
+          lat?: number | null;
+          lng?: number | null;
+          location_updated_at?: string | null;
+          location_source?: "gps" | "manual" | null;
+        }
+      | null;
     return {
       city: row?.city || null,
       lat: typeof row?.lat === "number" ? row.lat : null,
@@ -188,9 +197,10 @@ async function fetchProfileLocation(userId: string): Promise<ProfileLocation> {
     .eq("user_id", userId)
     .maybeSingle();
   if (fallback.error) throw fallback.error;
+  const fallbackRow = (fallback.data ?? null) as { city?: string | null } | null;
 
   return {
-    city: fallback.data?.city || null,
+    city: fallbackRow?.city || null,
     lat: null,
     lng: null,
     location_updated_at: null,
@@ -273,6 +283,7 @@ export default function BrowsePage() {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("week");
   const [sortOption, setSortOption] = useState<SortOption>("soonest");
   const [radiusKm, setRadiusKm] = useState(15);
+  const [hideJoinedCircles, setHideJoinedCircles] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -674,6 +685,16 @@ export default function BrowsePage() {
     return rows;
   }, [activeCoords, effectiveCity, groups, isJoinedByGroup, memberCountByGroup, nextEventByGroup, sortOption]);
 
+  const visibleHappeningSoon = useMemo(
+    () => (hideJoinedCircles ? happeningSoon.filter((item) => !item.isJoined) : happeningSoon),
+    [happeningSoon, hideJoinedCircles]
+  );
+
+  const visibleNearYouCircles = useMemo(
+    () => (hideJoinedCircles ? nearYouCircles.filter((circle) => !circle.isJoined) : nearYouCircles),
+    [hideJoinedCircles, nearYouCircles]
+  );
+
   const timeFilterLabel = useMemo(() => {
     if (timeFilter === "weekend") return "this weekend";
     if (timeFilter === "anytime") return "for your current filter";
@@ -776,6 +797,18 @@ export default function BrowsePage() {
           {geoStatus === "denied" && (
             <span className="text-xs text-rose-600">Location denied. Showing profile city fallback.</span>
           )}
+
+          <button
+            type="button"
+            onClick={() => setHideJoinedCircles((v) => !v)}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+              hideJoinedCircles
+                ? "border-emerald-600 bg-emerald-600 text-white"
+                : "border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-50"
+            }`}
+          >
+            {hideJoinedCircles ? "Showing only new circles" : "Hide joined circles"}
+          </button>
         </div>
       </section>
 
@@ -827,10 +860,12 @@ export default function BrowsePage() {
             </div>
           ) : loadError ? (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-700">{loadError}</div>
-          ) : happeningSoon.length === 0 ? (
+          ) : visibleHappeningSoon.length === 0 ? (
             <div className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-5">
               <p className="text-sm font-semibold text-neutral-800">
-                No meetups scheduled near you {timeFilterLabel}.
+                {hideJoinedCircles
+                  ? "No unjoined meetups found near you for this filter."
+                  : `No meetups scheduled near you ${timeFilterLabel}.`}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Link
@@ -846,10 +881,19 @@ export default function BrowsePage() {
                 >
                   Expand search radius
                 </button>
+                {hideJoinedCircles && (
+                  <button
+                    type="button"
+                    onClick={() => setHideJoinedCircles(false)}
+                    className="rounded-full border border-neutral-300 bg-white px-3.5 py-1.5 text-xs font-bold text-neutral-700 hover:bg-neutral-100"
+                  >
+                    Show joined circles
+                  </button>
+                )}
               </div>
             </div>
           ) : (
-            happeningSoon.map((item) => {
+            visibleHappeningSoon.map((item) => {
               const spotsLeft =
                 typeof item.capacity === "number" ? Math.max(0, item.capacity - item.memberCount) : null;
               const spotText =
@@ -907,16 +951,18 @@ export default function BrowsePage() {
       <section className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between gap-2">
           <h2 className="text-lg font-bold text-neutral-900">Near You</h2>
-          <span className="text-xs text-neutral-500">{nearYouCircles.length} circles</span>
+          <span className="text-xs text-neutral-500">{visibleNearYouCircles.length} circles</span>
         </div>
 
         <div className="space-y-2">
-          {!loading && nearYouCircles.length === 0 ? (
+          {!loading && visibleNearYouCircles.length === 0 ? (
             <div className="rounded-xl border border-dashed border-neutral-300 bg-neutral-50 px-4 py-4 text-sm text-neutral-600">
-              No circles found nearby yet. Try expanding your radius.
+              {hideJoinedCircles
+                ? "You already joined all circles in this area. Try expanding your radius."
+                : "No circles found nearby yet. Try expanding your radius."}
             </div>
           ) : (
-            nearYouCircles.map((circle) => {
+            visibleNearYouCircles.map((circle) => {
               const nextMeetupText = circle.nextMeetupAt
                 ? `${formatMeetupDate(circle.nextMeetupAt)}${circle.nextMeetupPlace ? ` · ${circle.nextMeetupPlace}` : ""}`
                 : "No meetup scheduled yet";

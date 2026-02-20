@@ -31,6 +31,7 @@ const CreateGroup = lazy(() => import("./pages/CreateGroup"));
 const GroupDetail = lazy(() => import("./pages/GroupDetail"));
 const Groups = lazy(() => import("./pages/Groups"));
 const Profile = lazy(() => import("./pages/Profile"));
+const UserProfileView = lazy(() => import("./pages/UserProfileView"));
 const ProfileCreation = lazy(() => import("./pages/ProfileCreation"));
 const GroupsByGame = lazy(() => import("./pages/groups/GroupsByGame"));
 const MyGroups = lazy(() => import("./pages/groups/MyGroups"));
@@ -176,6 +177,7 @@ export default function App() {
   }, []);
 
   const loc = useLocation();
+  const hideSupportButton = loc.pathname.startsWith("/chats");
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [loc.pathname, loc.search]);
@@ -185,14 +187,16 @@ export default function App() {
     <div id="page-root" className="min-h-dvh flow-root flex flex-col">
       <AuthProvider>
           {/* Support Button - Styled cleaner */}
-          <button
-            onClick={() => window.open("mailto:support@meincircles.com?subject=Help%20with%20Circles%20App", "_blank")}
-            className="fixed top-4 right-4 z-50 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-teal-400 text-white shadow-lg shadow-indigo-500/30 ring-1 ring-white/40 transition-all duration-200 hover:-translate-y-0.5 hover:scale-105"
-            title="Support"
-            aria-label="Support"
-          >
-            <HelpCircle className="h-6 w-6" />
-          </button>
+          {!hideSupportButton && (
+            <button
+              onClick={() => window.open("mailto:support@meincircles.com?subject=Help%20with%20Circles%20App", "_blank")}
+              className="fixed top-4 right-4 z-50 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-teal-400 text-white shadow-lg shadow-indigo-500/30 ring-1 ring-white/40 transition-all duration-200 hover:-translate-y-0.5 hover:scale-105"
+              title="Support"
+              aria-label="Support"
+            >
+              <HelpCircle className="h-6 w-6" />
+            </button>
+          )}
 
           
           <AppErrorBoundary>
@@ -222,7 +226,8 @@ export default function App() {
                   <Route path="/announcements" element={<AnnouncementsPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />
                   <Route path="/profile" element={<Profile />} />
-                  <Route path="/profile/:userId" element={<Profile />} />
+                  <Route path="/profile/:userId" element={<UserProfileView />} />
+                  <Route path="/users/:userId" element={<UserProfileView />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/quiz" element={<PersonalityQuizPage />} />
                   <Route path="/create" element={<CreateGroup />} />

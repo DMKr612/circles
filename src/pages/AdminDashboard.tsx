@@ -18,17 +18,25 @@ export default function AdminDashboard() {
   useEffect(() => {
     if (!authorized) return;
     let active = true;
-    setLoading(true);
-    setErr(null);
-    supabase
-      .rpc("social_battery_heatmap")
-      .then(({ data, error }) => {
-        if (!active) return;
+    (async () => {
+      setLoading(true);
+      setErr(null);
+      try {
+        const { data, error } = await supabase.rpc("social_battery_heatmap");
         if (error) throw error;
-        setRows((data as HeatRow[]) || []);
-      })
-      .catch((e: any) => setErr(e?.message || "Failed to load heatmap"))
-      .finally(() => setLoading(false));
+        if (active) {
+          setRows((data as HeatRow[]) || []);
+        }
+      } catch (e: any) {
+        if (active) {
+          setErr(e?.message || "Failed to load heatmap");
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    })();
     return () => {
       active = false;
     };

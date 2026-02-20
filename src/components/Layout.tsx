@@ -38,7 +38,7 @@ export default function Layout() {
 
     const loadBadges = async () => {
       try {
-        const [{ data: memberships }, { count: unreadNotifCount }, { data: profile }] = await Promise.all([
+        const [{ data: memberships }, { count: unreadNotifCount }, { data: profile }, friendReqRes] = await Promise.all([
           supabase
             .from("group_members")
             .select("group_id")
@@ -54,12 +54,23 @@ export default function Layout() {
             .select("name, city, avatar_url")
             .eq("user_id", uid)
             .maybeSingle(),
+          supabase.rpc("get_my_friend_requests"),
         ]);
 
         if (cancelled) return;
         const groupIds = Array.from(
           new Set((memberships || []).map((m: any) => m.group_id).filter(Boolean))
         );
+        let pendingFriendRequests = Array.isArray(friendReqRes.data) ? friendReqRes.data.length : 0;
+        if (!Array.isArray(friendReqRes.data)) {
+          const { count } = await supabase
+            .from("friendships")
+            .select("id", { count: "exact", head: true })
+            .eq("status", "pending")
+            .or(`user_id_a.eq.${uid},user_id_b.eq.${uid}`)
+            .neq("requested_by", uid);
+          pendingFriendRequests = count || 0;
+        }
 
         let unreadChats = 0;
         if (groupIds.length) {
@@ -74,7 +85,7 @@ export default function Layout() {
               .select("group_id, created_at")
               .in("group_id", groupIds)
               .order("created_at", { ascending: false })
-              .limit(500),
+              .limit(Math.max(groupIds.length * 12, 40)),
           ]);
 
           if (!cancelled) {
@@ -96,7 +107,7 @@ export default function Layout() {
 
         if (cancelled) return;
         setChatBadge(Math.min(99, unreadChats));
-        setActivityBadge(Math.min(99, unreadNotifCount || 0));
+        setActivityBadge(Math.min(99, (unreadNotifCount || 0) + pendingFriendRequests));
 
         const missingProfileBits =
           !String((profile as any)?.name || "").trim() ||
@@ -113,12 +124,31 @@ export default function Layout() {
     };
 
     loadBadges();
+    const realtime = supabase
+      .channel(`layout-badges:${uid}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` },
+        () => void loadBadges()
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "friendships" },
+        (payload) => {
+          const row: any = (payload as any).new || (payload as any).old;
+          if (!row) return;
+          if (row.user_id_a !== uid && row.user_id_b !== uid) return;
+          void loadBadges();
+        }
+      )
+      .subscribe();
     const t = window.setInterval(loadBadges, 30000);
     return () => {
       cancelled = true;
+      supabase.removeChannel(realtime);
       window.clearInterval(t);
     };
-  }, [user?.id, active]);
+  }, [user?.id]);
 
   const isActive = (path: string) => {
     if (path === "/groups") {

@@ -7,9 +7,9 @@ import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 import type { Group, Poll, PollOption, GroupMember, GroupEvent, GroupMoment } from "../types";
 import { 
   MapPin, Users, Calendar, Clock, Share2, MessageCircle, 
-  LogOut, Trash2, Edit2, Check, X, Plus, ChevronLeft, AlertCircle, Map, Megaphone 
+  LogOut, Trash2, Edit2, Check, X, Plus, ChevronLeft, AlertCircle, Map as MapIcon, Megaphone, MoreVertical,
+  Camera, Crown, Star
 } from "lucide-react";
-import ViewOtherProfileModal from "../components/ViewOtherProfileModal";
 import { useGroupPresence } from "../hooks/useGroupPresence";
 
 const ChatPanel = lazy(() => import("../components/ChatPanel"));
@@ -18,6 +18,8 @@ interface MemberDisplay extends GroupMember {
   name: string | null;
   avatar_url: string | null;
 }
+
+type MemberRole = "host" | "cohost" | "member";
 
 type DraftPollOption = {
   label: string;
@@ -52,15 +54,14 @@ export default function GroupDetail() {
   const [me, setMe] = useState<string | null>(null);
   const [announcements, setAnnouncements] = useState<GroupAnnouncement[]>([]);
 
-  // Host check
-  const isHost = !!(me && group && (me === group.host_id || (group?.creator_id ?? null) === me));
+  // Host check (fallback to creator_id only for legacy rows missing host_id)
+  const hostUserId = group?.host_id ?? group?.creator_id ?? null;
+  const isHost = !!(me && hostUserId && me === hostUserId);
 
   // UI State
   const [chatOpen, setChatOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false); 
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const [showProfileModal, setShowProfileModal] = useState(false);
   
   // Edit Description State
   const [isEditingDesc, setIsEditingDesc] = useState(false);
@@ -93,11 +94,16 @@ export default function GroupDetail() {
   const [momentMsg, setMomentMsg] = useState<string | null>(null);
   const [ownershipBusy, setOwnershipBusy] = useState<string | null>(null);
   const [lateGrantBusy, setLateGrantBusy] = useState<string | null>(null);
+  const [membersRefreshTick, setMembersRefreshTick] = useState(0);
+  const [memberActionTarget, setMemberActionTarget] = useState<MemberDisplay | null>(null);
+  const [memberActionBusy, setMemberActionBusy] = useState<string | null>(null);
   const { isTogether } = useGroupPresence(id, isMember ? me ?? undefined : undefined);
   const togetherNow = useMemo(() => members.some((m) => isTogether(m.user_id)), [members, isTogether]);
   const momentInputRef = useRef<HTMLInputElement | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const supportEmail = import.meta.env.VITE_SUPPORT_EMAIL || "support@circles.app";
+  const isCohost = !!(!isHost && myMembership?.role === "cohost");
+  const canModerateMembers = isHost || isCohost;
 
   // Focus poll when arriving from chat link (#poll)
   useEffect(() => {
@@ -158,6 +164,27 @@ export default function GroupDetail() {
     } catch { return "TBD"; }
   }
 
+  function formatMeetupHeadline(iso: string | null) {
+    if (!iso) return "Meetup time TBD";
+    try {
+      const d = new Date(iso);
+      const weekday = d.toLocaleDateString(undefined, { weekday: "long" });
+      const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      return `${weekday} · ${time}`;
+    } catch {
+      return "Meetup time TBD";
+    }
+  }
+
+  function normalizeMembershipStatus(status: string | null | undefined): string {
+    return String(status ?? "active").trim().toLowerCase();
+  }
+
+  function isJoinedStatus(status: string | null | undefined): boolean {
+    const s = normalizeMembershipStatus(status);
+    return s === "active" || s === "accepted";
+  }
+
   function toICSDate(d: Date) {
     const pad = (n: number) => String(n).padStart(2, "0");
     return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
@@ -176,6 +203,68 @@ export default function GroupDetail() {
     if (location.hash === "#poll") {
       nav(`/group/${id}`, { replace: true });
     }
+  }
+
+  function effectiveMemberRole(member: Pick<MemberDisplay, "user_id" | "role">): MemberRole {
+    if (hostUserId && member.user_id === hostUserId) return "host";
+    if (member.role === "host" || member.role === "owner") return "host";
+    if (member.role === "cohost") return "cohost";
+    return "member";
+  }
+
+  function roleLabel(role: MemberRole): string {
+    if (role === "host") return "Host";
+    if (role === "cohost") return "Co-Host";
+    return "Member";
+  }
+
+  function goToUserProfile(userId: string) {
+    if (!userId || userId === me) return;
+    nav(`/users/${userId}`, {
+      state: { from: `${location.pathname}${location.search}${location.hash}` },
+    });
+  }
+
+  function canKickTarget(target: MemberDisplay): boolean {
+    if (!me || !group) return false;
+    if (target.user_id === me) return false;
+    const targetRole = effectiveMemberRole(target);
+    if (targetRole === "host") return false;
+    if (isHost) return true; // Host can kick member + cohost
+    if (isCohost) return targetRole === "member"; // Co-host can only kick members
+    return false;
+  }
+
+  function canPromoteTarget(target: MemberDisplay): boolean {
+    return isHost && effectiveMemberRole(target) === "member" && target.user_id !== me;
+  }
+
+  function canDemoteTarget(target: MemberDisplay): boolean {
+    return isHost && effectiveMemberRole(target) === "cohost" && target.user_id !== me;
+  }
+
+  const transferCandidates = useMemo(
+    () => members.filter((m) => m.user_id !== me),
+    [members, me]
+  );
+
+  function openMemberActions(target: MemberDisplay) {
+    if (!canModerateMembers) {
+      goToUserProfile(target.user_id);
+      return;
+    }
+    const canManageTarget =
+      canKickTarget(target) ||
+      canPromoteTarget(target) ||
+      canDemoteTarget(target) ||
+      (isHost && target.user_id === me);
+
+    if (!canManageTarget) {
+      goToUserProfile(target.user_id);
+      return;
+    }
+
+    setMemberActionTarget(target);
   }
 
   function downloadCalendar(ev: GroupEvent) {
@@ -276,6 +365,10 @@ export default function GroupDetail() {
   }, [location.hash]);
 
   useEffect(() => {
+    if (!membersOpen) setMemberActionTarget(null);
+  }, [membersOpen]);
+
+  useEffect(() => {
     let ignore = false;
     (async () => {
       setLoading(true);
@@ -288,12 +381,14 @@ export default function GroupDetail() {
             if (q.data) setEditDescValue((q.data as any).description || "");
 
       if (q.data?.id) {
-        const { count } = await supabase
-  .from('group_members')
-  .select('*', { count: 'exact', head: true })
-  .eq('group_id', q.data.id)
-  .eq('status', 'active');
-        if (!ignore) setMemberCount(count ?? 0);
+        const { data: memberRows } = await supabase
+          .from('group_members')
+          .select('status')
+          .eq('group_id', q.data.id);
+        if (!ignore) {
+          const joinedCount = (memberRows ?? []).filter((r: any) => isJoinedStatus(r?.status)).length;
+          setMemberCount(joinedCount);
+        }
       }
       setLoading(false);
     })();
@@ -314,11 +409,11 @@ export default function GroupDetail() {
       const { data: gm, count } = await supabase
         .from('group_members')
         .select('group_id, user_id, role, status, last_joined_at, created_at', { count: 'exact' })
-        .eq('user_id', uid)
-        .eq('status', 'active');
+        .eq('user_id', uid);
       if (off) return;
-      setJoinedCount(count ?? (gm?.length ?? 0));
-      const current = (gm ?? []).find((r: any) => r.group_id === group.id);
+      const joinedMemberships = (gm ?? []).filter((r: any) => isJoinedStatus(r?.status));
+      setJoinedCount(joinedMemberships.length || count || 0);
+      const current = joinedMemberships.find((r: any) => r.group_id === group.id);
       if (current) {
         setMyMembership(current as GroupMember);
         setIsMember(true);
@@ -328,38 +423,72 @@ export default function GroupDetail() {
       }
     })();
     return () => { off = true; };
-  }, [group?.id, group?.host_id]);
+  }, [group?.id, hostUserId, membersRefreshTick]);
 
   useEffect(() => {
     let off = false;
     (async () => {
       if (!group?.id) { setMembers([]); return; }
-            const { data } = await supabase
+      const { data: membershipRows, error: membershipError } = await supabase
         .from('group_members')
-        .select('user_id, role, created_at, status, group_id, profiles(name, avatar_url)')
+        .select('user_id, role, created_at, status, group_id')
         .eq('group_id', group.id)
-        .eq('status', 'active')
         .order('created_at', { ascending: true });
 
-      const arr: MemberDisplay[] = (data ?? []).map((r: any) => ({
+      if (membershipError) {
+        console.warn("members load failed", membershipError);
+        if (!off) setMembers([]);
+        return;
+      }
+
+      const memberRows = ((membershipRows ?? []) as Array<{
+        user_id: string;
+        role: string | null;
+        created_at: string;
+        status: string | null;
+        group_id: string;
+      }>).filter((r) => isJoinedStatus(r.status));
+
+      const userIds = Array.from(new Set(memberRows.map((r) => r.user_id).filter(Boolean)));
+      const profileMap = new Map<string, { name: string | null; avatar_url: string | null }>();
+      if (userIds.length) {
+        const { data: profilesRows, error: profilesError } = await supabase
+          .from('profiles')
+          .select('user_id, name, avatar_url')
+          .in('user_id', userIds);
+        if (profilesError) {
+          console.warn("profile lookup for members failed", profilesError);
+        } else {
+          (profilesRows ?? []).forEach((p: any) => {
+            if (!p?.user_id) return;
+            profileMap.set(p.user_id, {
+              name: p.name ?? null,
+              avatar_url: p.avatar_url ?? null,
+            });
+          });
+        }
+      }
+
+      const arr: MemberDisplay[] = memberRows.map((r) => ({
   user_id: r.user_id,
   // Force host label in UI if this user is the group's host
-  role: r.user_id === group.host_id ? 'host' : r.role,
+  role: r.user_id === hostUserId ? 'host' : r.role,
   created_at: r.created_at,
   group_id: group.id,
   status: r.status ?? 'active',
-  name: r.profiles?.name ?? "User",
-  avatar_url: r.profiles?.avatar_url ?? null,
+  name: profileMap.get(r.user_id)?.name ?? "User",
+  avatar_url: profileMap.get(r.user_id)?.avatar_url ?? null,
 }));
 
       if (off) return;
       setMembers(arr);
+      setMemberCount(arr.length);
       
       const meId = (await supabase.auth.getUser()).data.user?.id || null;
       if (meId) setIsMember(arr.some((a) => a.user_id === meId));
     })();
     return () => { off = true; };
-  }, [group?.id]);
+  }, [group?.id, hostUserId, membersRefreshTick]);
 
   // Load Polls
   useEffect(() => {
@@ -524,7 +653,7 @@ export default function GroupDetail() {
       setMsg(message);
       return;
     }
-    const payload = { group_id: id, user_id: auth.user.id, role: "member", status: "active", last_joined_at: new Date().toISOString() };
+    const payload = { group_id: id, user_id: auth.user.id, status: "active", last_joined_at: new Date().toISOString() };
     const { error } = await supabase
       .from("group_members")
       .upsert(payload, { onConflict: "group_id,user_id" });
@@ -545,7 +674,7 @@ export default function GroupDetail() {
   async function leaveGroup() {
     setMsg(null);
     if (!group || !me) return;
-    if (me === group.host_id) { setMsg("Host cannot leave their own group."); return; }
+    if (me === hostUserId) { setMsg("Host cannot leave their own group."); return; }
     const joinedAt = myMembership?.last_joined_at;
     if (joinedAt) {
       const diff = Date.now() - new Date(joinedAt).getTime();
@@ -569,16 +698,87 @@ export default function GroupDetail() {
 
   async function transferHost(nextHostId: string) {
     if (!group || !isHost) return;
+    if (!nextHostId) return;
+    if (nextHostId === hostUserId) return;
+    if (nextHostId === me) {
+      setMsg("Choose another member to transfer host.");
+      return;
+    }
+    if (!window.confirm("Make this member the new host? You’ll lose host powers.")) return;
     setMsg(null);
     setOwnershipBusy(nextHostId);
-    const { error } = await supabase.from("groups").update({ host_id: nextHostId }).eq("id", group.id);
-    if (error) { setMsg(error.message || "Could not transfer host."); setOwnershipBusy(null); return; }
-    setGroup(prev => prev ? { ...prev, host_id: nextHostId } as Group : prev);
-    setMembers(prev => prev.map((m) => ({
-      ...m,
-      role: m.user_id === nextHostId ? 'host' : (m.role === 'host' ? 'member' : m.role)
-    })));
+    const { error } = await supabase.rpc("transfer_host", {
+      p_group_id: group.id,
+      p_new_host_user_id: nextHostId,
+    });
+    if (error) {
+      setMsg(error.message || "Could not transfer host.");
+      setOwnershipBusy(null);
+      return;
+    }
+    setGroup((prev) => (prev ? ({ ...prev, host_id: nextHostId } as Group) : prev));
+    setMembersRefreshTick((v) => v + 1);
+    setMemberActionTarget(null);
     setOwnershipBusy(null);
+  }
+
+  async function promoteToCohost(targetUserId: string) {
+    if (!group || !isHost) return;
+    setMsg(null);
+    setMemberActionBusy(`promote:${targetUserId}`);
+    const { error } = await supabase.rpc("promote_to_cohost", {
+      p_group_id: group.id,
+      p_target_user_id: targetUserId,
+    });
+    if (error) {
+      setMsg(error.message || "Could not make co-host.");
+      setMemberActionBusy(null);
+      return;
+    }
+    setMembersRefreshTick((v) => v + 1);
+    setMemberActionTarget(null);
+    setMemberActionBusy(null);
+  }
+
+  async function demoteFromCohost(targetUserId: string) {
+    if (!group || !isHost) return;
+    setMsg(null);
+    setMemberActionBusy(`demote:${targetUserId}`);
+    const { error } = await supabase.rpc("demote_from_cohost", {
+      p_group_id: group.id,
+      p_target_user_id: targetUserId,
+    });
+    if (error) {
+      setMsg(error.message || "Could not remove co-host.");
+      setMemberActionBusy(null);
+      return;
+    }
+    setMembersRefreshTick((v) => v + 1);
+    setMemberActionTarget(null);
+    setMemberActionBusy(null);
+  }
+
+  async function kickFromCircle(targetUserId: string, targetName: string | null) {
+    if (!group || !canModerateMembers || !me) return;
+    if (targetUserId === me) {
+      setMsg("You cannot kick yourself.");
+      return;
+    }
+    if (!window.confirm(`Kick ${targetName || "this member"} from Circle?`)) return;
+    setMsg(null);
+    setMemberActionBusy(`kick:${targetUserId}`);
+    const { error } = await supabase.rpc("kick_member", {
+      p_group_id: group.id,
+      p_target_user_id: targetUserId,
+    });
+    if (error) {
+      setMsg(error.message || "Could not kick member.");
+      setMemberActionBusy(null);
+      return;
+    }
+    setMembersRefreshTick((v) => v + 1);
+    setMemberActionTarget(null);
+    setMemberActionBusy(null);
   }
 
   async function grantLateVoteChance(userId: string) {
@@ -874,7 +1074,11 @@ export default function GroupDetail() {
     if (!hasLatePass && (isPollExpired || poll.status === "closed")) return;
     setVotingBusy(optionId);
     const { data: auth } = await supabase.auth.getUser();
-    if (!auth?.user) { setMsg("Please sign in to vote."); nav("/login"); return; }
+    if (!auth?.user) {
+      setMsg("Please sign in to vote.");
+      nav("/onboarding", { state: { from: `${location.pathname}${location.search}${location.hash}` } });
+      return;
+    }
 
     const { error } = await supabase.from("group_votes").upsert(
         { poll_id: poll.id, option_id: optionId, user_id: auth.user.id },
@@ -908,6 +1112,64 @@ export default function GroupDetail() {
     (poll?.status === "closed" && lateVoteAllowed)
   );
 
+  const spotsLeft = Math.max(0, Number(group.capacity || 0) - memberCount);
+  const upcomingAnnouncement =
+    announcements.find((a) => {
+      const ts = new Date(a.datetime).getTime();
+      return Number.isFinite(ts) && ts >= Date.now();
+    }) ||
+    announcements[0] ||
+    null;
+  const nextMeetup =
+    event?.starts_at
+      ? {
+          source: "event" as const,
+          title: event.title || "Circle meetup",
+          startsAt: event.starts_at,
+          place: event.place || group.city || null,
+        }
+      : upcomingAnnouncement
+        ? {
+            source: "announcement" as const,
+            title: upcomingAnnouncement.title || "Circle meetup",
+            startsAt: upcomingAnnouncement.datetime,
+            place: upcomingAnnouncement.location || group.city || null,
+          }
+        : null;
+  const nextMeetupTs = nextMeetup?.startsAt ? new Date(nextMeetup.startsAt).getTime() : Number.NaN;
+  const meetupSoon =
+    Number.isFinite(nextMeetupTs) &&
+    nextMeetupTs > Date.now() &&
+    nextMeetupTs - Date.now() <= 7 * 24 * 60 * 60 * 1000;
+  const activityLabel = meetupSoon ? "Meetup happening soon" : "Active this week";
+  const groupId = group.id;
+
+  async function handleConfirmAttendance() {
+    if (!isMember) {
+      await joinGroup();
+      return;
+    }
+    if (poll?.status === "open") {
+      const el = document.getElementById("poll-section");
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      if (location.hash !== "#poll") nav(`/group/${id}#poll`, { replace: true });
+      setMsg("Vote in the poll to confirm your attendance.");
+      return;
+    }
+    nav(`/chats?groupId=${groupId}`);
+  }
+
+  function handleAddMeetupToCalendar() {
+    if (!nextMeetup) return;
+    if (nextMeetup.source === "event" && event) {
+      downloadCalendar(event);
+      return;
+    }
+    if (nextMeetup.source === "announcement" && upcomingAnnouncement) {
+      addAnnouncementToCalendar(upcomingAnnouncement);
+    }
+  }
+
   return (
     <>
       <div className={"relative z-0 transition-all duration-300 min-h-screen bg-[#FDFBF7] pb-24 " + (chatOpen ? "lg:mr-[min(92vw,520px)]" : "")}>
@@ -930,6 +1192,10 @@ export default function GroupDetail() {
                         <h1 className="text-3xl md:text-4xl font-extrabold text-neutral-900 tracking-tight leading-tight mb-3">
                             {group.title}
                         </h1>
+                        <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                          <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+                          {activityLabel}
+                        </div>
                         
                         <div className="flex flex-wrap gap-2 items-center">
     <div className="inline-flex items-center gap-1.5 bg-neutral-100 text-neutral-700 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wide">
@@ -973,16 +1239,11 @@ export default function GroupDetail() {
                                 {joinedCount >= MAX_GROUPS ? "Limit Reached" : "Join Group"}
                             </button>
                         ) : (
-                            <>
-                                <button onClick={() => nav(`/chats?groupId=${group.id}`)} className="h-10 px-5 rounded-full bg-white border border-neutral-200 text-neutral-800 text-sm font-bold shadow-sm hover:bg-neutral-50 hover:border-neutral-300 flex items-center gap-2 transition-all">
-                                    <MessageCircle className="h-4 w-4" /> Chat
-                                </button>
-                                {isHost && (
-                                    <button onClick={createInvite} className="h-10 px-5 rounded-full bg-white border border-neutral-200 text-neutral-800 text-sm font-bold shadow-sm hover:bg-neutral-50 hover:border-neutral-300 flex items-center gap-2 transition-all">
-                                        <Share2 className="h-4 w-4" /> {shareBusy ? "..." : shareCopied ? "Copied" : "Invite"}
-                                    </button>
-                                )}
-                            </>
+                            isHost ? (
+                              <button onClick={createInvite} className="h-10 px-5 rounded-full bg-white border border-neutral-200 text-neutral-800 text-sm font-bold shadow-sm hover:bg-neutral-50 hover:border-neutral-300 flex items-center gap-2 transition-all">
+                                  <Share2 className="h-4 w-4" /> {shareBusy ? "..." : shareCopied ? "Copied" : "Invite"}
+                              </button>
+                            ) : null
                         )}
                     </div>
                 </div>
@@ -1000,6 +1261,111 @@ export default function GroupDetail() {
             </div>
         )}
 
+        {/* NEXT MEETUP HERO */}
+        <div className="mx-auto max-w-5xl px-4 mt-4">
+          <section className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-emerald-100/40 p-5 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Next Meetup</div>
+                {nextMeetup ? (
+                  <>
+                    <div className="mt-1 text-2xl font-extrabold text-neutral-900">{formatMeetupHeadline(nextMeetup.startsAt)}</div>
+                    <div className="mt-1 text-sm font-semibold text-neutral-700">{nextMeetup.place || "Location TBD"}</div>
+                    <div className="mt-2 inline-flex items-center rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                      {spotsLeft} spot{spotsLeft === 1 ? "" : "s"} left
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-1 text-lg font-bold text-neutral-900">No meetup scheduled yet</div>
+                    <div className="mt-1 text-sm text-neutral-600">Host can start a poll or post an announcement to set the next meetup.</div>
+                  </>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => { void handleConfirmAttendance(); }}
+                  className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
+                >
+                  <Check className="h-4 w-4" /> Confirm Attendance
+                </button>
+                <button
+                  onClick={() => nav(`/chats?groupId=${group.id}`)}
+                  disabled={!isMember}
+                  className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-bold ${
+                    isMember
+                      ? "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-400"
+                      : "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed"
+                  }`}
+                >
+                  <MessageCircle className="h-4 w-4" /> Chat
+                </button>
+                <button
+                  onClick={handleAddMeetupToCalendar}
+                  disabled={!nextMeetup}
+                  className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-bold ${
+                    nextMeetup
+                      ? "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-400"
+                      : "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed"
+                  }`}
+                >
+                  <Calendar className="h-4 w-4" /> Add to Calendar
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        {/* ABOUT */}
+        <div className="mx-auto max-w-5xl px-4 mt-4">
+          <section className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200/60 relative">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-bold text-neutral-900 flex items-center gap-2">
+                About this Circle
+              </h2>
+              {isHost && !isEditingDesc && (
+                <button onClick={() => setIsEditingDesc(true)} className="p-1.5 rounded-full text-neutral-400 hover:bg-neutral-100 hover:text-neutral-900 transition-colors">
+                  <Edit2 className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+
+            {isEditingDesc ? (
+              <div className="animate-in fade-in duration-200">
+                <textarea
+                  value={editDescValue}
+                  onChange={(e) => setEditDescValue(e.target.value)}
+                  className="w-full min-h-[120px] p-3 rounded-xl border border-neutral-300 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-y mb-3"
+                  placeholder="What's the plan?"
+                />
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => setIsEditingDesc(false)} className="px-3 py-1.5 rounded-lg border border-neutral-200 text-xs font-bold hover:bg-neutral-50 text-neutral-600">Cancel</button>
+                  <button onClick={saveDescription} disabled={editBusy} className="px-3 py-1.5 rounded-lg bg-black text-white text-xs font-bold hover:bg-neutral-800 disabled:opacity-50">
+                    {editBusy ? "Saving..." : "Save Changes"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                {String((group as any).description || "").trim() ? (
+                  <p className="text-sm text-neutral-600 leading-relaxed whitespace-pre-wrap">
+                    {(group as any).description}
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    <p className="text-sm text-neutral-500">Host hasn’t added a description yet.</p>
+                    {isHost && (
+                      <button onClick={() => setIsEditingDesc(true)} className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline">
+                        Add description
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+
         {announcements.length > 0 && (
           <div className="mx-auto max-w-5xl px-4 mt-4">
             <div className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm space-y-2">
@@ -1016,8 +1382,8 @@ export default function GroupDetail() {
                   <div className="text-xs text-neutral-600">{formatAnnouncementRange(a)}</div>
                   <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-neutral-800">
                     <span className="inline-flex items-center gap-1"><MapPin className="h-3 w-3" /> {a.location}</span>
-                    <a href={mapLinks(a.location).google} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-0.5 hover:border-neutral-300"><Map className="h-3 w-3" /> Google</a>
-                    <a href={mapLinks(a.location).apple} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-0.5 hover:border-neutral-300"><Map className="h-3 w-3" /> Apple</a>
+                    <a href={mapLinks(a.location).google} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-0.5 hover:border-neutral-300"><MapIcon className="h-3 w-3" /> Google</a>
+                    <a href={mapLinks(a.location).apple} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full border border-neutral-200 px-2 py-0.5 hover:border-neutral-300"><MapIcon className="h-3 w-3" /> Apple</a>
                   </div>
                   <div className="text-sm text-neutral-700 leading-relaxed">{a.description}</div>
                   {a.activities?.length ? (
@@ -1052,306 +1418,275 @@ export default function GroupDetail() {
 
         {/* MAIN CONTENT GRID */}
         <div className="mx-auto max-w-5xl px-4 py-8 grid gap-8 lg:grid-cols-[2fr_1fr]">
-            
-            {/* Left Column: About & Info */}
-            <div className="space-y-8">
-                
-                {/* About Section */}
-                <section className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200/60 relative">
-                    <div className="flex items-center justify-between mb-3">
-                        <h2 className="text-lg font-bold text-neutral-900 flex items-center gap-2">
-                            About this Circle
-                        </h2>
-                        {isHost && !isEditingDesc && (
-                            <button onClick={() => setIsEditingDesc(true)} className="p-1.5 rounded-full text-neutral-400 hover:bg-neutral-100 hover:text-neutral-900 transition-colors">
-                                <Edit2 className="h-4 w-4" />
-                            </button>
-                        )}
-                    </div>
-
-                    {isEditingDesc ? (
-                        <div className="animate-in fade-in duration-200">
-                            <textarea
-                                value={editDescValue}
-                                onChange={(e) => setEditDescValue(e.target.value)}
-                                className="w-full min-h-[120px] p-3 rounded-xl border border-neutral-300 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-transparent outline-none resize-y mb-3"
-                                placeholder="What's the plan?"
-                            />
-                            <div className="flex gap-2 justify-end">
-                                <button onClick={() => setIsEditingDesc(false)} className="px-3 py-1.5 rounded-lg border border-neutral-200 text-xs font-bold hover:bg-neutral-50 text-neutral-600">Cancel</button>
-                                <button onClick={saveDescription} disabled={editBusy} className="px-3 py-1.5 rounded-lg bg-black text-white text-xs font-bold hover:bg-neutral-800 disabled:opacity-50">
-                                    {editBusy ? "Saving..." : "Save Changes"}
-                                </button>
-                            </div>
-                        </div>
-                                        ) : (
-                        <p className="text-sm text-neutral-600 leading-relaxed whitespace-pre-wrap">
-                            {(group as any).description || (
-                              <span className="italic text-neutral-400">No description provided.</span>
-                            )}
-                        </p>
-                    )}
-
-                </section>
-
-                <section className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200/60 relative">
-                    <div className="flex items-center justify-between mb-3 gap-2">
-                        <h2 className="text-lg font-bold text-neutral-900 flex items-center gap-2">
-                            Moments
-                        </h2>
-                        <div className="flex gap-2">
+          {/* Left Column: Moments */}
+          <div className="order-2 space-y-6 lg:order-1">
+            <section className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-200/60 relative">
+              <div className="flex items-center justify-between mb-3 gap-2">
+                <h2 className="text-lg font-bold text-neutral-900 flex items-center gap-2">
+                  Moments
+                </h2>
+                <div className="flex gap-2">
+                  <button
+                    onClick={triggerMomentPicker}
+                    disabled={!isMember || momentBusy}
+                    className={`text-xs font-bold px-3 py-1.5 rounded-full ${isMember ? "bg-black text-white" : "bg-neutral-200 text-neutral-500 cursor-not-allowed"} ${momentBusy ? "opacity-70" : ""}`}
+                  >
+                    {momentBusy ? "Saving..." : "Add"}
+                  </button>
+                  <button
+                    onClick={triggerMomentCamera}
+                    disabled={!isMember || momentBusy}
+                    className={`text-xs font-bold px-3 py-1.5 rounded-full border ${isMember ? "bg-white text-neutral-800 border-neutral-300" : "bg-neutral-100 text-neutral-400 border-neutral-200 cursor-not-allowed"} ${momentBusy ? "opacity-70" : ""}`}
+                  >
+                    {momentBusy ? "..." : "Take Photo"}
+                  </button>
+                  <input
+                    ref={momentInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={!isMember || momentBusy}
+                    onChange={(e) => { handleMomentFile(e.target.files); if (e.target) e.target.value = ""; }}
+                  />
+                  <input
+                    ref={cameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    disabled={!isMember || momentBusy}
+                    onChange={(e) => { handleMomentFile(e.target.files); if (e.target) e.target.value = ""; }}
+                  />
+                </div>
+              </div>
+              {momentMsg && (
+                <div className="mb-3 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                  {momentMsg}
+                </div>
+              )}
+              {togetherNow && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+                  You're all here! Take a group selfie to verify this meetup.
+                </div>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                {moments.map((m) => {
+                  const needsReview = !m.verified || myVerificationLevel < (m.min_view_level ?? 1);
+                  return (
+                    <div key={m.id} className="relative overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50">
+                      <img src={m.photo_url} className="h-32 w-full object-cover" />
+                      <div className="absolute top-2 left-2 rounded-full bg-black/70 text-white text-[10px] font-bold px-2 py-0.5">
+                        {m.verified ? "Verified" : "Unverified"} • {m.id.slice(0, 8)}
+                      </div>
+                      {needsReview && (
+                        <div className="absolute inset-0 flex items-end justify-start p-2">
                           <button
-                            onClick={triggerMomentPicker}
-                            disabled={!isMember || momentBusy}
-                            className={`text-xs font-bold px-3 py-1.5 rounded-full ${isMember ? 'bg-black text-white' : 'bg-neutral-200 text-neutral-500 cursor-not-allowed'} ${momentBusy ? 'opacity-70' : ''}`}
+                            type="button"
+                            onClick={() => reportMoment(m)}
+                            className="rounded-lg bg-white/90 text-[10px] font-bold text-neutral-800 px-3 py-1.5 shadow-sm border border-neutral-200 hover:bg-white"
                           >
-                            {momentBusy ? "Saving..." : "Add"}
+                            Not yet reviewed — report if inappropriate
                           </button>
-                          <button
-                            onClick={triggerMomentCamera}
-                            disabled={!isMember || momentBusy}
-                            className={`text-xs font-bold px-3 py-1.5 rounded-full border ${isMember ? 'bg-white text-neutral-800 border-neutral-300' : 'bg-neutral-100 text-neutral-400 border-neutral-200 cursor-not-allowed'} ${momentBusy ? 'opacity-70' : ''}`}
-                          >
-                            {momentBusy ? "..." : "Take Photo"}
-                          </button>
-                          <input
-                            ref={momentInputRef}
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            disabled={!isMember || momentBusy}
-                            onChange={(e) => { handleMomentFile(e.target.files); if (e.target) e.target.value = ""; }}
-                          />
-                          <input
-                            ref={cameraInputRef}
-                            type="file"
-                            accept="image/*"
-                            capture="environment"
-                            className="hidden"
-                            disabled={!isMember || momentBusy}
-                            onChange={(e) => { handleMomentFile(e.target.files); if (e.target) e.target.value = ""; }}
-                          />
                         </div>
+                      )}
                     </div>
-                    {momentMsg && (
-                        <div className="mb-3 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
-                            {momentMsg}
-                        </div>
-                    )}
-                    {togetherNow && (
-                        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
-                            You're all here! Take a group selfie to verify this meetup.
-                        </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-3">
-                        {moments.map((m) => {
-                            const needsReview = !m.verified || myVerificationLevel < (m.min_view_level ?? 1);
-                            return (
-                                <div key={m.id} className="relative overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50">
-                                    <img src={m.photo_url} className="h-32 w-full object-cover" />
-                                    <div className="absolute top-2 left-2 rounded-full bg-black/70 text-white text-[10px] font-bold px-2 py-0.5">
-                                        {m.verified ? "Verified" : "Unverified"} • {m.id.slice(0, 8)}
-                                    </div>
-                                    {needsReview && (
-                                        <div className="absolute inset-0 flex items-end justify-start p-2">
-                                            <button
-                                              type="button"
-                                              onClick={() => reportMoment(m)}
-                                              className="rounded-lg bg-white/90 text-[10px] font-bold text-neutral-800 px-3 py-1.5 shadow-sm border border-neutral-200 hover:bg-white"
-                                            >
-                                                Not yet reviewed — report if inappropriate
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
-                    {moments.length === 0 && (
-                        <div className="text-sm text-neutral-500">No moments yet. Share your first meetup photo.</div>
-                    )}
-                </section>
+                  );
+                })}
+              </div>
+              {moments.length === 0 && (
+                <div className="mt-2 rounded-xl border border-dashed border-neutral-200 bg-neutral-50 px-3 py-3 text-sm text-neutral-600">
+                  <div className="inline-flex items-center gap-2 font-semibold text-neutral-800">
+                    <Camera className="h-4 w-4 text-neutral-500" />
+                    No moments yet
+                  </div>
+                  <p className="mt-1 text-xs text-neutral-500">If you meet in person, share a photo to build trust.</p>
+                </div>
+              )}
+            </section>
+          </div>
 
-                {/* Details Card */}
-                <section className="grid sm:grid-cols-2 gap-4">
-                   <div className="bg-white p-4 rounded-2xl border border-neutral-200/60 shadow-sm">
-                      <div className="flex items-center gap-2 text-neutral-400 text-xs font-bold uppercase mb-1">
-                         <Calendar className="h-3 w-3" /> Created
-                      </div>
-                      <div className="text-sm font-semibold text-neutral-900">{new Date(group.created_at).toLocaleDateString()}</div>
-                   </div>
-                   <div className="bg-white p-4 rounded-2xl border border-neutral-200/60 shadow-sm">
-                      <div className="flex items-center gap-2 text-neutral-400 text-xs font-bold uppercase mb-1">
-                         <Clock className="h-3 w-3" /> Format
-                      </div>
-                      <div className="text-sm font-semibold text-neutral-900">
-                         {group.is_online ? (group.online_link ? "Online (Link set)" : "Online") : "In Person"}
-                      </div>
-                   </div>
-                </section>
-
-                {isMember && isHost && (
-                     <button onClick={handleDelete} className="flex items-center gap-2 text-red-600 text-sm font-medium hover:text-red-700 transition-colors px-2">
-                         <Trash2 className="h-4 w-4" /> Delete this group
-                     </button>
-                )}
-                {isMember && !isHost && (
-                     <button onClick={leaveGroup} className="flex items-center gap-2 text-neutral-500 text-sm font-medium hover:text-neutral-800 transition-colors px-2">
-                         <LogOut className="h-4 w-4" /> Leave group
-                     </button>
-                )}
-
-            </div>
-
-            {/* Right Column: Voting & Members */}
-            <div className="space-y-6">
-                
-                {/* --- VOTING SECTION --- */}
-                <div
-                  id="poll-section"
-                  className={`bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm transition-all ${pollFocus ? "relative z-40 ring-2 ring-emerald-200 shadow-2xl scale-[1.01]" : ""}`}
-                  onClick={(e) => e.stopPropagation()}
+          {/* Right Column: Members + Polls */}
+          <div className="order-1 flex flex-col gap-6 lg:order-2">
+            {/* --- MEMBERS PREVIEW --- */}
+            <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <h2 className="text-sm font-bold text-neutral-900">Members ({memberCount}/{group.capacity})</h2>
+                  <div className="text-[11px] text-neutral-500">{spotsLeft} spot{spotsLeft === 1 ? "" : "s"} left</div>
+                </div>
+                <button onClick={() => setMembersOpen(true)} className="text-xs font-medium text-emerald-600 hover:underline">
+                  View All
+                </button>
+              </div>
+              {members.length > 0 ? (
+                <div className="space-y-2">
+                  {members.slice(0, 3).map((m) => {
+                    const r = effectiveMemberRole(m);
+                    return (
+                      <button
+                        key={m.user_id}
+                        type="button"
+                        onClick={() => openMemberActions(m)}
+                        className="flex w-full items-center justify-between rounded-xl border border-neutral-100 bg-neutral-50 px-3 py-2 text-left hover:border-neutral-200 hover:bg-white"
+                      >
+                        <span className="flex items-center gap-2">
+                          <span className="h-8 w-8 overflow-hidden rounded-full bg-neutral-200">
+                            <img src={getAvatarUrl(m.avatar_url, m.user_id)} alt={m.name || "User"} className="h-full w-full object-cover rounded-full" />
+                          </span>
+                          <span className="text-sm font-semibold text-neutral-800">{m.name || "User"}</span>
+                        </span>
+                        {r === "host" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">
+                            <Crown className="h-3 w-3" /> Host
+                          </span>
+                        ) : r === "cohost" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-bold text-sky-700">
+                            <Star className="h-3 w-3" /> Co-Host
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <button
+                  onClick={() => setMembersOpen(true)}
+                  className="text-xs text-neutral-500 hover:text-neutral-700 hover:underline"
                 >
-                    <div className="flex items-center justify-between mb-4">
-                        <h2 className="text-base font-bold text-neutral-900 flex items-center gap-2">
-                           Polls & Events
-                        </h2>
-                        {isHost && (
-                            <button onClick={() => { setMsg(null); setCreateOpen(true); }} className="p-1.5 bg-neutral-50 rounded-full text-neutral-600 shadow-sm hover:scale-105 active:scale-95 transition-all border border-neutral-200 hover:bg-white hover:border-neutral-300">
-                                <Plus className="h-4 w-4" />
-                            </button>
-                        )}
-                        {!isMember && (
-                          <div className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-full px-3 py-1">
-                            Join the circle to vote
-                          </div>
-                        )}
-                    </div>
-
-                    {!poll ? (
-                        <div className="text-center py-8 px-4 bg-neutral-50 rounded-xl border border-dashed border-neutral-200">
-                            <p className="text-sm text-neutral-400 mb-2 font-medium">No active polls</p>
-                            {isHost && <button onClick={() => { setMsg(null); setCreateOpen(true); }} className="text-xs text-black font-bold hover:underline">Create one</button>}
-                        </div>
-                    ) : (
-                        <div className="animate-in slide-in-from-bottom-2 duration-500">
-                            <div className="flex justify-between items-start mb-3">
-                                <h3 className="font-bold text-neutral-900">{poll.title}</h3>
-                                <div className="flex flex-col items-end gap-1">
-                                  <div className={`text-[10px] font-bold px-2 py-1 rounded-full border ${poll.status === 'closed' ? 'bg-neutral-200 text-neutral-600 border-neutral-300' : isPollExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-emerald-50 text-emerald-700 border-emerald-100'}`}>
-                                      {getPollStatusLabel(poll.status, poll.closes_at)}
-                                  </div>
-                                  {lateVoteAllowed && poll.status === 'closed' && (
-                                    <span className="text-[11px] font-semibold text-emerald-700">Host gave you a late vote</span>
-                                  )}
-                                </div>
-                            </div>
-
-                            <div className="space-y-2 mb-4">
-                                {options.map(o => {
-                                    const count = counts[o.id] ?? 0;
-                                    const isNC = o.label === 'Not Coming';
-                                    const total = isNC ? count + (memberCount - votedCount) : count;
-                                    const pct = memberCount > 0 ? Math.round((total / memberCount) * 100) : 0;
-                                    
-                                    return (
-                                        <div key={o.id} className="relative">
-                                            <div 
-                                              className="absolute inset-0 bg-neutral-100 rounded-lg transition-all duration-500" 
-                                              style={{ width: `${pct}%` }} 
-                                            />
-                                            <div className="relative flex items-center justify-between p-2.5 rounded-lg border border-neutral-100 hover:border-neutral-200 transition-colors">
-                                                <div className="z-10 flex flex-col gap-0.5">
-                                                  <span className="text-sm font-medium text-neutral-800">{o.label}</span>
-                                                  {o.starts_at && (
-                                                    <span className="text-[11px] text-neutral-500 flex items-center gap-1">
-                                                      <Clock className="h-3 w-3" />
-                                                      {formatDateTime(o.starts_at)}
-                                                    </span>
-                                                  )}
-                                                  {o.place && (
-                                                    <span className="text-[11px] text-neutral-500">{o.place}</span>
-                                                  )}
-                                                </div>
-                                                <div className="flex items-center gap-3 z-10">
-                                                    <span className="text-xs font-bold text-neutral-600">{total}</span>
-                                                    {canVote && (
-                                                        <button 
-                                                            onClick={() => castVote(o.id)}
-                                                            disabled={!canVote}
-                                                            className={`h-6 w-6 rounded-full flex items-center justify-center border transition-all ${votingBusy === o.id ? 'bg-black border-black text-white' : 'bg-white border-neutral-200 text-neutral-600 hover:scale-110 active:scale-95'}`}
-                                                        >
-                                                            {votingBusy === o.id ? <div className="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full" /> : <Check className="h-3 w-3" />}
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )
-                                })}
-                            </div>
-
-                            {event && (
-                                <div className="mb-3 rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2">
-                                    <div className="text-xs font-bold text-emerald-800">Confirmed Event</div>
-                                    <div className="text-sm font-semibold text-neutral-900">{event.title}</div>
-                                    <div className="text-xs text-neutral-600">{formatDateTime(event.starts_at)} {event.place ? `• ${event.place}` : ""}</div>
-                                    <div className="mt-2 flex flex-wrap gap-2">
-                                      <button onClick={() => downloadCalendar(event)} className="text-xs font-bold rounded-lg bg-black text-white px-3 py-1.5 hover:bg-neutral-800">
-                                        Add to Calendar
-                                      </button>
-                                    </div>
-                                </div>
-                            )}
-
-                            {isHost && (
-                                <div className="flex flex-col gap-2 pt-3 border-t border-neutral-100">
-                                    {poll.status === 'open' && (
-                                        <button 
-                                            onClick={finalizePoll} 
-                                            className="w-full bg-black text-white text-xs font-bold py-3 rounded-xl hover:bg-neutral-800 shadow-sm flex items-center justify-center gap-2"
-                                        >
-                                            <Check className="h-4 w-4" /> End & Count Games
-                                        </button>
-                                    )}
-                                    {poll.status === 'closed' && (
-                                        <button 
-                                            onClick={() => { setMsg(null); setCreateOpen(true); }} 
-                                            className="w-full bg-neutral-100 text-neutral-700 text-xs font-bold py-3 rounded-xl hover:bg-neutral-200 flex items-center justify-center gap-2"
-                                        >
-                                            <Plus className="h-4 w-4" /> Create New Vote
-                                        </button>
-                                    )}
-                                    <button 
-                                        onClick={deleteVoting} 
-                                        className="w-full text-red-600 text-xs font-bold py-2 hover:bg-red-50 rounded-xl"
-                                    >
-                                        Delete Poll
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
-
-                {/* --- MEMBERS PREVIEW --- */}
-                <div className="bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm">
-                    <div className="flex items-center justify-between mb-3">
-                        <h2 className="text-sm font-bold text-neutral-900">Members ({memberCount})</h2>
-                        <button onClick={() => setMembersOpen(true)} className="text-xs font-medium text-emerald-600 hover:underline">
-                            View All
-                        </button>
-                    </div>
-                    <div className="flex -space-x-2 overflow-hidden cursor-pointer" onClick={() => setMembersOpen(true)}>
-                         {members.slice(0, 5).map(m => (
-                            <div key={m.user_id} className="h-8 w-8 rounded-full ring-2 ring-white bg-neutral-100 flex items-center justify-center text-[10px] font-bold text-neutral-500" title={m.name || "User"}>
-                                <img src={getAvatarUrl(m.avatar_url, m.user_id)} alt={m.name || "User"} className="h-full w-full object-cover rounded-full" />
-                            </div>
-                         ))}
-                         {memberCount > 5 && <div className="h-8 w-8 rounded-full ring-2 ring-white bg-neutral-50 flex items-center justify-center text-[10px] font-bold text-neutral-400">+{memberCount - 5}</div>}
-                    </div>
-                </div>
+                  {isMember ? "Members are loading" : "Join this circle to view members"}
+                </button>
+              )}
             </div>
+
+            {/* --- VOTING SECTION --- */}
+            <div
+              id="poll-section"
+              className={`bg-white border border-neutral-200 rounded-2xl p-5 shadow-sm transition-all ${pollFocus ? "relative z-40 ring-2 ring-emerald-200 shadow-2xl scale-[1.01]" : ""}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-base font-bold text-neutral-900 flex items-center gap-2">
+                  Polls
+                </h2>
+                {isHost && (
+                  <button onClick={() => { setMsg(null); setCreateOpen(true); }} className="p-1.5 bg-neutral-50 rounded-full text-neutral-600 shadow-sm hover:scale-105 active:scale-95 transition-all border border-neutral-200 hover:bg-white hover:border-neutral-300">
+                    <Plus className="h-4 w-4" />
+                  </button>
+                )}
+                {!isMember && (
+                  <div className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-100 rounded-full px-3 py-1">
+                    Join the circle to vote
+                  </div>
+                )}
+              </div>
+
+              {!poll ? (
+                <div className="text-center py-8 px-4 bg-neutral-50 rounded-xl border border-dashed border-neutral-200">
+                  <p className="text-sm text-neutral-500 mb-2 font-medium">No active polls. Host can start one.</p>
+                  {isHost && <button onClick={() => { setMsg(null); setCreateOpen(true); }} className="text-xs text-black font-bold hover:underline">Start poll</button>}
+                </div>
+              ) : (
+                <div className="animate-in slide-in-from-bottom-2 duration-500">
+                  <div className="flex justify-between items-start mb-3">
+                    <h3 className="font-bold text-neutral-900">{poll.title}</h3>
+                    <div className="flex flex-col items-end gap-1">
+                      <div className={`text-[10px] font-bold px-2 py-1 rounded-full border ${poll.status === "closed" ? "bg-neutral-200 text-neutral-600 border-neutral-300" : isPollExpired ? "bg-red-50 text-red-600 border-red-100" : "bg-emerald-50 text-emerald-700 border-emerald-100"}`}>
+                        {getPollStatusLabel(poll.status, poll.closes_at)}
+                      </div>
+                      {lateVoteAllowed && poll.status === "closed" && (
+                        <span className="text-[11px] font-semibold text-emerald-700">Host gave you a late vote</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 mb-4">
+                    {options.map((o) => {
+                      const count = counts[o.id] ?? 0;
+                      const isNC = o.label === "Not Coming";
+                      const total = isNC ? count + (memberCount - votedCount) : count;
+                      const pct = memberCount > 0 ? Math.round((total / memberCount) * 100) : 0;
+
+                      return (
+                        <div key={o.id} className="relative">
+                          <div className="absolute inset-0 bg-neutral-100 rounded-lg transition-all duration-500" style={{ width: `${pct}%` }} />
+                          <div className="relative flex items-center justify-between p-2.5 rounded-lg border border-neutral-100 hover:border-neutral-200 transition-colors">
+                            <div className="z-10 flex flex-col gap-0.5">
+                              <span className="text-sm font-medium text-neutral-800">{o.label}</span>
+                              {o.starts_at && (
+                                <span className="text-[11px] text-neutral-500 flex items-center gap-1">
+                                  <Clock className="h-3 w-3" />
+                                  {formatDateTime(o.starts_at)}
+                                </span>
+                              )}
+                              {o.place && <span className="text-[11px] text-neutral-500">{o.place}</span>}
+                            </div>
+                            <div className="flex items-center gap-3 z-10">
+                              <span className="text-xs font-bold text-neutral-600">{total}</span>
+                              {canVote && (
+                                <button
+                                  onClick={() => castVote(o.id)}
+                                  disabled={!canVote}
+                                  className={`h-6 w-6 rounded-full flex items-center justify-center border transition-all ${votingBusy === o.id ? "bg-black border-black text-white" : "bg-white border-neutral-200 text-neutral-600 hover:scale-110 active:scale-95"}`}
+                                >
+                                  {votingBusy === o.id ? <div className="animate-spin h-3 w-3 border-2 border-white border-t-transparent rounded-full" /> : <Check className="h-3 w-3" />}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {isHost && (
+                    <div className="flex flex-col gap-2 pt-3 border-t border-neutral-100">
+                      {poll.status === "open" && (
+                        <button
+                          onClick={finalizePoll}
+                          className="w-full bg-black text-white text-xs font-bold py-3 rounded-xl hover:bg-neutral-800 shadow-sm flex items-center justify-center gap-2"
+                        >
+                          <Check className="h-4 w-4" /> End & Count Games
+                        </button>
+                      )}
+                      {poll.status === "closed" && (
+                        <button
+                          onClick={() => { setMsg(null); setCreateOpen(true); }}
+                          className="w-full bg-neutral-100 text-neutral-700 text-xs font-bold py-3 rounded-xl hover:bg-neutral-200 flex items-center justify-center gap-2"
+                        >
+                          <Plus className="h-4 w-4" /> Create New Vote
+                        </button>
+                      )}
+                      <button
+                        onClick={deleteVoting}
+                        className="w-full text-red-600 text-xs font-bold py-2 hover:bg-red-50 rounded-xl"
+                      >
+                        Delete Poll
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* FOOTER META + LEAVE */}
+        <div className="mx-auto max-w-5xl px-4 pb-10">
+          <div className="text-xs text-neutral-500">
+            Created: {new Date(group.created_at).toLocaleDateString()} · Format: {group.is_online ? (group.online_link ? "Online (Link set)" : "Online") : "In Person"}
+          </div>
+          <div className="mt-4">
+            {isMember && isHost && (
+              <button onClick={handleDelete} className="flex items-center gap-2 text-red-600 text-sm font-medium hover:text-red-700 transition-colors">
+                <Trash2 className="h-4 w-4" /> Delete this group
+              </button>
+            )}
+            {isMember && !isHost && (
+              <button onClick={leaveGroup} className="flex items-center gap-2 text-neutral-500 text-sm font-medium hover:text-neutral-800 transition-colors">
+                <LogOut className="h-4 w-4" /> Leave group
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1466,22 +1801,41 @@ export default function GroupDetail() {
           <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-3rem)]">
             <div className="flex justify-between items-center mb-4 shrink-0">
                <h3 className="text-xl font-bold text-neutral-900">Members ({members.length})</h3>
-               <button onClick={() => setMembersOpen(false)} className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"><X className="h-5 w-5" /></button>
+               <button
+                 onClick={() => {
+                   setMemberActionTarget(null);
+                   setMembersOpen(false);
+                 }}
+                 className="p-1 rounded-full hover:bg-neutral-100 text-neutral-500"
+               >
+                 <X className="h-5 w-5" />
+               </button>
             </div>
             
             <div className="flex-1 overflow-y-auto pr-2 space-y-2">
+               {members.length === 0 && (
+                 <div className="rounded-xl border border-dashed border-neutral-200 bg-neutral-50 p-3 text-sm text-neutral-500">
+                   No member rows loaded yet. If this stays empty, refresh and check group permissions.
+                 </div>
+               )}
                {members.map((m) => {
                  const lateGranted = Array.isArray(poll?.late_voter_ids) ? (poll?.late_voter_ids as string[]).includes(m.user_id) : false;
                  const isMe = m.user_id === me;
+                 const targetRole = effectiveMemberRole(m);
+                 const rowCanManage =
+                   canKickTarget(m) ||
+                   canPromoteTarget(m) ||
+                   canDemoteTarget(m) ||
+                   (isHost && isMe);
+                 const rowInteractive = !isMe || rowCanManage;
                  return (
                  <div
                    key={m.user_id}
                    onClick={() => {
-                     if (isMe) return;
-                     setSelectedUserId(m.user_id);
-                     setShowProfileModal(true);
+                     if (!rowInteractive) return;
+                     openMemberActions(m);
                    }}
-                   className={`flex items-center justify-between p-2 rounded-xl transition-colors ${isMe ? "cursor-default bg-neutral-50/60" : "hover:bg-neutral-50 cursor-pointer"}`}
+                   className={`flex items-center justify-between p-2 rounded-xl transition-colors ${rowInteractive ? "hover:bg-neutral-50 cursor-pointer" : "cursor-default bg-neutral-50/60"}`}
                  >
                     <div className="flex items-center gap-3">
                        <div className="h-10 w-10 rounded-full bg-neutral-200 flex items-center justify-center overflow-hidden">
@@ -1502,40 +1856,30 @@ export default function GroupDetail() {
                              <span className="text-[10px] font-bold text-emerald-600">Here with you</span>
                            </div>
                          ) : (
-                           <>
-                             {m.role === 'host' && (
-                               <div className="text-[10px] text-amber-600 font-bold uppercase tracking-wide">Host</div>
-                             )}
-                             {m.role === 'owner' && (
-                               <div className="text-[10px] text-amber-600 font-bold uppercase tracking-wide">Owner</div>
-                             )}
-                            {m.role !== 'host' && m.role !== 'owner' && (
-                               <div className="text-xs text-neutral-500 capitalize">{m.role}</div>
-                             )}
-                           </>
+                           <div
+                             className={`text-[10px] font-bold uppercase tracking-wide ${targetRole === "host" ? "text-amber-600" : targetRole === "cohost" ? "text-sky-600" : "text-neutral-500"}`}
+                           >
+                             {roleLabel(targetRole)}
+                           </div>
                          )}
                        </div>
                     </div>
-                    {isHost && m.user_id !== group.host_id && !isMe && (
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2">
+                      {isHost && poll && poll.status === 'closed' && m.user_id !== hostUserId && !isMe && (
                         <button
-                          onClick={(e) => { e.stopPropagation(); transferHost(m.user_id); }}
-                          className="text-[10px] font-bold text-amber-700 border border-amber-200 px-2 py-1 rounded-lg hover:bg-amber-50 disabled:opacity-50"
-                          disabled={ownershipBusy === m.user_id}
+                          onClick={(e) => { e.stopPropagation(); grantLateVoteChance(m.user_id); }}
+                          className="text-[10px] font-bold text-emerald-700 border border-emerald-200 px-2 py-1 rounded-lg hover:bg-emerald-50 disabled:opacity-50"
+                          disabled={lateGrantBusy === m.user_id || lateGranted}
                         >
-                          {ownershipBusy === m.user_id ? "..." : "Pass Torch"}
+                          {lateGranted ? "Vote Granted" : lateGrantBusy === m.user_id ? "..." : "Vote Chance"}
                         </button>
-                        {poll && poll.status === 'closed' && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); grantLateVoteChance(m.user_id); }}
-                            className="text-[10px] font-bold text-emerald-700 border border-emerald-200 px-2 py-1 rounded-lg hover:bg-emerald-50 disabled:opacity-50"
-                            disabled={lateGrantBusy === m.user_id || lateGranted}
-                          >
-                            { lateGranted ? "Vote Granted" : lateGrantBusy === m.user_id ? "..." : "Vote Chance" }
-                          </button>
-                        )}
-                      </div>
-                    )}
+                      )}
+                      {rowCanManage && (
+                        <span className="inline-flex items-center justify-center rounded-lg border border-neutral-200 bg-white p-1.5 text-neutral-500">
+                          <MoreVertical className="h-3.5 w-3.5" />
+                        </span>
+                      )}
+                    </div>
                  </div>
                );
                })}
@@ -1544,13 +1888,131 @@ export default function GroupDetail() {
         </div>
       )}
 
-      <ViewOtherProfileModal
-        isOpen={showProfileModal}
-        onClose={() => setShowProfileModal(false)}
-         viewUserId={selectedUserId}
-      />
-      {/* Chat Panel - WRAPPED IN MODAL */}
-      {chatOpen && group && (
+      {memberActionTarget && (() => {
+        const targetRole = effectiveMemberRole(memberActionTarget);
+        const lateGranted = Array.isArray(poll?.late_voter_ids)
+          ? (poll?.late_voter_ids as string[]).includes(memberActionTarget.user_id)
+          : false;
+        const targetId = memberActionTarget.user_id;
+        const targetName = memberActionTarget.name || "User";
+
+        return (
+          <div className="fixed inset-0 z-[65] flex items-end justify-center px-4 py-6 md:items-center animate-in fade-in duration-200">
+            <div className="absolute inset-0 bg-black/45" onClick={() => setMemberActionTarget(null)} />
+            <div className="relative w-full max-w-sm rounded-3xl border border-neutral-200 bg-white p-4 shadow-2xl">
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="h-10 w-10 overflow-hidden rounded-full bg-neutral-200">
+                    <img
+                      src={getAvatarUrl(memberActionTarget.avatar_url, targetId)}
+                      alt={targetName}
+                      className="h-full w-full object-cover"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-neutral-900">{targetName}</div>
+                    <div className="text-[11px] text-neutral-500">{roleLabel(targetRole)}</div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setMemberActionTarget(null)}
+                  className="rounded-full p-1 text-neutral-500 hover:bg-neutral-100"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-2">
+                {canPromoteTarget(memberActionTarget) && (
+                  <button
+                    onClick={() => promoteToCohost(targetId)}
+                    disabled={memberActionBusy === `promote:${targetId}`}
+                    className="w-full rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-left text-sm font-semibold text-sky-800 hover:bg-sky-100 disabled:opacity-60"
+                  >
+                    {memberActionBusy === `promote:${targetId}` ? "Updating..." : "Make Co-Host"}
+                  </button>
+                )}
+
+                {canDemoteTarget(memberActionTarget) && (
+                  <button
+                    onClick={() => demoteFromCohost(targetId)}
+                    disabled={memberActionBusy === `demote:${targetId}`}
+                    className="w-full rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-left text-sm font-semibold text-neutral-800 hover:bg-neutral-100 disabled:opacity-60"
+                  >
+                    {memberActionBusy === `demote:${targetId}` ? "Updating..." : "Remove Co-Host"}
+                  </button>
+                )}
+
+                {canKickTarget(memberActionTarget) && (
+                  <button
+                    onClick={() => kickFromCircle(targetId, memberActionTarget.name)}
+                    disabled={memberActionBusy === `kick:${targetId}`}
+                    className="w-full rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-left text-sm font-semibold text-red-700 hover:bg-red-100 disabled:opacity-60"
+                  >
+                    {memberActionBusy === `kick:${targetId}` ? "Kicking..." : "Kick from Circle"}
+                  </button>
+                )}
+
+                {isHost && targetId === me && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Transfer Host</div>
+                    {transferCandidates.length === 0 ? (
+                      <div className="mt-2 text-xs text-amber-800">Add another member before transferring host.</div>
+                    ) : (
+                      <div className="mt-2 space-y-2">
+                        {transferCandidates.map((candidate) => (
+                          <button
+                            key={candidate.user_id}
+                            onClick={() => transferHost(candidate.user_id)}
+                            disabled={ownershipBusy === candidate.user_id}
+                            className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-left text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-60"
+                          >
+                            {ownershipBusy === candidate.user_id
+                              ? "Transferring..."
+                              : `Make ${candidate.name || "member"} host`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isHost && poll?.status === "closed" && targetId !== hostUserId && targetId !== me && (
+                  <button
+                    onClick={() => grantLateVoteChance(targetId)}
+                    disabled={lateGrantBusy === targetId || lateGranted}
+                    className="w-full rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-left text-sm font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+                  >
+                    {lateGranted ? "Vote chance already granted" : lateGrantBusy === targetId ? "Granting..." : "Grant Vote Chance"}
+                  </button>
+                )}
+
+                {targetId !== me && (
+                  <button
+                    onClick={() => {
+                      setMemberActionTarget(null);
+                      goToUserProfile(targetId);
+                    }}
+                    className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-left text-sm font-semibold text-neutral-800 hover:bg-neutral-50"
+                  >
+                    View Profile
+                  </button>
+                )}
+
+                <button
+                  onClick={() => setMemberActionTarget(null)}
+                  className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-600 hover:bg-neutral-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+	      {/* Chat Panel - WRAPPED IN MODAL */}
+	      {chatOpen && group && (
         <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto px-4 py-6 md:items-center animate-in zoom-in-95 duration-200">
            {/* Backdrop */}
            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setChatOpen(false)} />

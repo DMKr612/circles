@@ -5,7 +5,7 @@ import type { Message } from "@/types";
 import { useAuth } from "@/App";
 import { useGroupPresence } from "@/hooks/useGroupPresence";
 import { MapPin, Paperclip, Send, X, Smile, Reply, Loader2, Trash } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 type Profile = { user_id: string; id?: string; name: string | null; avatar_url?: string | null };
 type Member = { user_id: string; name: string | null; avatar_url?: string | null };
@@ -73,6 +73,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
   const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
     const el = listRef.current;
     if (!el) return;
@@ -307,8 +308,9 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     const loadMembers = async () => {
       const { data, error } = await supabase
         .from("group_members")
-        .select("user_id, profiles(name,avatar_url)")
-        .eq("group_id", groupId);
+        .select("user_id, status, profiles(name,avatar_url)")
+        .eq("group_id", groupId)
+        .or("status.is.null,status.eq.active,status.eq.accepted");
       if (error) { console.warn("[members] load error", error); return; }
       if (cancelled) return;
       const list: Member[] = (data || []).map((r: any) => ({
@@ -336,7 +338,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       )
       .subscribe();
 
-    return () => { cancelled = false; supabase.removeChannel(ch); };
+    return () => { cancelled = true; supabase.removeChannel(ch); };
   }, [groupId]);
 
   // Auto-scroll to bottom when messages change
@@ -618,7 +620,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
           .from('group_members')
           .upsert(
             { group_id: groupId, user_id: me, role: 'member', status: 'active' },
-            { onConflict: 'group_id,user_id' }
+            { onConflict: 'group_id,user_id', ignoreDuplicates: true }
           );
         setMemberReady(true);
       } catch (e: any) {
@@ -721,6 +723,16 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       />
     );
   };
+  const openProfile = (uid: string) => {
+    if (!uid) return;
+    if (uid === me) {
+      navigate("/profile");
+      return;
+    }
+    navigate(`/users/${uid}`, {
+      state: { from: `${location.pathname}${location.search}${location.hash}` },
+    });
+  };
 
   const onDrop = (ev: React.DragEvent<HTMLDivElement>) => {
     ev.preventDefault();
@@ -802,7 +814,15 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                 const nearby = isTogether(m.user_id);
                 const isOnline = onlineIds.has(m.user_id);
                 return (
-                  <li key={m.user_id} className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-neutral-50 transition-colors">
+                  <li key={m.user_id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        openProfile(m.user_id);
+                        setShowMembers(false);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-neutral-50 transition-colors"
+                    >
                     <div className="relative">
                       <img
                         src={getAvatarUrl(m.avatar_url, m.user_id)}
@@ -824,6 +844,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                         isOnline && <div className="text-[10px] font-medium text-emerald-600">Online</div>
                       )}
                     </div>
+                    </button>
                   </li>
                 );
               })}
@@ -872,16 +893,30 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                   >
                     {!isMine && (
                       <div className="w-8 shrink-0 flex flex-col items-center">
-                        {showAvatar && avatar(m.user_id)}
+                        {showAvatar && (
+                          <button
+                            type="button"
+                            onClick={() => openProfile(m.user_id)}
+                            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+                            title={`View ${displayName(m.user_id)}'s profile`}
+                          >
+                            {avatar(m.user_id)}
+                          </button>
+                        )}
                       </div>
                     )}
                     
                     <div className={`flex max-w-[80%] flex-col ${isMine ? "items-end" : "items-start"}`}>
                       {showAvatar && !isMine && (
                         <div className="ml-1 mb-1 flex items-center gap-2">
-                          <span className="text-xs font-bold text-neutral-900">
+                          <button
+                            type="button"
+                            onClick={() => openProfile(m.user_id)}
+                            className="text-xs font-bold text-neutral-900 hover:text-emerald-700"
+                            title={`View ${displayName(m.user_id)}'s profile`}
+                          >
                             {displayName(m.user_id)}
-                          </span>
+                          </button>
                           {nearby && (
                             <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 bg-emerald-50 text-[9px] font-bold text-emerald-600 uppercase tracking-wide border border-emerald-100">
                               <MapPin className="h-2.5 w-2.5" /> HERE

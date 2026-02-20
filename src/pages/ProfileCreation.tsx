@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/App";
+import { geocodePlace, reverseGeocodeCity } from "@/lib/geocode";
+
+type Coords = { lat: number; lng: number };
 
 export default function ProfileCreation() {
   const { user } = useAuth();
@@ -8,8 +11,10 @@ export default function ProfileCreation() {
   const [username, setUsername] = useState("");
   const [city, setCity] = useState("");
   const [gender, setGender] = useState<"man" | "woman" | "nonbinary" | "prefer_not_say">("prefer_not_say");
-  const [timezone, setTimezone] = useState("");
   const [interests, setInterests] = useState("");
+  const [coords, setCoords] = useState<Coords | null>(null);
+  const [locationBusy, setLocationBusy] = useState(false);
+  const [locationMsg, setLocationMsg] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -18,20 +23,81 @@ export default function ProfileCreation() {
     return null;
   }
 
+  async function getBrowserCoords(): Promise<Coords> {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error("Location is not supported on this device."));
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          resolve({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+          });
+        },
+        () => reject(new Error("Could not access your location. Please allow location permission.")),
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+      );
+    });
+  }
+
+  async function handleUseLocation() {
+    setError(null);
+    setLocationMsg(null);
+    setLocationBusy(true);
+    try {
+      const nextCoords = await getBrowserCoords();
+      setCoords(nextCoords);
+      const reverse = await reverseGeocodeCity(nextCoords);
+      if (reverse?.city) {
+        setCity(reverse.city);
+        setLocationMsg(`Using your location: ${reverse.city}`);
+      } else {
+        setLocationMsg("Location captured. Add city name if needed.");
+      }
+    } catch (e: any) {
+      setError(e?.message || "Failed to use current location.");
+    } finally {
+      setLocationBusy(false);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
     setError(null);
+
+    const trimmedCity = city.trim();
+    const autoTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+    let finalCity: string | null = trimmedCity || null;
+    let lat: number | null = coords?.lat ?? null;
+    let lng: number | null = coords?.lng ?? null;
+    let locationSource: "gps" | "manual" | null = coords ? "gps" : null;
+
+    if (!coords && trimmedCity) {
+      const geo = await geocodePlace(trimmedCity);
+      if (geo) {
+        lat = geo.lat;
+        lng = geo.lng;
+        locationSource = "manual";
+        if (geo.city) finalCity = geo.city;
+      }
+    }
 
     const { error: dbError } = await supabase
   .from("profiles")
   .update({
     name: fullName,   // <- use 'name', matches DB schema
     username,
-    city: city || null,
+    city: finalCity,
     gender,
-    timezone: timezone || null,
+    timezone: autoTimezone,
     interests: interests || null,
+    lat,
+    lng,
+    location_source: locationSource,
+    location_updated_at: lat != null && lng != null ? new Date().toISOString() : null,
     onboarded: true,
   } as any)
   .eq("user_id", user!.id);
@@ -80,6 +146,16 @@ export default function ProfileCreation() {
 
           <div>
             <label className="block text-sm font-medium mb-1">City / Location</label>
+            <div className="mb-2 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={handleUseLocation}
+                disabled={locationBusy || saving}
+                className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-60"
+              >
+                {locationBusy ? "Getting location..." : "Use my location"}
+              </button>
+            </div>
             <input
               type="text"
               value={city}
@@ -87,6 +163,7 @@ export default function ProfileCreation() {
               className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-black focus:ring-1 focus:ring-black"
               placeholder="e.g., Toronto, Berlin"
             />
+            {locationMsg && <p className="mt-1 text-xs text-neutral-500">{locationMsg}</p>}
           </div>
 
           <div>
@@ -112,17 +189,6 @@ export default function ProfileCreation() {
                 </label>
               ))}
             </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-1">Timezone</label>
-            <input
-              type="text"
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              className="w-full rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-black focus:ring-1 focus:ring-black"
-              placeholder="e.g., UTC-5, CET, PST"
-            />
           </div>
 
           <div>
