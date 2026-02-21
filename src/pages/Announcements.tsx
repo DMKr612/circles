@@ -67,6 +67,26 @@ type AnnouncementForm = Omit<Partial<Announcement>, "activities"> & {
   activities?: string[] | string;
 };
 
+const ANNOUNCEMENT_FIELDS = [
+  "id",
+  "title",
+  "description",
+  "datetime",
+  "created_at",
+  "created_by",
+  "duration_minutes",
+  "location",
+  "activities",
+  "link",
+  "group_id",
+  "scope_type",
+  "country",
+  "city",
+  "lat",
+  "lng",
+  "radius_km",
+].join(",");
+
 export default function AnnouncementsPage() {
   const [events, setEvents] = useState<Announcement[]>([]);
   const [joined, setJoined] = useState<Set<string>>(new Set());
@@ -158,7 +178,7 @@ export default function AnnouncementsPage() {
     try {
       const { data, error } = await supabase
         .from('announcements')
-        .select('*')
+        .select(ANNOUNCEMENT_FIELDS)
         .order('datetime', { ascending: true })
         .limit(200);
       if (error) throw error;
@@ -186,7 +206,7 @@ export default function AnnouncementsPage() {
           // refresh to ensure consistency
           const { data: refreshed } = await supabase
             .from('announcements')
-            .select('*')
+            .select(ANNOUNCEMENT_FIELDS)
             .order('datetime', { ascending: true })
             .limit(200);
           rows = (refreshed || rows) as Announcement[];

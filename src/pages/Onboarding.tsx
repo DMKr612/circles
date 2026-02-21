@@ -1,81 +1,373 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { useLocation, useNavigate, Link } from "react-router-dom";
-import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
-import type { User } from "@supabase/supabase-js";
-import { Clock3, Download, ShieldCheck, Sparkles, Users2 } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { motion, useReducedMotion } from "framer-motion";
 import { supabase } from "@/lib/supabase";
+import { reverseGeocodeCity } from "@/lib/geocode";
 import { useAuth } from "@/App";
 
-type Slide = {
-  title: string;
-  text: string;
-  image: string;
-};
-
-// Minimal type for beforeinstallprompt (not in TS lib)
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
-const SLIDES: Slide[] = [
-  {
-    title: "Find your people",
-    text: "Start a circle that feels like friends, not followers.",
-    image: `${import.meta.env.BASE_URL}image.png`,
-  },
-  {
-    title: "Trusted by Design",
-    text: "Safety first. All profiles are verified, so you can meet others with confidence.",
-    image: `${import.meta.env.BASE_URL}image2.png`,
-  },
-  {
-    title: "Matched, not random",
-    text: "We use AI to understand personalities and build balanced groups where conversations flow naturally.",
-    image: `${import.meta.env.BASE_URL}image3.png`,
-  },
-  {
-    title: "Real plans, real meetings",
-    text: "We focus on clear dates, verified hosts, and actual activities. No ghosting, no flaking.",
-    image: `${import.meta.env.BASE_URL}image4.png`,
-  },
-  {
-    title: "Signal, not noise",
-    text: "No endless feed. Just what matters to turn conversations into real-world meetups.",
-    image: `${import.meta.env.BASE_URL}image5.png`,
-  },
+type FlowStep = 0 | 1 | 2 | 3 | 4 | 5;
+
+type CircleTemplate = {
+  id: string;
+  name: string;
+  interest: string;
+  members: number;
+  daysAhead: number;
+};
+
+type NearbyCircle = {
+  id: string;
+  name: string;
+  city: string;
+  members: number;
+  nextMeetup: string;
+  source: "live" | "sample";
+};
+
+const INTEREST_OPTIONS = ["Games", "Study", "Outdoors", "Sports", "Music", "Other"];
+
+const CIRCLE_TEMPLATES: CircleTemplate[] = [
+  { id: "circle-1", name: "Board Game Fridays", interest: "Games", members: 6, daysAhead: 2 },
+  { id: "circle-2", name: "Sunset Walk Crew", interest: "Outdoors", members: 8, daysAhead: 3 },
+  { id: "circle-3", name: "Weekend Study Sprint", interest: "Study", members: 5, daysAhead: 4 },
+  { id: "circle-4", name: "City Soccer Group", interest: "Sports", members: 9, daysAhead: 5 },
+  { id: "circle-5", name: "Live Music Meetups", interest: "Music", members: 7, daysAhead: 6 },
 ];
+
+function formatMeetup(daysAhead: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + daysAhead);
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function readSessionValue(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function readSessionStep(): FlowStep {
+  const raw = readSessionValue("onboarding_step");
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed)) return 0;
+  if (parsed < 0 || parsed > 4) return 0;
+  return parsed as FlowStep;
+}
+
+function readSessionInterests(): string[] {
+  const raw = readSessionValue("onboarding_interests");
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x) => typeof x === "string");
+  } catch {
+    return [];
+  }
+}
+
+function readAccountHint(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem("onboarding_has_account_hint") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function getPresenceGuestId(): string {
+  const existing = readSessionValue("onboarding_presence_guest_id");
+  if (existing) return existing;
+
+  const generated = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+  try {
+    sessionStorage.setItem("onboarding_presence_guest_id", generated);
+  } catch {
+    // no-op
+  }
+
+  return generated;
+}
 
 export default function Onboarding() {
   const { user } = useAuth();
-  const isLoggedIn = !!user;
-  const [index, setIndex] = useState(0);
-  const [imgOk, setImgOk] = useState<boolean | null>(null);
-  const [email, setEmail] = useState("");
-  const [authErr, setAuthErr] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
-  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
-  const [showEmailForm, setShowEmailForm] = useState(false);
-  const [authBusy, setAuthBusy] = useState(false);
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [installing, setInstalling] = useState(false);
-  const [isInstalled, setIsInstalled] = useState(false);
   const navigate = useNavigate();
   const location = useLocation() as any;
   const prefersReducedMotion = useReducedMotion();
-  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const [hasAccountHint, setHasAccountHint] = useState<boolean>(() => readAccountHint());
+  const [onlineCount, setOnlineCount] = useState(0);
+  const [onlineReady, setOnlineReady] = useState(false);
+
+  const [step, setStep] = useState<FlowStep>(() => readSessionStep());
+  const [stepErr, setStepErr] = useState<string | null>(null);
+
+  const [cityInput, setCityInput] = useState(() => readSessionValue("onboarding_city") || "");
+  const [detectedCity, setDetectedCity] = useState("");
+  const [locationBusy, setLocationBusy] = useState(false);
+  const [locationErr, setLocationErr] = useState<string | null>(null);
+
+  const [interests, setInterests] = useState<string[]>(() => readSessionInterests());
+  const [selectedCircleId, setSelectedCircleId] = useState<string | null>(() => readSessionValue("onboarding_circle"));
+  const [liveCircles, setLiveCircles] = useState<NearbyCircle[]>([]);
+  const [circlesLoading, setCirclesLoading] = useState(false);
+
+  const [authMode, setAuthMode] = useState<"signin" | "signup">(() => (readAccountHint() ? "signin" : "signup"));
+  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authErr, setAuthErr] = useState<string | null>(null);
+
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(false);
+
   const redirectTimerRef = useRef<number | null>(null);
   const hasQueuedRedirectRef = useRef(false);
+  const markedUserRef = useRef<string | null>(null);
+  const joinedCircleRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    setImgOk(null);
-  }, [index]);
+  const city = cityInput.trim() || detectedCity.trim();
+
+  const sampleCircles = useMemo<NearbyCircle[]>(() => {
+    const matched = interests.length
+      ? CIRCLE_TEMPLATES.filter((c) => interests.includes(c.interest) || c.interest === "Other")
+      : CIRCLE_TEMPLATES;
+
+    const ordered = [...matched, ...CIRCLE_TEMPLATES.filter((c) => !matched.some((m) => m.id === c.id))];
+
+    return ordered.slice(0, 3).map((c) => ({
+      id: c.id,
+      name: c.name,
+      nextMeetup: formatMeetup(c.daysAhead),
+      city: city || "Near you",
+      members: c.members,
+      source: "sample",
+    }));
+  }, [city, interests]);
+
+  const circles = liveCircles.length ? liveCircles : sampleCircles;
+
+  const computeDestination = useCallback(() => {
+    const previous = location?.state?.from;
+    const stored = localStorage.getItem("postLoginRedirect");
+    const dest = stored || previous || "/profile";
+    if (stored) localStorage.removeItem("postLoginRedirect");
+    return location.pathname.includes("onboarding") ? "/profile" : dest;
+  }, [location.pathname, location.state]);
+
+  const queueProfileRedirect = useCallback((dest: string) => {
+    if (hasQueuedRedirectRef.current) return;
+    hasQueuedRedirectRef.current = true;
+    if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
+    redirectTimerRef.current = window.setTimeout(() => {
+      navigate(dest, { replace: true });
+    }, 700);
+  }, [navigate]);
+
+  const markOnboarded = useCallback(async (userId: string) => {
+    localStorage.setItem("onboardingSeen", "1");
+    try {
+      await supabase
+        .from("profiles")
+        .update({ onboarded: true })
+        .eq("user_id", userId);
+    } catch (err) {
+      console.error("Failed to update onboarding:", err);
+    }
+  }, []);
+
+  const clearOnboardingDraft = useCallback(() => {
+    try {
+      sessionStorage.removeItem("onboarding_step");
+      sessionStorage.removeItem("onboarding_city");
+      sessionStorage.removeItem("onboarding_interests");
+      sessionStorage.removeItem("onboarding_circle");
+    } catch {
+      // no-op
+    }
+  }, []);
+
+  const ensureJoinedCircle = useCallback(async (groupId: string, userId: string) => {
+    try {
+      const nowIso = new Date().toISOString();
+      const { error } = await supabase
+        .from("group_members")
+        .upsert(
+          {
+            group_id: groupId,
+            user_id: userId,
+            role: "member",
+            status: "active",
+            last_joined_at: nowIso,
+          },
+          { onConflict: "group_id,user_id" }
+        );
+      if (error) throw error;
+    } catch (err) {
+      console.error("Failed to join selected circle:", err);
+    }
+  }, []);
 
   useEffect(() => {
     return () => {
       if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem("onboarding_step", String(Math.min(step, 4)));
+      sessionStorage.setItem("onboarding_city", cityInput);
+      sessionStorage.setItem("onboarding_interests", JSON.stringify(interests));
+      if (selectedCircleId) sessionStorage.setItem("onboarding_circle", selectedCircleId);
+      else sessionStorage.removeItem("onboarding_circle");
+    } catch {
+      // no-op
+    }
+  }, [cityInput, interests, selectedCircleId, step]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("onboarding_has_account_hint", hasAccountHint ? "1" : "0");
+    } catch {
+      // no-op
+    }
+  }, [hasAccountHint]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    setHasAccountHint(true);
+  }, [user?.id]);
+
+  useEffect(() => {
+    let active = true;
+    const presenceKey = user?.id ? `user:${user.id}` : `guest:${getPresenceGuestId()}`;
+    const channel = supabase.channel("presence:onboarding:lobby", {
+      config: { presence: { key: presenceKey } },
+    });
+
+    channel.on("presence", { event: "sync" }, () => {
+      if (!active) return;
+      const state = channel.presenceState() as Record<string, Array<{ user_id?: string | null }>>;
+      setOnlineCount(Object.keys(state).length);
+      setOnlineReady(true);
+    });
+
+    channel.subscribe(async (status) => {
+      if (!active) return;
+      if (status === "SUBSCRIBED") {
+        try {
+          await channel.track({
+            user_id: user?.id ?? null,
+            route: "onboarding",
+            online_at: new Date().toISOString(),
+          });
+        } catch {
+          // no-op
+        }
+      }
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        setOnlineReady(false);
+      }
+    });
+
+    return () => {
+      active = false;
+      supabase.removeChannel(channel);
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (step !== 3) return;
+
+    let cancelled = false;
+
+    const loadLiveCircles = async () => {
+      setCirclesLoading(true);
+      try {
+        let query = supabase
+          .from("groups")
+          .select("id,title,city,capacity,created_at")
+          .eq("visibility", "public")
+          .order("created_at", { ascending: false })
+          .limit(12);
+
+        if (city) query = query.ilike("city", `%${city}%`);
+
+        const { data, error } = await query;
+        if (error || !data?.length) {
+          if (!cancelled) setLiveCircles([]);
+          return;
+        }
+
+        const picked = data.slice(0, 3);
+        const nowIso = new Date().toISOString();
+
+        const hydrated = await Promise.all(
+          picked.map(async (g: any) => {
+            const [memberRes, eventRes] = await Promise.all([
+              supabase
+                .from("group_members")
+                .select("*", { count: "exact", head: true })
+                .eq("group_id", g.id)
+                .in("status", ["active", "accepted"]),
+              supabase
+                .from("group_events")
+                .select("starts_at")
+                .eq("group_id", g.id)
+                .not("starts_at", "is", null)
+                .gte("starts_at", nowIso)
+                .order("starts_at", { ascending: true })
+                .limit(1),
+            ]);
+
+            const members = !memberRes.error && typeof memberRes.count === "number"
+              ? memberRes.count
+              : Math.max(1, Number(g.capacity) || 1);
+
+            const startsAt = eventRes.data?.[0]?.starts_at || null;
+            const nextMeetup = startsAt
+              ? new Date(startsAt).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
+              : formatMeetup(3);
+
+            return {
+              id: g.id,
+              name: g.title || "Circle",
+              city: g.city || city || "Near you",
+              members,
+              nextMeetup,
+              source: "live" as const,
+            };
+          })
+        );
+
+        if (!cancelled) setLiveCircles(hydrated);
+      } catch {
+        if (!cancelled) setLiveCircles([]);
+      } finally {
+        if (!cancelled) setCirclesLoading(false);
+      }
+    };
+
+    void loadLiveCircles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [city, step]);
 
   useEffect(() => {
     const checkStandalone = () => {
@@ -108,141 +400,120 @@ export default function Onboarding() {
     };
   }, []);
 
-  const computeDestination = useCallback(() => {
-    const previous = location?.state?.from;
-    const stored = localStorage.getItem("postLoginRedirect");
-    const dest = stored || previous || "/profile";
-
-    if (stored) localStorage.removeItem("postLoginRedirect");
-    return location.pathname.includes("onboarding") ? "/profile" : dest;
-  }, [location.pathname, location.state]);
-
-  const queueProfileRedirect = useCallback((dest: string) => {
-    if (hasQueuedRedirectRef.current) return;
-    hasQueuedRedirectRef.current = true;
-
-    if (redirectTimerRef.current) window.clearTimeout(redirectTimerRef.current);
-    redirectTimerRef.current = window.setTimeout(() => {
-      navigate(dest, { replace: true });
-    }, 2000);
-  }, [navigate]);
-
-  const handleSignedIn = useCallback((sessionUser: User) => {
-    if (hasQueuedRedirectRef.current) return;
-
-    localStorage.setItem("onboardingSeen", "1");
-    (async () => {
-      try {
-        await supabase
-          .from("profiles")
-          .update({ onboarded: true })
-          .eq("user_id", sessionUser.id);
-      } catch (err) {
-        console.error("Failed to update onboarding:", err);
-      }
-    })();
-
-    queueProfileRedirect(computeDestination());
-  }, [computeDestination, queueProfileRedirect]);
-
-  // Only redirect after an explicit SIGNED_IN event (skip initial cached session to stay on onboarding)
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event !== "SIGNED_IN" || !session?.user) return;
-
-      handleSignedIn(session.user);
-    });
-
-    return () => subscription.unsubscribe();
-  }, [handleSignedIn]);
-
-  useEffect(() => {
-    if (!user) return;
-    handleSignedIn(user);
-  }, [handleSignedIn, user]);
-
-  const isLast = index === SLIDES.length - 1;
-
-  const duration = prefersReducedMotion ? 0 : 0.45;
-  const transition = useMemo(() => ({ duration, ease: [0.22, 1, 0.36, 1] as any }), [duration]);
-  const staggerVariants = useMemo(() => ({
-    hidden: {},
-    show: { transition: { staggerChildren: prefersReducedMotion ? 0 : 0.08 } },
-  }), [prefersReducedMotion]);
-  const revealVariants = useMemo(() => ({
-    hidden: { opacity: 0, y: prefersReducedMotion ? 0 : 14 },
-    show: { opacity: 1, y: 0, transition: { duration: prefersReducedMotion ? 0 : 0.6, ease: [0.22, 1, 0.36, 1] as any } },
-  }), [prefersReducedMotion]);
-  const pingClass = prefersReducedMotion ? "" : "animate-ping";
-
-  function goto(i: number) {
-    if (i < 0 || i >= SLIDES.length) return;
-    setIndex(i);
-  }
-
-  function next() {
-    setIndex((i) => Math.min(i + 1, SLIDES.length - 1));
-  }
-
-  function back() {
-    setIndex((i) => Math.max(i - 1, 0));
-  }
-
-  // keyboard navigation
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const key = e.key?.toLowerCase?.();
-      if (!key) return;
-      if (key === "arrowright") next();
-      if (key === "arrowleft") back();
-      if (key === "escape") skip();
+    if (!user) {
+      markedUserRef.current = null;
+      return;
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+
+    if (markedUserRef.current !== user.id) {
+      markedUserRef.current = user.id;
+      void markOnboarded(user.id);
+    }
+
+    if (selectedCircleId) {
+      const joinKey = `${user.id}:${selectedCircleId}`;
+      if (joinedCircleRef.current !== joinKey) {
+        joinedCircleRef.current = joinKey;
+        void ensureJoinedCircle(selectedCircleId, user.id);
+      }
+      setStep(5);
+      return;
+    }
+
+    clearOnboardingDraft();
+    queueProfileRedirect(computeDestination());
+  }, [clearOnboardingDraft, computeDestination, ensureJoinedCircle, markOnboarded, queueProfileRedirect, selectedCircleId, user]);
+
+  const detectLocation = useCallback(() => {
+    if (!("geolocation" in navigator)) {
+      setLocationErr("Location not available on this device.");
+      return;
+    }
+
+    setLocationBusy(true);
+    setLocationErr(null);
+
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+
+        try {
+          const reverse = await reverseGeocodeCity({ lat, lng });
+          const name = reverse?.city?.trim();
+          setDetectedCity(name || `${lat.toFixed(2)}, ${lng.toFixed(2)}`);
+        } catch {
+          setDetectedCity(`${lat.toFixed(2)}, ${lng.toFixed(2)}`);
+        } finally {
+          setLocationBusy(false);
+        }
+      },
+      () => {
+        setLocationBusy(false);
+        setLocationErr("Could not detect location. Enter your city manually.");
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   }, []);
 
-  function skip() {
-    localStorage.setItem("onboardingSeen", "1");
-    setIndex(SLIDES.length - 1);
-    setShowEmailForm(true);
+  function toggleInterest(value: string) {
+    setStepErr(null);
+    setInterests((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
   }
 
-  // swipe/drag navigation
-  const dragThreshold = 90;
-  function handleDragEnd(_: any, info: { offset: { x: number } }) {
-    const x = info?.offset?.x ?? 0;
-    if (x <= -dragThreshold) next();
-    else if (x >= dragThreshold) back();
+  function continueFromLocation() {
+    if (!city) {
+      setStepErr("Enter your city to continue.");
+      return;
+    }
+    setStepErr(null);
+    setStep(2);
   }
 
-  // segmented progress (0..100)
-  const progressPct = ((index + 1) / SLIDES.length) * 100;
+  function continueFromInterests() {
+    if (!interests.length) {
+      setStepErr("Pick at least one interest.");
+      return;
+    }
+    setStepErr(null);
+    setStep(3);
+  }
+
+  function continueFromCircles() {
+    if (!selectedCircleId) {
+      setStepErr("Join one circle to continue.");
+      return;
+    }
+    setStepErr(null);
+    setStep(4);
+  }
 
   async function submitCreds(e: React.FormEvent) {
     e.preventDefault();
     setAuthErr(null);
+
     if (!email.trim() || !password.trim()) {
       setAuthErr("Enter email and password");
       return;
     }
+
     try {
       setAuthBusy(true);
+
       if (authMode === "signup") {
         const { data, error } = await supabase.auth.signUp({ email: email.trim(), password: password.trim() });
         if (error) throw error;
-        localStorage.setItem("onboardingSeen", "1");
-        if (data?.user && data?.session) {
-          navigate("/profile", { replace: true });
-        } else {
+        setHasAccountHint(true);
+
+        if (!data?.session) {
           setAuthErr("Check your email to confirm your account, then sign in.");
+          return;
         }
       } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: password.trim() });
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: password.trim() });
         if (error) throw error;
-        localStorage.setItem("onboardingSeen", "1");
-        if (data?.user) {
-          navigate("/profile", { replace: true });
-        }
+        setHasAccountHint(true);
       }
     } catch (err: any) {
       setAuthErr(err?.message ?? "Authentication failed");
@@ -253,13 +524,12 @@ export default function Onboarding() {
 
   const installApp = useCallback(async () => {
     if (!installPrompt) return;
+
     try {
       setInstalling(true);
       await installPrompt.prompt();
       const { outcome } = await installPrompt.userChoice;
-      if (outcome === "accepted") {
-        setIsInstalled(true);
-      }
+      if (outcome === "accepted") setIsInstalled(true);
     } catch (err) {
       console.error("Install prompt failed", err);
     } finally {
@@ -268,307 +538,414 @@ export default function Onboarding() {
     }
   }, [installPrompt]);
 
+  const heroCtaLabel = hasAccountHint ? "Sign In" : "Get Started";
+  const onlineCountLabel = onlineReady ? onlineCount.toLocaleString() : "…";
+  const onlineSuffixLabel = onlineReady
+    ? `${onlineCount === 1 ? "person" : "people"} online now.`
+    : "checking how many people are online...";
+
+  function handleHeroPrimaryClick() {
+    setStepErr(null);
+    setAuthErr(null);
+
+    if (hasAccountHint) {
+      setAuthMode("signin");
+      setShowEmailForm(false);
+      setStep(4);
+      return;
+    }
+
+    setStep(1);
+  }
+
+  function goBackToLanding() {
+    navigate("/");
+  }
+
   return (
     <div
-      ref={containerRef}
       style={{
-        "--paper": "#f6f1e8",
-        "--ink": "#161515",
-        "--coral": "#ff7a59",
-        "--coral-soft": "#ffd1bf",
-        "--mint": "#77d7c3",
-        "--sky": "#9bc9ff",
-        "--sun": "#ffd887",
+        "--paper": "#e7edf8",
+        "--ink": "#1f2c47",
+        "--muted": "#5f7090",
+        "--accent": "#7166ff",
+        "--cta-from": "#1b2b67",
+        "--cta-to": "#2951a6",
       } as CSSProperties}
       className="relative min-h-dvh w-full overflow-hidden bg-[color:var(--paper)] text-[color:var(--ink)]"
       aria-label="Onboarding"
     >
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute -left-32 -top-32 h-[28rem] w-[28rem] rounded-full bg-[radial-gradient(circle,rgba(255,209,191,0.75),transparent_65%)] blur-3xl" />
-        <div className="absolute right-[-18%] top-[12%] h-[24rem] w-[24rem] rounded-full bg-[radial-gradient(circle,rgba(119,215,195,0.65),transparent_60%)] blur-3xl" />
-        <div className="absolute bottom-[-24%] left-[30%] h-[26rem] w-[26rem] rounded-full bg-[radial-gradient(circle,rgba(155,201,255,0.55),transparent_65%)] blur-3xl" />
-        <div
-          className="absolute inset-0 bg-[radial-gradient(circle_at_1px_1px,rgba(15,23,42,0.12)_1px,transparent_0)] opacity-30"
-          style={{ backgroundSize: "18px 18px" }}
-        />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_14%_10%,rgba(138,120,255,0.34)_0,transparent_42%),radial-gradient(circle_at_88%_18%,rgba(56,128,255,0.24)_0,transparent_40%),radial-gradient(circle_at_20%_78%,rgba(255,255,255,0.72)_0,transparent_44%),radial-gradient(circle_at_84%_86%,rgba(120,176,255,0.24)_0,transparent_38%)]" />
+        <div className="absolute -left-20 -top-10 h-[26rem] w-[26rem] rounded-full bg-violet-300/26 blur-3xl" />
+        <div className="absolute right-[-10%] top-14 h-[24rem] w-[24rem] rounded-full bg-blue-300/24 blur-3xl" />
+        <div className="absolute -bottom-20 left-[-6%] h-[20rem] w-[20rem] rounded-full bg-white/45 blur-3xl" />
+        <div className="absolute bottom-[-14%] right-[-2%] h-[24rem] w-[24rem] rounded-full bg-[radial-gradient(circle,rgba(120,164,255,0.4),transparent_64%)] blur-3xl" />
       </div>
 
-      <div className="relative mx-auto flex min-h-dvh max-w-6xl flex-col px-6 py-6 lg:py-10">
-        <header className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="grid h-12 w-12 place-items-center overflow-hidden rounded-2xl bg-white/80 ring-1 ring-black/5 shadow-sm">
-              <img
-                src={`${import.meta.env.BASE_URL}image5.png`}
-                alt="Circles"
-                className="h-full w-full object-cover"
-              />
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.32em] text-slate-500">Circles</p>
-              <p className="text-base font-semibold text-slate-900">close-communities, IRL ready</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <span className="hidden md:inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-black/10 shadow-sm">
-              <ShieldCheck className="h-4 w-4 text-emerald-600" />
-              Invite-only privacy by design
-            </span>
+      {step === 0 ? (
+        <div className="relative mx-auto flex min-h-dvh w-full max-w-5xl flex-col items-center px-6 pb-10 pt-10 text-center md:px-10 md:pt-12">
+          <div className="w-full">
             <button
-              onClick={skip}
-              className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:shadow-xl"
+              type="button"
+              onClick={goBackToLanding}
+              className="inline-flex items-center rounded-full border border-black/10 bg-white/80 px-4 py-2 text-sm font-semibold text-slate-800 shadow-sm transition hover:bg-white"
             >
-              Skip tour
+              Back to landing
             </button>
           </div>
-        </header>
 
-        <div className="mt-8 grid flex-1 items-center gap-8 lg:grid-cols-[1.05fr,1fr]">
-          <motion.div
-            variants={staggerVariants}
-            initial="hidden"
-            animate="show"
-            className="space-y-6"
-          >
-            <motion.div
-              variants={revealVariants}
-              className="inline-flex items-center gap-3 rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-black/10 shadow-sm"
-            >
-              <span className="relative flex h-2 w-2">
-                <span className={`absolute inline-flex h-full w-full ${pingClass} rounded-full bg-[color:var(--coral)] opacity-70`} />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-[color:var(--coral)]" />
-              </span>
-              Step {index + 1} of {SLIDES.length} - guided setup
-            </motion.div>
-            <motion.h1
-              variants={revealVariants}
-              className="text-4xl font-black leading-tight sm:text-6xl text-slate-900"
-            >
-              From On-line to On-Life,{" "}
-              <span className="bg-gradient-to-r from-[color:var(--coral)] via-[color:var(--sun)] to-[color:var(--mint)] bg-clip-text text-transparent">
-                Smarter
-              </span>
-              .
-            </motion.h1>
-            <motion.p variants={revealVariants} className="max-w-2xl text-lg text-slate-700">
-              Create a circle or join one, connect with people like yourself, vote on plans or create one, and lock a time in days.
-            </motion.p>
-
-            <motion.div variants={staggerVariants} className="grid gap-3 sm:grid-cols-2">
-              {[
-                { icon: Users2, title: "Right-sized groups", desc: "Small cohorts keep discussion high signal and coordination simple." },
-                { icon: ShieldCheck, title: "Verified + private", desc: "Transparent permissions, opt-in sharing, and RLS-secured data." },
-                { icon: Sparkles, title: "Actionable threads", desc: "Polls, check-ins, and agendas instead of endless scrolling." },
-                { icon: Clock3, title: "Designed for calm", desc: "Smart pacing, quiet hours, and dependable reminders." },
-              ].map((item) => (
-                <motion.div
-                  key={item.title}
-                  variants={revealVariants}
-                  className="flex items-start gap-3 rounded-2xl border border-black/10 bg-white/80 px-4 py-3 shadow-[0_18px_50px_rgba(15,23,42,0.08)] backdrop-blur"
-                >
-                  <item.icon className="mt-1 h-5 w-5 text-[color:var(--coral)]" />
-                  <div>
-                    <p className="font-semibold text-slate-900">{item.title}</p>
-                    <p className="text-sm text-slate-600">{item.desc}</p>
-                  </div>
-                </motion.div>
-              ))}
-            </motion.div>
-          </motion.div>
-
-          <motion.div
-            initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 16 }}
+          <motion.header
+            initial={{ opacity: 0, y: prefersReducedMotion ? 0 : -14 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: [0.22, 1, 0.36, 1] as any }}
-            className="relative"
+            transition={{ duration: prefersReducedMotion ? 0 : 0.45, ease: "easeOut" }}
+            className="relative mt-4 inline-flex items-center justify-center"
           >
-            <div className="relative overflow-hidden rounded-3xl border border-black/10 bg-white/80 shadow-[0_40px_100px_rgba(15,23,42,0.15)] ring-1 ring-white/70 backdrop-blur">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_18%,rgba(255,255,255,0.85),transparent_55%),radial-gradient(circle_at_82%_35%,rgba(255,220,180,0.45),transparent_48%)]" />
-              <div className="relative flex flex-col gap-6 px-6 py-7 sm:px-8">
-                <div className="flex items-center justify-between text-xs uppercase tracking-[0.16em] text-slate-500">
-                  <span className="font-semibold text-slate-700">Preview</span>
-                  <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-white">Swipe</span>
-                </div>
+            <div className="pointer-events-none absolute -inset-x-20 -inset-y-12 rounded-full bg-[radial-gradient(circle,rgba(110,98,255,0.48)_0%,rgba(56,124,255,0.34)_42%,transparent_72%)] blur-2xl" />
+            <img
+              src="/image5.png"
+              alt="Circles logo"
+              className="relative w-[min(86vw,33rem)] rounded-[1.8rem] object-cover ring-1 ring-white/45 shadow-[0_28px_70px_rgba(23,38,78,0.36)]"
+            />
+          </motion.header>
 
-                <div className="flex min-h-[28rem] flex-col items-center justify-center">
-                  <AnimatePresence mode="wait" initial={false}>
-                    <motion.div
-                      key={index}
-                      initial={{ opacity: 0, x: 60 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -60 }}
-                      transition={transition}
-                      className="w-full"
-                    >
-                      <div className="text-center space-y-3">
-                        <motion.div
-                          drag="x"
-                          dragConstraints={{ left: 0, right: 0 }}
-                          onDragEnd={handleDragEnd}
-                          className="select-none"
-                        >
-                          {imgOk === false ? (
-                            <div className="mx-auto mb-6 flex h-64 w-64 items-center justify-center rounded-2xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
-                              Missing image:
-                              <span className="ml-1 break-all">{SLIDES[index].image}</span>
-                            </div>
-                          ) : (
-                            <div className="relative mx-auto mb-6 w-full max-w-[32rem] overflow-hidden rounded-2xl border border-black/10 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.12)]">
-                              <div className="absolute inset-0 bg-gradient-to-t from-black/10 via-transparent to-white/40" />
-                              <img
-                                src={SLIDES[index].image}
-                                alt={SLIDES[index].title}
-                                className="h-auto w-full object-contain"
-                                draggable={false}
-                                onLoad={() => setImgOk(true)}
-                                onError={() => { console.error('Onboarding image failed to load:', SLIDES[index].image); setImgOk(false); }}
-                              />
-                            </div>
-                          )}
-                        </motion.div>
-                        <h1 className="text-3xl font-black text-slate-900">{SLIDES[index].title}</h1>
-                        <p className="text-base/7 text-slate-600">{SLIDES[index].text}</p>
+          <motion.main
+            initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 22 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.5, delay: prefersReducedMotion ? 0 : 0.05, ease: "easeOut" }}
+            className="mt-[13vh] flex w-full flex-1 flex-col items-center"
+          >
+            <h1 className="max-w-4xl text-balance text-[clamp(2.3rem,6.4vw,5rem)] font-bold leading-[1.06] tracking-[-0.02em] text-[color:var(--ink)]">
+              Meet your people this week.
+            </h1>
+            <p className="mt-5 max-w-xl text-balance text-[clamp(1.15rem,2.2vw,1.9rem)] font-medium text-[color:var(--muted)]">
+              Join small trusted circles near you.
+            </p>
 
-                        <div className="mx-auto mt-6 w-full max-w-sm text-left">
-                          {!isInstalled && isLoggedIn && (
-                            <div className="mb-4 flex items-center justify-between rounded-xl border border-black/10 bg-white/80 px-4 py-3 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
-                              <div className="flex items-start gap-2">
-                                <Download className="mt-0.5 h-5 w-5 text-[color:var(--coral)]" />
-                                <div>
-                                  <p className="font-semibold text-slate-900">Install Circles</p>
-                                  <p className="text-xs text-slate-500">
-                                    {installPrompt ? "Add it as a standalone app for quick access." : "In Chrome: tap the address bar + or ⋮ → Install app."}
-                                  </p>
-                                </div>
-                              </div>
-                              {installPrompt ? (
-                                <button
-                                  onClick={installApp}
-                                  disabled={installing}
-                                  className="rounded-full bg-slate-900 px-3 py-2 text-xs font-semibold text-white shadow transition hover:-translate-y-0.5 hover:shadow-lg disabled:cursor-not-allowed disabled:opacity-70"
-                                >
-                                  {installing ? "Installing…" : "Install"}
-                                </button>
-                              ) : (
-                                <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-black/5">
-                                  Open in Chrome to install
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          {!showEmailForm ? (
-                            <>
-                              <div className="grid grid-cols-1 gap-3">
-                                <button
-                                  onClick={() => { setShowEmailForm(true); setAuthErr(null); }}
-                                  className="w-full rounded-xl bg-gradient-to-r from-[color:var(--coral)] via-[color:var(--sun)] to-[color:var(--mint)] px-4 py-3 font-semibold text-slate-900 shadow-lg shadow-orange-500/20 transition hover:-translate-y-0.5 hover:shadow-xl"
-                                >
-                                  Continue with Email
-                                </button>
-                              </div>
+            <div className="mt-12 w-full max-w-xl rounded-[2rem] border border-white/72 bg-white/70 px-5 py-8 shadow-[0_24px_80px_rgba(17,30,56,0.18)] backdrop-blur-md">
+              <button
+                type="button"
+                onClick={handleHeroPrimaryClick}
+                className="mx-auto block w-full max-w-[20rem] rounded-[1rem] bg-[linear-gradient(120deg,var(--cta-from),var(--cta-to)_54%,#1f3f7d)] px-7 py-4 text-[clamp(1.55rem,6vw,1.95rem)] font-bold leading-tight text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_14px_28px_rgba(13,28,58,0.4)] transition hover:-translate-y-0.5 hover:brightness-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent)]/70 focus-visible:ring-offset-2"
+              >
+                {heroCtaLabel}
+              </button>
+              <p className="mt-5 text-[1.15rem] font-medium text-[color:var(--muted)]">
+                {hasAccountHint ? "Welcome back." : "Takes less than 30 seconds"}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  const nextHasAccount = !hasAccountHint;
+                  setHasAccountHint(nextHasAccount);
+                  setAuthMode(nextHasAccount ? "signin" : "signup");
+                }}
+                className="mt-3 text-sm font-semibold text-[color:var(--ink)]/72 underline-offset-2 hover:underline"
+              >
+                {hasAccountHint ? "New here? Get Started" : "Already have an account? Sign In"}
+              </button>
+            </div>
 
-                              <p className="mt-4 text-center text-[10px] text-slate-500">
-                                By continuing, you agree to our{" "}
-                                <Link to="/legal" className="underline text-slate-700 hover:text-slate-900">
-                                  Terms & Privacy Policy
-                                </Link>
-                                .
-                              </p>
-                            </>
-                          ) : (
-                            <form onSubmit={submitCreds} className="grid grid-cols-1 gap-3">
-                              <input
-                                type="email"
-                                placeholder="you@example.com"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-slate-900 placeholder-slate-400 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-black/10"
-                              />
-                              <input
-                                type="password"
-                                placeholder="Password (min 6)"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-3 text-slate-900 placeholder-slate-400 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-black/10"
-                              />
-                              <button
-                                type="submit"
-                                disabled={authBusy}
-                                className={`w-full rounded-xl px-4 py-3 font-semibold shadow-lg shadow-black/10 transition ${authBusy ? "cursor-not-allowed bg-slate-200 text-slate-500" : "bg-slate-900 text-white hover:-translate-y-0.5 hover:shadow-xl"}`}
-                              >
-                                {authBusy ? "Please wait…" : authMode === "signup" ? "Sign up" : "Sign in"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setAuthMode(authMode === "signup" ? "signin" : "signup")}
-                                className="text-sm font-semibold text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
-                              >
-                                {authMode === "signup" ? "Have an account? Sign in" : "No account? Sign up"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setShowEmailForm(false)}
-                                className="text-xs text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
-                              >
-                                ← Back to options
-                              </button>
-                            </form>
-                          )}
-                          {authErr && <div className="mt-3 rounded-lg border border-red-200/70 bg-red-50/90 px-3 py-2 text-sm text-red-800">{authErr}</div>}
-                        </div>
-                      </div>
-                    </motion.div>
-                  </AnimatePresence>
-                </div>
+            {stepErr ? <p className="mt-4 text-sm text-red-700">{stepErr}</p> : null}
+          </motion.main>
 
-                <div className={`${isLast && showEmailForm ? "hidden" : ""} space-y-3`}>
-                  <div className="h-1.5 w-full rounded-full bg-slate-200 ring-1 ring-black/5">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-[color:var(--coral)] via-[color:var(--sun)] to-[color:var(--mint)] transition-all"
-                      style={{ width: `${progressPct}%` }}
-                      aria-hidden
-                    />
-                  </div>
-                  <div className="sr-only" role="status" aria-live="polite">
-                    {Math.round(progressPct)} percent complete
-                  </div>
-
-                  <div className="flex items-center justify-between gap-3">
-                    <button
-                      onClick={back}
-                      disabled={index === 0}
-                      className="rounded-full border border-black/10 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-black/20 hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
-                      aria-label="Previous"
-                    >
-                      Back
-                    </button>
-
-                    <div className="flex gap-2">
-                      {SLIDES.map((_, i) => (
-                        <button
-                          key={i}
-                          aria-label={`Go to slide ${i + 1}`}
-                          onClick={() => goto(i)}
-                          className={`h-3 w-3 rounded-full transition ${i === index ? "bg-slate-900 shadow-[0_0_0_6px_rgba(15,23,42,0.12)]" : "bg-slate-300 hover:bg-slate-400"}`}
-                        />
-                      ))}
-                    </div>
-
-                    <button
-                      onClick={next}
-                      className="rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-black/10 transition hover:-translate-y-0.5 hover:shadow-xl"
-                      aria-label={isLast ? "Login" : "Next"}
-                    >
-                      {isLast ? "Login" : "Next"}
-                    </button>
-                  </div>
-                </div>
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.45, delay: prefersReducedMotion ? 0 : 0.12 }}
+            className="mt-auto pb-4 text-[clamp(1.05rem,2vw,1.65rem)] text-[color:var(--muted)]"
+          >
+            <span className="font-semibold text-[color:var(--ink)]">{onlineCountLabel}</span> {onlineSuffixLabel}
+          </motion.p>
+        </div>
+      ) : (
+        <div className="relative mx-auto flex min-h-dvh w-full max-w-xl flex-col px-6 py-8">
+          <header className="flex items-center justify-between">
+            <div className="inline-flex items-center gap-3">
+              <button
+                type="button"
+                onClick={goBackToLanding}
+                className="rounded-full border border-black/10 bg-white/80 px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-sm transition hover:bg-white"
+              >
+                Back
+              </button>
+              <div className="inline-flex items-center rounded-2xl border border-white/60 bg-white/80 p-2 shadow-sm">
+                <img
+                  src="/image5.png"
+                  alt="Circles logo"
+                  className="h-12 w-12 rounded-lg object-cover"
+                />
               </div>
             </div>
-          </motion.div>
-        </div>
-      </div>
 
+            {step > 0 && step < 5 ? (
+              <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-black/10">
+                Step {Math.min(step, 4)} of 4
+              </span>
+            ) : null}
+          </header>
+
+          <main className="flex flex-1 items-center">
+            <motion.section
+              key={step}
+              initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 16 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: prefersReducedMotion ? 0 : 0.35, ease: "easeOut" }}
+              className="mt-6 w-full rounded-3xl border border-black/10 bg-white/85 p-6 shadow-[0_28px_80px_rgba(15,23,42,0.12)] backdrop-blur"
+            >
+
+            {step === 1 ? (
+              <div className="space-y-5">
+                <h1 className="text-3xl font-black text-slate-900">Where are you located?</h1>
+                <p className="text-base text-slate-700">We&apos;ll show circles near you.</p>
+
+                <div className="space-y-3">
+                  <button
+                    type="button"
+                    onClick={detectLocation}
+                    disabled={locationBusy}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {locationBusy ? "Detecting location..." : "Auto-detect location"}
+                  </button>
+
+                  <input
+                    type="text"
+                    value={cityInput}
+                    onChange={(e) => {
+                      setCityInput(e.target.value);
+                      setStepErr(null);
+                    }}
+                    placeholder="Or type your city"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                  />
+
+                  {detectedCity ? <p className="text-sm font-medium text-emerald-700">Detected: {detectedCity}</p> : null}
+                  {locationErr ? <p className="text-sm text-red-700">{locationErr}</p> : null}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={continueFromLocation}
+                  className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black"
+                >
+                  Continue
+                </button>
+              </div>
+            ) : null}
+
+            {step === 2 ? (
+              <div className="space-y-5">
+                <h1 className="text-3xl font-black text-slate-900">What are you into?</h1>
+                <p className="text-base text-slate-700">Pick what fits you.</p>
+
+                <div className="flex flex-wrap gap-2">
+                  {INTEREST_OPTIONS.map((option) => {
+                    const active = interests.includes(option);
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        onClick={() => toggleInterest(option)}
+                        className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
+                          active
+                            ? "bg-slate-900 text-white"
+                            : "border border-slate-300 bg-white text-slate-800 hover:border-slate-400"
+                        }`}
+                      >
+                        {option}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={continueFromInterests}
+                  className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black"
+                >
+                  Continue
+                </button>
+              </div>
+            ) : null}
+
+            {step === 3 ? (
+              <div className="space-y-5">
+                <h1 className="text-3xl font-black text-slate-900">Here are circles near you.</h1>
+                <p className="text-base text-slate-700">Join one to continue.</p>
+
+                <div className="space-y-3">
+                  {circlesLoading ? <p className="text-sm text-slate-600">Finding circles near you...</p> : null}
+
+                  {circles.map((circle) => {
+                    const joined = selectedCircleId === circle.id;
+                    return (
+                      <div key={circle.id} className="rounded-2xl border border-slate-200 bg-white p-4">
+                        <p className="text-base font-semibold text-slate-900">{circle.name}</p>
+                        <p className="mt-1 text-sm text-slate-600">{circle.city}</p>
+                        <div className="mt-2 flex items-center gap-3 text-xs font-medium text-slate-600">
+                          <span>{circle.members} members</span>
+                          <span>Next meetup {circle.nextMeetup}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedCircleId(circle.id);
+                            setStepErr(null);
+                          }}
+                          className={`mt-3 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                            joined
+                              ? "bg-emerald-600 text-white"
+                              : "border border-slate-300 bg-white text-slate-800 hover:border-slate-400"
+                          }`}
+                        >
+                          {joined ? "Joined" : "Join"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={continueFromCircles}
+                  className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black"
+                >
+                  Join one to continue
+                </button>
+              </div>
+            ) : null}
+
+            {step === 4 ? (
+              <div className="space-y-5">
+                <h1 className="text-3xl font-black text-slate-900">
+                  {authMode === "signin" ? "Sign in to continue." : "Create your account to join your first circle."}
+                </h1>
+                <p className="text-base text-slate-700">{authMode === "signin" ? "Welcome back." : "One quick step left."}</p>
+
+                {!showEmailForm ? (
+                  <div className="space-y-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowEmailForm(true);
+                        setAuthErr(null);
+                      }}
+                      className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black"
+                    >
+                      {authMode === "signin" ? "Sign in with email" : "Continue with email"}
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled
+                      aria-disabled="true"
+                      title="Google sign-in is currently locked"
+                      className="w-full cursor-not-allowed rounded-xl border border-slate-300 bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-500 opacity-80"
+                    >
+                      Google (Locked)
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled
+                      aria-disabled="true"
+                      title="Apple sign-in is currently locked"
+                      className="w-full cursor-not-allowed rounded-xl border border-slate-300 bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-500 opacity-80"
+                    >
+                      Apple (Locked)
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={submitCreds} className="space-y-3">
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="you@example.com"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                    />
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Password (min 6)"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                    />
+                    <button
+                      type="submit"
+                      disabled={authBusy}
+                      className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {authBusy ? "Please wait..." : authMode === "signup" ? "Sign up" : "Sign in"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextMode = authMode === "signup" ? "signin" : "signup";
+                        setAuthMode(nextMode);
+                        setHasAccountHint(nextMode === "signin");
+                      }}
+                      className="w-full text-sm font-semibold text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
+                    >
+                      {authMode === "signup" ? "Have an account? Sign in" : "No account? Sign up"}
+                    </button>
+                  </form>
+                )}
+
+                {authErr ? <p className="text-sm text-red-700">{authErr}</p> : null}
+                <p className="text-[11px] text-slate-500">
+                  By continuing, you agree to our <Link to="/legal" className="underline">Terms & Privacy Policy</Link>.
+                </p>
+              </div>
+            ) : null}
+
+            {step === 5 ? (
+              <div className="space-y-5">
+                <h1 className="text-3xl font-black text-slate-900">Add Circles to your home screen.</h1>
+                <p className="text-base text-slate-700">Get meetup reminders.</p>
+
+                {!isInstalled ? (
+                  <div className="space-y-3">
+                    {installPrompt ? (
+                      <button
+                        type="button"
+                        onClick={installApp}
+                        disabled={installing}
+                        className="w-full rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition hover:border-slate-400 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {installing ? "Installing..." : "Add to Home Screen"}
+                      </button>
+                    ) : (
+                      <p className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                        In Chrome: tap the address bar + or menu and choose Install app.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
+                    Circles is installed.
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    clearOnboardingDraft();
+                    navigate(computeDestination(), { replace: true });
+                  }}
+                  className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black"
+                >
+                  Continue to Circles
+                </button>
+              </div>
+            ) : null}
+
+            {stepErr ? <p className="mt-4 text-sm text-red-700">{stepErr}</p> : null}
+            </motion.section>
+          </main>
+        </div>
+      )}
     </div>
   );
 }

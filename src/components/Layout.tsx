@@ -4,6 +4,7 @@ import { useAuth } from "@/App";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useAppLanguage } from "@/state/language";
+import { ROUTES } from "@/constants/routes";
 
 
 export default function Layout() {
@@ -11,8 +12,8 @@ export default function Layout() {
   const { lang } = useAppLanguage();
   const location = useLocation();
   const active = location.pathname;
-  const hideNav = active.startsWith("/settings") || active.startsWith("/quiz");
-  const isChat = active.startsWith("/chats");
+  const hideNav = active.startsWith(ROUTES.SETTINGS) || active.startsWith("/quiz");
+  const isChat = active.startsWith(ROUTES.CHATS);
   const [chatBadge, setChatBadge] = useState(0);
   const [activityBadge, setActivityBadge] = useState(0);
   const [profileBadge, setProfileBadge] = useState(0);
@@ -151,11 +152,11 @@ export default function Layout() {
   }, [user?.id]);
 
   const isActive = (path: string) => {
-    if (path === "/groups") {
-      return active === "/groups" || active.startsWith("/groups/") || active.startsWith("/group/") || active.startsWith("/create");
+    if (path === ROUTES.GROUPS) {
+      return active === ROUTES.GROUPS || active.startsWith(`${ROUTES.GROUPS}/`) || active.startsWith("/group/") || active.startsWith(ROUTES.CREATE);
     }
-    if (path === "/notifications") {
-      return active === "/notifications" || active.startsWith("/notifications") || active.startsWith("/announcements");
+    if (path === ROUTES.NOTIFICATIONS) {
+      return active === ROUTES.NOTIFICATIONS || active.startsWith(ROUTES.NOTIFICATIONS) || active.startsWith(ROUTES.ANNOUNCEMENTS);
     }
     return active === path || active.startsWith(`${path}/`);
   };
@@ -167,31 +168,31 @@ export default function Layout() {
     kind: "browse" | "circles" | "chat" | "activity" | "profile";
   }> = [
     {
-      to: "/chats",
+      to: ROUTES.CHATS,
       label: lang === "de" ? "Chat" : lang === "fa" ? "چت" : "Chat",
       icon: MessageSquare,
       kind: "chat",
     },
     {
-      to: "/browse",
+      to: ROUTES.BROWSE,
       label: lang === "de" ? "Entdecken" : lang === "fa" ? "مرور" : "Browse",
       icon: Search,
       kind: "browse",
     },
     {
-      to: "/groups",
+      to: ROUTES.GROUPS,
       label: lang === "de" ? "Kreise" : lang === "fa" ? "حلقه‌ها" : "Circles",
       icon: null,
       kind: "circles",
     },
     {
-      to: "/notifications",
+      to: ROUTES.NOTIFICATIONS,
       label: lang === "de" ? "Aktivität" : lang === "fa" ? "فعالیت" : "Activity",
       icon: Bell,
       kind: "activity",
     },
     {
-      to: "/profile",
+      to: ROUTES.PROFILE,
       label: lang === "de" ? "Profil" : lang === "fa" ? "پروفایل" : "Profile",
       icon: User,
       kind: "profile",
@@ -212,7 +213,7 @@ export default function Layout() {
 
       {/* Main content wrapper with padding just enough for the nav */}
       <div className={`relative z-10 ${isChat ? "pb-0" : "pb-[calc(100px+env(safe-area-inset-bottom))]"}`}>
-        <div key={active} className="page-transition">
+        <div className="page-transition">
           <Outlet />
         </div>
       </div>

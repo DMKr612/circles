@@ -5,6 +5,7 @@ import { Calendar, Check, CheckCircle2, ChevronLeft, ChevronRight, MessageCircle
 import { useAuth } from "@/App";
 import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 import { getAvatarUrl } from "@/lib/avatar";
+import { routeToEventRating } from "@/constants/routes";
 
 type CalendarEntry = {
   id: string;
@@ -41,6 +42,7 @@ type ActivityDraft = {
   startsAt?: string | null;
   place?: string | null;
   text?: string | null;
+  eventId?: string | null;
 };
 
 const UUID_REGEX =
@@ -81,11 +83,16 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function buildMentionRegex(name: string | null | undefined, email: string | null | undefined): RegExp | null {
+function buildMentionRegex(
+  name: string | null | undefined,
+  email: string | null | undefined,
+  publicId: string | null | undefined
+): RegExp | null {
   const fromName = String(name || "").trim();
   const fromEmail = String(email || "").trim().split("@")[0] || "";
+  const fromPublicId = String(publicId || "").trim().replace(/^@+/, "");
   const first = fromName.split(/\s+/).filter(Boolean)[0] || "";
-  const candidates = Array.from(new Set([fromName, first, fromEmail].filter((v) => v.length >= 2)));
+  const candidates = Array.from(new Set([fromName, first, fromEmail, fromPublicId].filter((v) => v.length >= 2)));
   if (!candidates.length) return null;
   const pattern = candidates.map(escapeRegExp).join("|");
   return new RegExp(`@\\s*(?:${pattern})\\b`, "i");
@@ -146,7 +153,11 @@ function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
     title: "Rate your last meetup",
     description: `${groupTitle} • ${formatActivityDateTime(draft.startsAt || draft.createdAt)}`,
     actionLabel: "Rate",
-    actionTo: draft.groupId ? `/group/${draft.groupId}` : "/groups/mine",
+    actionTo: draft.eventId
+      ? routeToEventRating(draft.eventId, draft.groupId || undefined)
+      : draft.groupId
+        ? `/group/${draft.groupId}`
+        : "/groups/mine",
   };
 }
 
@@ -218,6 +229,56 @@ async function fetchFriendRequests(userId: string) {
   });
 }
 
+async function fetchSentFriendRequests(userId: string) {
+  const { data: pendingRows, error } = await supabase
+    .from("friendships")
+    .select("id,user_id_a,user_id_b,requested_by,created_at")
+    .eq("status", "pending")
+    .eq("requested_by", userId)
+    .order("created_at", { ascending: false });
+
+  if (error || !pendingRows?.length) return [];
+
+  const targetIds = Array.from(
+    new Set(
+      pendingRows
+        .map((row: any) => (row.user_id_a === userId ? row.user_id_b : row.user_id_a))
+        .filter(Boolean)
+    )
+  ) as string[];
+
+  let profileMap = new Map<string, { name: string | null; avatar_url: string | null }>();
+  if (targetIds.length) {
+    const { data: targetProfiles } = await supabase
+      .from("profiles")
+      .select("user_id,name,avatar_url")
+      .in("user_id", targetIds);
+    profileMap = new Map(
+      (targetProfiles || []).map((p: any) => [
+        p.user_id,
+        {
+          name: p.name ?? null,
+          avatar_url: p.avatar_url ?? null,
+        },
+      ])
+    );
+  }
+
+  return pendingRows.map((row: any) => {
+    const targetId = row.user_id_a === userId ? row.user_id_b : row.user_id_a;
+    const target = profileMap.get(targetId);
+    return {
+      id: row.id,
+      target_id: targetId,
+      created_at: row.created_at,
+      profiles: {
+        name: target?.name ?? "Someone",
+        avatar_url: target?.avatar_url ?? null,
+      },
+    };
+  });
+}
+
 export default function NotificationsPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -227,12 +288,14 @@ export default function NotificationsPage() {
   
   // Raw Data
   const [friendReqs, setFriendReqs] = useState<any[]>([]);
+  const [sentFriendReqs, setSentFriendReqs] = useState<any[]>([]);
   const [reconnectReqs, setReconnectReqs] = useState<any[]>([]);
   const [invites, setInvites] = useState<any[]>([]);
   const [polls, setPolls] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [groupEvents, setGroupEvents] = useState<any[]>([]);
   const [myRatingLog, setMyRatingLog] = useState<any[]>([]);
+  const [myPublicId, setMyPublicId] = useState<string | null>(null);
   const [votes, setVotes] = useState<any[]>([]);
   const [ratings, setRatings] = useState<any[]>([]);
   const [reconnectRatings, setReconnectRatings] = useState<Record<string, { stars: number; nextAllowedAt: string | null; editUsed: boolean; busy?: boolean; err?: string }>>({});
@@ -317,8 +380,9 @@ export default function NotificationsPage() {
       const bail = setTimeout(() => setLoading(false), 8000); // ensure UI frees if a query hangs
 
       try {
-        const [friendRequests, invRes, myGroupsRes, annRes, reconnectRes, ratingsRes] = await Promise.all([
+        const [friendRequests, sentFriendRequests, invRes, myGroupsRes, annRes, reconnectRes, ratingsRes] = await Promise.all([
           fetchFriendRequests(userId),
+          fetchSentFriendRequests(userId),
           supabase
             .from("group_members" as any)
             .select("group_id, created_at, groups(title)")
@@ -356,21 +420,25 @@ export default function NotificationsPage() {
         let viewerCoords: { lat: number; lng: number } | null = null;
         const profileRes = await supabase
           .from("profiles")
-          .select("city, lat, lng")
+          .select("city, lat, lng, public_id")
           .eq("user_id", userId)
           .maybeSingle();
         if (!profileRes.error) {
           viewerCity = profileRes.data?.city || null;
+          setMyPublicId(profileRes.data?.public_id ? String(profileRes.data.public_id) : null);
           if (typeof profileRes.data?.lat === "number" && typeof profileRes.data?.lng === "number") {
             viewerCoords = { lat: profileRes.data.lat, lng: profileRes.data.lng };
           }
         } else if (profileRes.error?.code === "42703") {
           const fallbackProfile = await supabase
             .from("profiles")
-            .select("city")
+            .select("city, public_id")
             .eq("user_id", userId)
             .maybeSingle();
-          if (!fallbackProfile.error) viewerCity = fallbackProfile.data?.city || null;
+          if (!fallbackProfile.error) {
+            viewerCity = fallbackProfile.data?.city || null;
+            setMyPublicId(fallbackProfile.data?.public_id ? String(fallbackProfile.data.public_id) : null);
+          }
         }
 
         const anns = (annRes.data || []).filter((a: any) =>
@@ -467,21 +535,22 @@ export default function NotificationsPage() {
               .in("group_id", gIds)
               .order("created_at", { ascending: false })
               .limit(160),
-            supabase
-              .from("rating_pairs")
-              .select("updated_at, created_at")
-              .eq("rater_id", userId)
-              .order("updated_at", { ascending: false })
-              .limit(60),
+            supabase.rpc("get_my_group_event_ratings", { p_group_ids: gIds }),
           ]);
 
           fetchedPolls = pRes.data || [];
           fetchedMsgs = mRes.data || [];
           fetchedGroupEvents = eRes.data || [];
-          fetchedMyRatings = myRRes.data || [];
+          if (myRRes.error) {
+            console.warn("[notifications] get_my_group_event_ratings failed", myRRes.error.message);
+            fetchedMyRatings = [];
+          } else {
+            fetchedMyRatings = myRRes.data || [];
+          }
         }
 
         setFriendReqs(friendRequests || []);
+        setSentFriendReqs(sentFriendRequests || []);
         setInvites(inv || []);
         setPolls(fetchedPolls);
         setMessages(fetchedMsgs);
@@ -509,8 +578,12 @@ export default function NotificationsPage() {
         const row: any = (payload as any).new || (payload as any).old;
         if (!row) return;
         if (row.user_id_a !== uid && row.user_id_b !== uid) return;
-        const next = await fetchFriendRequests(uid);
-        setFriendReqs(next || []);
+        const [nextReceived, nextSent] = await Promise.all([
+          fetchFriendRequests(uid),
+          fetchSentFriendRequests(uid),
+        ]);
+        setFriendReqs(nextReceived || []);
+        setSentFriendReqs(nextSent || []);
       })
       .subscribe();
 
@@ -688,24 +761,25 @@ export default function NotificationsPage() {
       });
     });
 
-    const mentionRegex = buildMentionRegex(user?.user_metadata?.name || null, user?.email || null);
-    if (mentionRegex) {
-      (messages || []).forEach((m: any) => {
-        const content = String(m?.content || "");
-        if (!mentionRegex.test(content)) return;
-        const createdTs = new Date(m.created_at).getTime();
-        if (!Number.isFinite(createdTs)) return;
-        if (nowTs - createdTs > maxAgeMs) return;
-        drafts.push({
-          id: `mention-${m.id || `${m.group_id}-${m.created_at}`}`,
-          type: "mention",
-          createdAt: m.created_at,
-          groupId: m.group_id || "",
-          groupTitle: m.groups?.title || "Circle",
-          text: content,
-        });
+    const mentionRegex = buildMentionRegex(user?.user_metadata?.name || null, user?.email || null, myPublicId);
+    const allRegex = /(^|\s)@all(\b|$)/i;
+    (messages || []).forEach((m: any) => {
+      const content = String(m?.content || "");
+      const mentionedDirectly = mentionRegex ? mentionRegex.test(content) : false;
+      const mentionedByAll = allRegex.test(content);
+      if (!mentionedDirectly && !mentionedByAll) return;
+      const createdTs = new Date(m.created_at).getTime();
+      if (!Number.isFinite(createdTs)) return;
+      if (nowTs - createdTs > maxAgeMs) return;
+      drafts.push({
+        id: `mention-${m.id || `${m.group_id}-${m.created_at}`}`,
+        type: "mention",
+        createdAt: m.created_at,
+        groupId: m.group_id || "",
+        groupTitle: m.groups?.title || "Circle",
+        text: content,
       });
-    }
+    });
 
     const latestPastMeetup = (groupEvents || [])
       .filter((ev: any) => !!ev?.starts_at)
@@ -715,16 +789,14 @@ export default function NotificationsPage() {
       })
       .sort((a: any, b: any) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime())[0];
 
-    const lastRatedTs = Math.max(
-      0,
-      ...(myRatingLog || [])
-        .map((r: any) => new Date(r?.updated_at || r?.created_at).getTime())
-        .filter((v: number) => Number.isFinite(v))
+    const ratedEventIds = new Set(
+      (myRatingLog || [])
+        .map((r: any) => String(r?.event_id || ""))
+        .filter(Boolean)
     );
 
     if (latestPastMeetup) {
-      const meetupTs = new Date(latestPastMeetup.starts_at).getTime();
-      if (!lastRatedTs || lastRatedTs < meetupTs) {
+      if (!ratedEventIds.has(String(latestPastMeetup.id))) {
         drafts.push({
           id: `rating-needed-${latestPastMeetup.id}`,
           type: "rating_needed",
@@ -733,6 +805,7 @@ export default function NotificationsPage() {
           groupTitle: latestPastMeetup.groups?.title || "Circle",
           startsAt: latestPastMeetup.starts_at,
           place: latestPastMeetup.place || null,
+          eventId: latestPastMeetup.id,
         });
       }
     }
@@ -756,7 +829,7 @@ export default function NotificationsPage() {
     const updates = deduped.filter((e) => !actionRequired.some((a) => a.id === e.id));
 
     return { actionRequired, updates };
-  }, [polls, groupEvents, messages, myRatingLog, user?.email, user?.user_metadata?.name]);
+  }, [polls, groupEvents, messages, myRatingLog, myPublicId, user?.email, user?.user_metadata?.name]);
   const upcomingEntries = useMemo(() => {
     const now = Date.now();
     return calendarEntries
@@ -850,6 +923,20 @@ export default function NotificationsPage() {
       .sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [friendReqs]);
 
+  const sentFriendRequestActions = useMemo(() => {
+    return (sentFriendReqs || [])
+      .map((r: any) => ({
+        id: `friend-sent-${r.id || r.target_id}`,
+        requestId: r.id as string,
+        targetId: r.target_id as string,
+        targetName: titleCaseWords(cleanActivityText(r.profiles?.name || "Someone", 40) || "Someone"),
+        targetAvatar: r.profiles?.avatar_url || null,
+        date: new Date(r.created_at || Date.now()),
+      }))
+      .filter((r) => !!r.targetId && Number.isFinite(r.date.getTime()))
+      .sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [sentFriendReqs]);
+
   const inviteActions = useMemo(() => {
     return (invites || [])
       .map((i: any) => ({
@@ -875,6 +962,12 @@ export default function NotificationsPage() {
       date: inv.date,
       invite: inv,
     }));
+    const sentFriendRows = sentFriendRequestActions.map((friend) => ({
+      kind: "friend_sent" as const,
+      id: friend.id,
+      date: friend.date,
+      friend,
+    }));
     const eventRows = processedActivity.actionRequired
       .filter((ev) => !dismissedActionIds.includes(ev.id) || confirmingActionIds.includes(ev.id))
       .map((ev) => ({
@@ -883,8 +976,8 @@ export default function NotificationsPage() {
       date: ev.date,
       event: ev,
       }));
-    return [...friendRows, ...inviteRows, ...eventRows].sort((a, b) => b.date.getTime() - a.date.getTime());
-  }, [friendRequestActions, inviteActions, processedActivity.actionRequired, dismissedActionIds, confirmingActionIds]);
+    return [...friendRows, ...sentFriendRows, ...inviteRows, ...eventRows].sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [friendRequestActions, sentFriendRequestActions, inviteActions, processedActivity.actionRequired, dismissedActionIds, confirmingActionIds]);
 
   const updateRows = useMemo(() => {
     const eventRows = processedActivity.updates.map((ev) => ({
@@ -957,6 +1050,15 @@ export default function NotificationsPage() {
       return;
     }
     setFriendReqs(prev => prev.filter(r => r.id !== id && r.user_id_a !== fromId));
+  }
+
+  async function handleCancelSentFriend(id: string, targetId: string) {
+    const { error } = await supabase.rpc("remove_friend", { other_id: targetId });
+    if (error) {
+      console.error("Failed to cancel sent friend request", error);
+      return;
+    }
+    setSentFriendReqs((prev) => prev.filter((r) => r.id !== id && r.target_id !== targetId));
   }
 
   async function handleAcceptReconnect(req: any) {
@@ -1180,6 +1282,7 @@ export default function NotificationsPage() {
   const hasActivityItems =
     processedActivity.actionRequired.length > 0 ||
     friendRequestActions.length > 0 ||
+    sentFriendRequestActions.length > 0 ||
     inviteActions.length > 0 ||
     processedActivity.updates.length > 0 ||
     announcements.length > 0;
@@ -1266,6 +1369,35 @@ export default function NotificationsPage() {
                             Accept
                           </button>
                         </div>
+                      </div>
+                    ) : row.kind === "friend_sent" ? (
+                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
+                        <button
+                          type="button"
+                          onClick={() => openProfileView(row.friend.targetId)}
+                          className="relative h-10 w-10 shrink-0 rounded-full ring-1 ring-neutral-200 overflow-hidden"
+                        >
+                          <img
+                            src={getAvatarUrl(row.friend.targetAvatar, row.friend.targetId)}
+                            alt={row.friend.targetName}
+                            className="h-full w-full object-cover"
+                          />
+                          <span className="absolute -bottom-1 -right-1 rounded-full bg-amber-500 p-1 text-white">
+                            <UserPlus className="h-2.5 w-2.5" />
+                          </span>
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-neutral-900">Friend request sent to {row.friend.targetName}</div>
+                          <div className="mt-0.5 text-xs text-neutral-600">Waiting for response. You can cancel this request anytime.</div>
+                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleCancelSentFriend(row.friend.requestId, row.friend.targetId)}
+                          className="shrink-0 rounded-full border border-red-200 bg-white px-3 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50"
+                        >
+                          Cancel
+                        </button>
                       </div>
                     ) : row.kind === "invite" ? (
                       <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">

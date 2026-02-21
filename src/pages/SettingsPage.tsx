@@ -6,7 +6,9 @@ import {
   AlertTriangle,
   ArrowLeft,
   Bell,
+  Check,
   ChevronRight,
+  Copy,
   Lock,
   LogOut,
   Mail,
@@ -20,6 +22,7 @@ import {
 import { useAuth } from "@/App";
 import { supabase } from "@/lib/supabase";
 import { getAvatarUrl } from "@/lib/avatar";
+import { isValidPublicId, normalizePublicId } from "@/lib/mentions";
 import { useAppLanguage } from "@/state/language";
 
 type ToastKind = "success" | "error" | "info";
@@ -56,6 +59,7 @@ type PersistedSettings = {
 
 type ProfileSnapshot = {
   name: string;
+  publicId: string;
   bio: string;
   city: string;
   availability: AvailabilityValue;
@@ -91,7 +95,19 @@ const DEFAULT_LANGUAGE: LanguageValue = "en";
 const DEFAULT_AVAILABILITY: AvailabilityValue = "flexible";
 const MAX_BIO_LENGTH = 180;
 const MAX_AVATAR_MB = 5;
+const PUBLIC_ID_MIN_LENGTH = 6;
+const PUBLIC_ID_MAX_LENGTH = 28;
 const ALLOWED_AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const SETTINGS_PROFILE_FIELDS = [
+  "name",
+  "public_id",
+  "bio",
+  "city",
+  "age",
+  "availability",
+  "avatar_url",
+  "personality_traits",
+].join(",");
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -181,6 +197,7 @@ export default function SettingsPage() {
   const [toast, setToast] = useState<ToastMessage>(null);
 
   const [name, setName] = useState("");
+  const [publicId, setPublicId] = useState("");
   const [bio, setBio] = useState("");
   const [city, setCity] = useState("");
   const [age, setAge] = useState("");
@@ -190,6 +207,9 @@ export default function SettingsPage() {
   const [profileSaving, setProfileSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [profileInitial, setProfileInitial] = useState<ProfileSnapshot | null>(null);
+  const [publicIdChecking, setPublicIdChecking] = useState(false);
+  const [publicIdAvailable, setPublicIdAvailable] = useState<boolean | null>(null);
+  const [copiedPublicId, setCopiedPublicId] = useState(false);
 
   const [deCities, setDeCities] = useState<string[]>([]);
   const [citiesLoaded, setCitiesLoaded] = useState(false);
@@ -217,13 +237,14 @@ export default function SettingsPage() {
   const profileSnapshot = useMemo<ProfileSnapshot>(
     () => ({
       name: name.trim(),
+      publicId: normalizePublicId(publicId),
       bio: bio.trim(),
       city: city.trim(),
       age: parseAgeInput(age),
       availability,
       avatarUrl: avatarUrl?.trim() || null,
     }),
-    [name, bio, city, age, availability, avatarUrl]
+    [name, publicId, bio, city, age, availability, avatarUrl]
   );
 
   const profileErrors = useMemo(() => {
@@ -231,6 +252,13 @@ export default function SettingsPage() {
     if (!user?.email) errors.push("Email is required.");
     if (profileSnapshot.name.length < 2) errors.push("Name must be at least 2 characters.");
     if (profileSnapshot.name.length > 60) errors.push("Name must be 60 characters or fewer.");
+    if (!profileSnapshot.publicId) errors.push("Public ID is required.");
+    if (profileSnapshot.publicId.length < PUBLIC_ID_MIN_LENGTH || profileSnapshot.publicId.length > PUBLIC_ID_MAX_LENGTH) {
+      errors.push(`Public ID must be ${PUBLIC_ID_MIN_LENGTH}-${PUBLIC_ID_MAX_LENGTH} characters.`);
+    }
+    if (!isValidPublicId(profileSnapshot.publicId)) {
+      errors.push("Public ID format must be name + 4 numbers (example: dara4821).");
+    }
     if (!profileSnapshot.bio) errors.push("Bio is required.");
     if (countWords(profileSnapshot.bio) < 10) errors.push("Bio must be at least 10 words.");
     if (profileSnapshot.bio.length > MAX_BIO_LENGTH) errors.push(`Bio must be ${MAX_BIO_LENGTH} characters or fewer.`);
@@ -262,6 +290,52 @@ export default function SettingsPage() {
   useEffect(() => {
     setLanguage(appLang as LanguageValue);
   }, [appLang]);
+
+  useEffect(() => {
+    if (!copiedPublicId) return;
+    const timer = window.setTimeout(() => setCopiedPublicId(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copiedPublicId]);
+
+  useEffect(() => {
+    if (!uid) {
+      setPublicIdChecking(false);
+      setPublicIdAvailable(null);
+      return;
+    }
+
+    const normalized = profileSnapshot.publicId;
+    const initialNormalized = normalizePublicId(profileInitial?.publicId || "");
+    const changed = !!normalized && normalized !== initialNormalized;
+    if (!changed) {
+      setPublicIdChecking(false);
+      setPublicIdAvailable(normalized ? true : null);
+      return;
+    }
+    if (!isValidPublicId(normalized)) {
+      setPublicIdChecking(false);
+      setPublicIdAvailable(null);
+      return;
+    }
+
+    let cancelled = false;
+    setPublicIdChecking(true);
+    const timer = window.setTimeout(async () => {
+      const { data, error } = await supabase.rpc("is_public_id_available", { p_public_id: normalized });
+      if (cancelled) return;
+      if (error) {
+        setPublicIdAvailable(null);
+      } else {
+        setPublicIdAvailable(Boolean(data));
+      }
+      setPublicIdChecking(false);
+    }, 260);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [uid, profileSnapshot.publicId, profileInitial?.publicId]);
 
   const loadCities = useCallback(async () => {
     if (citiesLoaded) return;
@@ -367,7 +441,7 @@ export default function SettingsPage() {
 
       const { data: profileRow, error: profileErr } = await supabase
         .from("profiles")
-        .select("*")
+        .select(SETTINGS_PROFILE_FIELDS)
         .eq("user_id", uid)
         .maybeSingle();
 
@@ -382,8 +456,10 @@ export default function SettingsPage() {
       const loadedAvailability = getAvailability(typeof p.availability === "string" ? p.availability : localExtras?.availability);
       const loadedAgeValue = p.age ?? localExtras?.age ?? "";
       const loadedAge = typeof loadedAgeValue === "number" ? String(Math.round(loadedAgeValue)) : String(loadedAgeValue || "");
+      const loadedPublicId = normalizePublicId(String(p.public_id || ""));
 
       setName(String(p.name || ""));
+      setPublicId(loadedPublicId);
       setBio(loadedBio);
       setCity(String(p.city || ""));
       setAge(loadedAge);
@@ -397,6 +473,7 @@ export default function SettingsPage() {
 
       setProfileInitial({
         name: String(p.name || "").trim(),
+        publicId: loadedPublicId,
         bio: loadedBio.trim(),
         city: String(p.city || "").trim(),
         age: parseAgeInput(loadedAge),
@@ -413,18 +490,57 @@ export default function SettingsPage() {
     };
   }, [uid, settingsKey, profileExtrasKey, loadCities, loadBlockedUsers, setAppLang]);
 
+  async function copyPublicIdToClipboard() {
+    const normalized = profileSnapshot.publicId;
+    if (!normalized) return;
+    const value = `@${normalized}`;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = value;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopiedPublicId(true);
+      setToast({ kind: "success", text: "Public ID copied." });
+    } catch {
+      setToast({ kind: "error", text: "Could not copy public ID." });
+    }
+  }
+
   async function saveProfile() {
     if (!uid) return;
     if (profileErrors.length) {
       setToast({ kind: "error", text: profileErrors[0] });
       return;
     }
+    if (!isValidPublicId(profileSnapshot.publicId)) {
+      setToast({ kind: "error", text: "Public ID format is invalid." });
+      return;
+    }
 
     setProfileSaving(true);
     try {
+      const initialPublicId = normalizePublicId(profileInitial?.publicId || "");
+      if (profileSnapshot.publicId !== initialPublicId) {
+        const { data: available, error: availableError } = await supabase.rpc("is_public_id_available", {
+          p_public_id: profileSnapshot.publicId,
+        });
+        if (availableError) throw availableError;
+        if (!available) throw new Error("This public ID is already taken.");
+      }
+
       const basePayload = {
         user_id: uid,
         name: profileSnapshot.name,
+        public_id: profileSnapshot.publicId,
         city: profileSnapshot.city || null,
         avatar_url: profileSnapshot.avatarUrl,
       };
@@ -472,6 +588,7 @@ export default function SettingsPage() {
         data: {
           name: profileSnapshot.name,
           full_name: profileSnapshot.name,
+          public_id: profileSnapshot.publicId,
           city: profileSnapshot.city,
           bio: profileSnapshot.bio,
           age: profileSnapshot.age,
@@ -725,6 +842,19 @@ export default function SettingsPage() {
             <div className="min-w-0 flex-1">
               <div className="truncate text-xl font-bold text-neutral-900">{name || "Circle Member"}</div>
               <div className="truncate text-sm text-neutral-600">{city || "Set your city"}</div>
+              <div className="mt-1 inline-flex items-center gap-2">
+                <span className="rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-xs font-semibold text-neutral-700">
+                  @{profileSnapshot.publicId || "set-public-id"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void copyPublicIdToClipboard()}
+                  className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
+                >
+                  {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  {copiedPublicId ? "Copied" : "Copy"}
+                </button>
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-700 hover:border-neutral-300">
@@ -766,6 +896,46 @@ export default function SettingsPage() {
               className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 outline-none transition focus:border-emerald-400"
               placeholder="Your name"
             />
+          </label>
+
+          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
+            Public ID
+            <input
+              value={publicId}
+              onChange={(e) => setPublicId(normalizePublicId(e.target.value))}
+              maxLength={PUBLIC_ID_MAX_LENGTH}
+              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 outline-none transition focus:border-emerald-400"
+              placeholder="dara4821"
+            />
+            <div className="flex items-center justify-between text-xs">
+              <span
+                className={
+                  publicIdChecking
+                    ? "text-neutral-500"
+                    : publicIdAvailable === false
+                    ? "text-red-600"
+                    : publicIdAvailable === true
+                    ? "text-emerald-700"
+                    : "text-neutral-500"
+                }
+              >
+                {publicIdChecking
+                  ? "Checking availability..."
+                  : publicIdAvailable === false
+                  ? "Public ID is already taken."
+                  : publicIdAvailable === true
+                  ? "Public ID is available."
+                  : "Format: name + 4 numbers (example: dara4821)."}
+              </span>
+              <button
+                type="button"
+                onClick={() => void copyPublicIdToClipboard()}
+                className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
+              >
+                {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                {copiedPublicId ? "Copied" : "Copy"}
+              </button>
+            </div>
           </label>
 
           <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
@@ -888,9 +1058,9 @@ export default function SettingsPage() {
             <button
               type="button"
               onClick={saveProfile}
-              disabled={profileSaving || profileErrors.length > 0}
+              disabled={profileSaving || profileErrors.length > 0 || publicIdChecking || publicIdAvailable === false}
               className={`rounded-full px-6 py-2.5 text-sm font-bold text-white transition ${
-                profileSaving || profileErrors.length > 0
+                profileSaving || profileErrors.length > 0 || publicIdChecking || publicIdAvailable === false
                   ? "cursor-not-allowed bg-neutral-400"
                   : "bg-emerald-600 hover:bg-emerald-700"
               }`}

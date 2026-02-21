@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Compass,
+  Copy,
   Ellipsis,
   MapPin,
   MessageCircle,
@@ -257,6 +258,7 @@ export default function Profile() {
   const [firstStepsState, setFirstStepsState] = useState<boolean[]>([false, false, false, false]);
   const [showFirstStepsBanner, setShowFirstStepsBanner] = useState(false);
   const [firstStepsModalOpen, setFirstStepsModalOpen] = useState(false);
+  const [copiedPublicId, setCopiedPublicId] = useState(false);
 
   const firstStepsSeenKey = useMemo(() => (uid ? `circles_first_steps_${uid}` : null), [uid]);
   const firstStepsStateKey = useMemo(() => (uid ? `circles_first_steps_state_${uid}` : null), [uid]);
@@ -433,11 +435,7 @@ export default function Profile() {
           .order("created_at", { ascending: false })
           .limit(160),
         supabase
-          .from("rating_pairs")
-          .select("updated_at, created_at")
-          .eq("rater_id", uid)
-          .order("updated_at", { ascending: false })
-          .limit(40),
+          .rpc("get_my_group_event_ratings", { p_group_ids: groupIds }),
       ]);
 
       if (cancelled) return;
@@ -741,17 +739,17 @@ export default function Profile() {
         })
         .sort((a: any, b: any) => new Date(b.starts_at).getTime() - new Date(a.starts_at).getTime())[0];
 
-      const lastRatingTs = Math.max(
-        0,
-        ...((ratingsRes.data || []) as any[])
-          .map((r) => new Date(r.updated_at || r.created_at).getTime())
-          .filter((v) => Number.isFinite(v))
+      const meetupRatings = ratingsRes.error ? [] : ((ratingsRes.data || []) as any[]);
+
+      const ratedEventIds = new Set(
+        meetupRatings
+          .map((r) => String(r?.event_id || ""))
+          .filter(Boolean)
       );
 
       const ratingActivity: ActivityItem[] = [];
       if (latestPastMeetup) {
-        const meetupTs = new Date(latestPastMeetup.starts_at).getTime();
-        if (!lastRatingTs || lastRatingTs < meetupTs) {
+        if (!ratedEventIds.has(String(latestPastMeetup.id))) {
           const groupTitle = compactText(groupTitleById.get(latestPastMeetup.group_id) || "Circle", 36);
           ratingActivity.push({
             id: `rating-${latestPastMeetup.id}`,
@@ -764,7 +762,7 @@ export default function Profile() {
             description: `From ${groupTitle} • ${formatEventTime(latestPastMeetup.starts_at)}`,
             at: latestPastMeetup.created_at || latestPastMeetup.starts_at,
             actionLabel: "Rate",
-            actionTo: `/group/${latestPastMeetup.group_id}`,
+            actionTo: `/events/${latestPastMeetup.id}/rate?groupId=${latestPastMeetup.group_id}`,
           });
         }
       }
@@ -802,6 +800,36 @@ export default function Profile() {
   const ratingValue = useMemo(() => Number(profile?.rating_avg ?? 0), [profile?.rating_avg]);
   const ratingCount = useMemo(() => Number(profile?.rating_count ?? 0), [profile?.rating_count]);
 
+  useEffect(() => {
+    if (!copiedPublicId) return;
+    const timer = window.setTimeout(() => setCopiedPublicId(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copiedPublicId]);
+
+  const copyPublicId = async () => {
+    const value = String(profile?.public_id || "").trim();
+    if (!value) return;
+    const text = `@${value}`;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopiedPublicId(true);
+    } catch {
+      // Ignore clipboard failures on unsupported browsers.
+    }
+  };
+
   if (isLoading || loadingPage) {
     return <div className="mx-auto w-full max-w-6xl px-4 pt-24 text-sm text-neutral-500">Loading profile…</div>;
   }
@@ -828,6 +856,21 @@ export default function Profile() {
             <div className="min-w-0 flex-1">
               <div className="truncate text-2xl font-bold tracking-tight text-neutral-900">{profile.name || "Circle Member"}</div>
               <div className="text-sm text-neutral-600">{profile.city || "Set your city"}</div>
+              {profile.public_id ? (
+                <div className="mt-1 inline-flex items-center gap-2">
+                  <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-xs font-semibold text-neutral-700">
+                    @{profile.public_id}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void copyPublicId()}
+                    className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
+                  >
+                    {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                    {copiedPublicId ? "Copied" : "Copy ID"}
+                  </button>
+                </div>
+              ) : null}
               <div className="mt-1 text-xs text-neutral-500">Member since {memberSince}</div>
             </div>
 

@@ -21,6 +21,21 @@ type Group = {
   requires_verification_level?: number | null;
 };
 
+const GROUP_LIST_FIELDS = [
+  "id",
+  "title",
+  "description",
+  "game",
+  "category",
+  "is_online",
+  "online_link",
+  "city",
+  "created_at",
+  "code",
+  "capacity",
+  "requires_verification_level",
+].join(",");
+
 function fmtDate(d?: string | null) {
   if (!d) return '';
   try { return new Date(d).toLocaleDateString(); } catch { return ''; }
@@ -106,7 +121,7 @@ export default function GroupsByGame() {
       // Build query: Find groups for this game OR match the code directly if user typed a code
       let q = supabase
         .from('groups')
-        .select('*')
+        .select(GROUP_LIST_FIELDS)
         .order('created_at', { ascending: false })
         .limit(100);
 

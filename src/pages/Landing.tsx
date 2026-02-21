@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ArrowRight,
   CalendarCheck2,
@@ -9,6 +9,8 @@ import {
   Vote,
 } from "lucide-react";
 import { useAuth } from "@/App";
+import LandingMeteorCanvas from "@/components/LandingMeteorCanvas";
+import { ONBOARDING_SLIDES } from "@/lib/onboardingSlides";
 
 type HeroVariant = "exact" | "psych";
 
@@ -55,8 +57,25 @@ export default function Landing() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [heroVariant] = useState<HeroVariant>(() => resolveHeroVariant());
+  const [activeSlide, setActiveSlide] = useState(0);
+  const [slideDirection, setSlideDirection] = useState(1);
   const hero = HERO_COPY[heroVariant];
   const prefersReducedMotion = useReducedMotion();
+
+  useEffect(() => {
+    if (ONBOARDING_SLIDES.length < 2) return;
+    const timer = window.setInterval(() => {
+      setSlideDirection(1);
+      setActiveSlide((prev) => (prev + 1) % ONBOARDING_SLIDES.length);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  function goToSlide(nextIndex: number) {
+    if (nextIndex < 0 || nextIndex >= ONBOARDING_SLIDES.length || nextIndex === activeSlide) return;
+    setSlideDirection(nextIndex > activeSlide ? 1 : -1);
+    setActiveSlide(nextIndex);
+  }
 
   const sectionVariant = useMemo(
     () => ({
@@ -93,10 +112,11 @@ export default function Landing() {
   );
 
   return (
-    <div className="relative min-h-dvh overflow-hidden bg-[radial-gradient(circle_at_10%_8%,rgba(16,185,129,0.16),transparent_40%),radial-gradient(circle_at_88%_12%,rgba(14,165,233,0.12),transparent_42%),#f6f7f9] text-neutral-900">
-      <div className="pointer-events-none absolute inset-0">
+    <div className="relative min-h-dvh overflow-hidden bg-[radial-gradient(circle_at_14%_12%,rgba(115,90,255,0.18),transparent_42%),radial-gradient(circle_at_88%_20%,rgba(37,99,235,0.16),transparent_40%),#edf1f9] text-neutral-900">
+      <div className="pointer-events-none absolute inset-0 z-10">
+        <LandingMeteorCanvas className="absolute inset-0 opacity-95" />
         <motion.div
-          className="absolute -left-24 top-20 h-72 w-72 rounded-full bg-emerald-300/20 blur-3xl"
+          className="absolute -left-20 top-16 h-72 w-72 rounded-full bg-violet-400/20 blur-3xl"
           animate={
             prefersReducedMotion
               ? undefined
@@ -109,7 +129,7 @@ export default function Landing() {
           }
         />
         <motion.div
-          className="absolute right-[-80px] top-14 h-80 w-80 rounded-full bg-sky-300/18 blur-3xl"
+          className="absolute right-[-80px] top-14 h-80 w-80 rounded-full bg-blue-400/20 blur-3xl"
           animate={
             prefersReducedMotion
               ? undefined
@@ -121,18 +141,18 @@ export default function Landing() {
               : { duration: 28, repeat: Infinity, ease: "easeInOut", repeatType: "loop" }
           }
         />
+
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_34%,transparent_0%,rgba(238,244,255,0.11)_48%,rgba(230,238,253,0.28)_100%)]" />
       </div>
 
-      <div className="relative mx-auto w-full max-w-6xl px-6 pb-20 pt-8">
+      <div className="relative z-20 mx-auto w-full max-w-6xl px-6 pb-20 pt-8">
         <header className="mb-12 flex items-center justify-between">
-          <div className="inline-flex items-center gap-3 rounded-2xl border border-white/70 bg-white/85 px-3 py-2 shadow-sm">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-emerald-500 to-sky-500 text-sm font-black text-white ring-1 ring-black/5">
-              C
-            </div>
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-neutral-500">Circles</p>
-              <p className="text-sm font-semibold">From Online to On-Life.</p>
-            </div>
+          <div className="inline-flex items-center rounded-2xl border border-white/70 bg-white/85 p-2 shadow-sm">
+            <img
+              src="/image5.png"
+              alt="Circles logo"
+              className="h-16 w-16 rounded-xl object-cover sm:h-20 sm:w-20"
+            />
           </div>
 
           <div className="flex items-center gap-3">
@@ -152,7 +172,7 @@ export default function Landing() {
         </header>
 
         <main className="space-y-12">
-          <section id="hero" className="rounded-3xl border border-white/70 bg-white/90 p-8 shadow-xl shadow-black/5">
+          <section id="hero" className="rounded-3xl border border-white/70 bg-white/72 p-8 shadow-xl shadow-black/5 backdrop-blur-[1px]">
             <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
               <div>
                 <motion.h1
@@ -247,6 +267,64 @@ export default function Landing() {
             viewport={{ once: true, amount: 0.2 }}
           >
             Small trusted groups • Verified profiles • Real-world meetups
+          </motion.section>
+
+          <motion.section
+            className="rounded-3xl border border-neutral-200 bg-white p-7 shadow-sm"
+            variants={sectionVariant}
+            initial="hidden"
+            whileInView="show"
+            viewport={{ once: true, amount: 0.2 }}
+          >
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-2xl font-bold">Onboarding Preview</h2>
+                <p className="mt-1 text-sm text-neutral-600">The same story slides from onboarding, now on landing.</p>
+              </div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500">Auto-slide every 15s</p>
+            </div>
+
+            <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+              <div className="relative overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-100/90 aspect-[16/10] sm:aspect-[16/9]">
+                <AnimatePresence mode="wait" custom={slideDirection}>
+                  <motion.img
+                    key={ONBOARDING_SLIDES[activeSlide].image}
+                    src={ONBOARDING_SLIDES[activeSlide].image}
+                    alt={ONBOARDING_SLIDES[activeSlide].title}
+                    className="h-full w-full object-contain"
+                    custom={slideDirection}
+                    initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: slideDirection > 0 ? 40 : -40 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: slideDirection > 0 ? -40 : 40 }}
+                    transition={{ duration: prefersReducedMotion ? 0 : 0.5, ease: "easeOut" }}
+                  />
+                </AnimatePresence>
+              </div>
+
+              <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-5">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500">
+                  Slide {activeSlide + 1} of {ONBOARDING_SLIDES.length}
+                </p>
+                <h3 className="mt-3 text-2xl font-black text-neutral-900">{ONBOARDING_SLIDES[activeSlide].title}</h3>
+                <p className="mt-2 text-sm text-neutral-700">{ONBOARDING_SLIDES[activeSlide].text}</p>
+
+                <div className="mt-5 flex flex-wrap gap-2">
+                  {ONBOARDING_SLIDES.map((slide, index) => (
+                    <button
+                      key={slide.image}
+                      type="button"
+                      onClick={() => goToSlide(index)}
+                      aria-label={`Go to onboarding slide ${index + 1}`}
+                      className={`h-2.5 rounded-full transition-all duration-300 ${
+                        index === activeSlide
+                          ? "w-10 bg-emerald-600"
+                          : "w-2.5 bg-neutral-300 hover:bg-neutral-400"
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
           </motion.section>
 
           {heroVariant === "psych" ? (

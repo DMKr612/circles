@@ -1,9 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "../lib/supabase";
 
+const PROFILE_SELECT_FIELDS = [
+  "name",
+  "public_id",
+  "avatar_url",
+  "city",
+  "personality_traits",
+  "social_battery",
+  "reputation_score",
+  "rating_avg",
+  "rating_count",
+  "onboarded",
+].join(",");
+
 export type ProfileData = {
   id: string;
   name: string;
+  public_id: string | null;
   avatar_url: string | null;
   city: string | null;
   personality_traits: any | null;
@@ -24,7 +38,11 @@ export function useProfile(userId: string | null) {
       if (!userId) throw new Error("No user ID");
 
       // Fetch profile; if missing, create a default row so the app doesn't get stuck on "Loading"
-      const prof = await supabase.from("profiles").select("*").eq("user_id", userId).maybeSingle();
+      const prof = await supabase
+        .from("profiles")
+        .select(PROFILE_SELECT_FIELDS)
+        .eq("user_id", userId)
+        .maybeSingle();
       if (prof.error && prof.error.code !== "PGRST116") {
         // Any error other than "no rows" should bubble up
         throw prof.error;
@@ -35,7 +53,7 @@ export function useProfile(userId: string | null) {
         const inserted = await supabase
           .from("profiles")
           .insert({ user_id: userId, name: "", onboarded: false })
-          .select("*")
+          .select(PROFILE_SELECT_FIELDS)
           .single();
         if (inserted.error) throw inserted.error;
         pData = inserted.data;
@@ -58,6 +76,7 @@ export function useProfile(userId: string | null) {
       return {
         id: userId,
         name: pData.name || "",
+        public_id: pData.public_id || null,
         avatar_url: pData.avatar_url,
         city: pData.city,
         personality_traits: pData.personality_traits ?? null,

@@ -45,6 +45,7 @@ const AuthCallback = lazy(() => import("./pages/AuthCallback"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const PersonalityQuizPage = lazy(() => import("./pages/PersonalityQuizPage"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const EventRatingPage = lazy(() => import("./pages/EventRatingPage"));
 
 /* =========================
    Auth (single source)
@@ -177,7 +178,7 @@ export default function App() {
   }, []);
 
   const loc = useLocation();
-  const hideSupportButton = loc.pathname.startsWith("/chats");
+  const hideSupportButton = loc.pathname.startsWith("/chats") || loc.pathname.startsWith("/onboarding");
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [loc.pathname, loc.search]);
@@ -235,6 +236,7 @@ export default function App() {
                   <Route path="/groups/game/:game" element={<GroupsByGame />} />
                   <Route path="/groups/mine" element={<MyGroups />} />
                   <Route path="/chats" element={<Chats />} />
+                  <Route path="/events/:eventId/rate" element={<EventRatingPage />} />
                   <Route path="/admin/dashboard" element={<AdminDashboard />} />
                 </Route>
 

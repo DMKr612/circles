@@ -59,24 +59,19 @@ export default function GroupsPage() {
             .in("group_id", ids)
             .not("starts_at", "is", null),
           supabase
-            .from("rating_pairs")
-            .select("created_at, updated_at")
-            .eq("rater_id", me)
-            .order("updated_at", { ascending: false })
-            .limit(50),
+            .rpc("get_my_group_event_ratings", { p_group_ids: ids }),
         ]);
 
         const events = eventsRes.data || [];
-        const ratings = ratingsRes.data || [];
-
-        const lastRatedTs = Math.max(
-          0,
-          ...ratings
-            .map((r: any) => new Date(r?.updated_at || r?.created_at).getTime())
-            .filter((v: number) => Number.isFinite(v))
+        const ratings = ratingsRes.error ? [] : (ratingsRes.data || []);
+        const ratedEventIds = new Set(
+          ratings
+            .map((r: any) => String(r?.event_id || ""))
+            .filter(Boolean)
         );
 
         const meta: Record<string, GroupAttentionMeta> = {};
+        const latestPastEventByGroup: Record<string, string | null> = {};
         ids.forEach((gid) => {
           meta[gid] = {
             needsConfirm: false,
@@ -84,6 +79,7 @@ export default function GroupsPage() {
             upcomingCount: 0,
             latestPastTs: 0,
           };
+          latestPastEventByGroup[gid] = null;
         });
 
         let upcomingCount = 0;
@@ -102,12 +98,13 @@ export default function GroupsPage() {
 
           if (now - ts <= recentPastWindow && ts > meta[gid].latestPastTs) {
             meta[gid].latestPastTs = ts;
+            latestPastEventByGroup[gid] = String(ev?.id || "") || null;
           }
         });
 
         Object.keys(meta).forEach((gid) => {
-          const latestPastTs = meta[gid].latestPastTs;
-          if (latestPastTs > 0 && (!lastRatedTs || lastRatedTs < latestPastTs)) {
+          const latestPastEventId = latestPastEventByGroup[gid];
+          if (latestPastEventId && !ratedEventIds.has(latestPastEventId)) {
             meta[gid].needsRating = true;
           }
         });

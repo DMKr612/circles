@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { daysUntilReconnect, isLowRatingBlock, LOW_RATING_BLOCK_THRESHOLD } from "@/lib/ratings";
-import { MessageSquare, UserPlus, UserCheck, UserMinus, X, AlertTriangle, Unlock, ChevronLeft, Check, Star } from "lucide-react";
+import { MessageSquare, UserPlus, UserCheck, UserMinus, X, AlertTriangle, Unlock, ChevronLeft, Check, Copy, Star } from "lucide-react";
 import UserCard from "./UserCard";
 import { useNavigate } from "react-router-dom";
 
@@ -9,6 +9,21 @@ const toast = (msg: string) => alert(msg);
 
 type FriendState = 'none' | 'pending_in' | 'pending_out' | 'accepted' | 'blocked_by_me' | 'blocked_by_them';
 type ActivitySnapshotItem = { id: string; at: string; text: string };
+const VIEW_PROFILE_FIELDS = [
+  "user_id",
+  "name",
+  "public_id",
+  "avatar_url",
+  "allow_ratings",
+  "rating_avg",
+  "rating_count",
+  "personality_traits",
+  "city",
+  "bio",
+  "interests",
+  "created_at",
+  "location_updated_at",
+].join(",");
 
 interface ViewOtherProfileModalProps {
   isOpen?: boolean;
@@ -56,6 +71,7 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
   const [uid, setUid] = useState<string | null>(null);
 
   const [viewName, setViewName] = useState<string>("");
+  const [viewPublicId, setViewPublicId] = useState<string | null>(null);
   const [viewAvatar, setViewAvatar] = useState<string | null>(null);
   const [viewAllowRatings, setViewAllowRatings] = useState<boolean>(true);
   const [viewRatingAvg, setViewRatingAvg] = useState<number>(0);
@@ -73,6 +89,7 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
   const [ratingBreakdown, setRatingBreakdown] = useState<number[]>([0, 0, 0, 0, 0, 0]);
   const [ratingBreakdownOpen, setRatingBreakdownOpen] = useState(false);
   const [bioExpanded, setBioExpanded] = useState(false);
+  const [copiedPublicId, setCopiedPublicId] = useState(false);
 
   const [mutualGroupsCount, setMutualGroupsCount] = useState<number>(0);
   const [mutualGroupNames, setMutualGroupNames] = useState<string[]>([]);
@@ -106,6 +123,36 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
   const visibleBio = !isBioLong || bioExpanded ? fullBio : `${fullBio.slice(0, 180).trimEnd()}...`;
 
   useEffect(() => {
+    if (!copiedPublicId) return;
+    const timer = window.setTimeout(() => setCopiedPublicId(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [copiedPublicId]);
+
+  async function copyPublicId() {
+    const value = String(viewPublicId || "").trim();
+    if (!value) return;
+    const text = `@${value}`;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopiedPublicId(true);
+    } catch {
+      // Ignore clipboard failures in unsupported browsers.
+    }
+  }
+
+  useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
       setUid(auth.user?.id || null);
@@ -125,17 +172,19 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
     setReconnectMessage("");
     setRatingBreakdownOpen(false);
     setBioExpanded(false);
+    setCopiedPublicId(false);
     setActivitySnapshot([]);
     setReportsReceived(0);
     setConfirmedMeetups(0);
     setAttendedMeetups(0);
     setRatingBreakdown([0, 0, 0, 0, 0, 0]);
+    setViewPublicId(null);
 
     async function loadData() {
       try {
         const { data: prof } = await supabase
           .from("profiles")
-          .select("*")
+          .select(VIEW_PROFILE_FIELDS)
           .eq("user_id", viewUserId)
           .maybeSingle();
 
@@ -147,6 +196,7 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
             : [];
 
         setViewName(profileRow?.name ?? "User");
+        setViewPublicId(profileRow?.public_id ? String(profileRow.public_id) : null);
         setViewAvatar(profileRow?.avatar_url ?? null);
         setViewAllowRatings(Boolean(profileRow?.allow_ratings ?? true));
         setViewRatingAvg(Number(profileRow?.rating_avg ?? 0));
@@ -627,6 +677,20 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
           />
         </div>
 
+        {viewPublicId ? (
+          <div className="mb-4 inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs font-semibold text-neutral-700">
+            <span>@{viewPublicId}</span>
+            <button
+              type="button"
+              onClick={() => void copyPublicId()}
+              className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
+            >
+              {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              {copiedPublicId ? "Copied" : "Copy ID"}
+            </button>
+          </div>
+        ) : null}
+
         <div className="mb-4 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2.5">
           <button
             type="button"
@@ -686,6 +750,20 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
             </button>
           )}
 
+          {viewFriendStatus === 'pending_out' && !isBlocked && (
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm("Cancel this friend request?")) {
+                  handleFriendAction('remove');
+                }
+              }}
+              className="flex-1 py-2 rounded-xl bg-amber-100 text-amber-800 text-sm font-bold flex items-center justify-center gap-2 border border-amber-200 hover:bg-amber-200 transition-colors"
+            >
+              <X className="h-4 w-4" /> Cancel request
+            </button>
+          )}
+
           {viewFriendStatus === 'accepted' && !isBlocked && (
             <button
               onClick={() => {
@@ -713,9 +791,14 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
             </button>
           )}
         </div>
-        {!canMessageUser && !isBlocked && (
+        {!canMessageUser && !isBlocked && viewFriendStatus !== "pending_out" && (
           <div className="-mt-3 mb-4 text-center text-xs text-neutral-500">
             Add as friend to unlock direct messages.
+          </div>
+        )}
+        {!canMessageUser && !isBlocked && viewFriendStatus === "pending_out" && (
+          <div className="-mt-3 mb-4 text-center text-xs text-amber-700">
+            Friend request pending. You can message after they accept.
           </div>
         )}
         {err && <div className="mb-4 text-center text-xs font-medium text-red-500">{err}</div>}

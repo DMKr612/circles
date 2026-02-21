@@ -7,7 +7,9 @@ export default function AuthCallback() {
   useEffect(() => {
     (async () => {
       await supabase.auth.getSession(); // completes OAuth on web/PWA/native
-      navigate('/', { replace: true });
+      const stored = localStorage.getItem("postLoginRedirect");
+      if (stored) localStorage.removeItem("postLoginRedirect");
+      navigate(stored || "/profile", { replace: true });
     })();
   }, [navigate]);
   return null;

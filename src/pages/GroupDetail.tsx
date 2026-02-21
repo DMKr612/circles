@@ -16,6 +16,7 @@ const ChatPanel = lazy(() => import("../components/ChatPanel"));
 
 interface MemberDisplay extends GroupMember {
   name: string | null;
+  public_id?: string | null;
   avatar_url: string | null;
 }
 
@@ -450,11 +451,11 @@ export default function GroupDetail() {
       }>).filter((r) => isJoinedStatus(r.status));
 
       const userIds = Array.from(new Set(memberRows.map((r) => r.user_id).filter(Boolean)));
-      const profileMap = new Map<string, { name: string | null; avatar_url: string | null }>();
+      const profileMap = new Map<string, { name: string | null; public_id: string | null; avatar_url: string | null }>();
       if (userIds.length) {
         const { data: profilesRows, error: profilesError } = await supabase
           .from('profiles')
-          .select('user_id, name, avatar_url')
+          .select('user_id, name, public_id, avatar_url')
           .in('user_id', userIds);
         if (profilesError) {
           console.warn("profile lookup for members failed", profilesError);
@@ -463,6 +464,7 @@ export default function GroupDetail() {
             if (!p?.user_id) return;
             profileMap.set(p.user_id, {
               name: p.name ?? null,
+              public_id: p.public_id ?? null,
               avatar_url: p.avatar_url ?? null,
             });
           });
@@ -477,6 +479,7 @@ export default function GroupDetail() {
   group_id: group.id,
   status: r.status ?? 'active',
   name: profileMap.get(r.user_id)?.name ?? "User",
+  public_id: profileMap.get(r.user_id)?.public_id ?? null,
   avatar_url: profileMap.get(r.user_id)?.avatar_url ?? null,
 }));
 
@@ -1843,6 +1846,9 @@ export default function GroupDetail() {
                        </div>
                        <div>
                          <div className="text-sm font-bold text-neutral-900">{m.name || "User"}</div>
+                         {m.public_id ? (
+                           <div className="text-[10px] font-semibold text-neutral-500">@{m.public_id}</div>
+                         ) : null}
                          {isMe && (
                            <div className="text-[11px] font-semibold text-emerald-600">You</div>
                          )}

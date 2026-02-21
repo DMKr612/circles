@@ -20,6 +20,18 @@ function fmtDate(d?: string | null) {
   try { return new Date(d).toLocaleDateString(); } catch { return ''; }
 }
 
+const MY_GROUP_FIELDS = [
+  "id",
+  "title",
+  "description",
+  "city",
+  "capacity",
+  "category",
+  "game",
+  "created_at",
+  "is_online",
+].join(",");
+
 export default function MyGroups() {
   const [rows, setRows] = useState<GroupRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,7 +68,7 @@ export default function MyGroups() {
         // 2) load the groups
         const { data: gs, error: gErr } = await supabase
           .from('groups')
-          .select('*') // Select all needed fields
+          .select(MY_GROUP_FIELDS)
           .in('id', ids)
           .order('created_at', { ascending: false });
           

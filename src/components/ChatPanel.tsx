@@ -1,14 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { supabase } from "@/lib/supabase";
-import { getAvatarUrl } from "@/lib/avatar";
+import AvatarImage from "@/components/ui/AvatarImage";
 import type { Message } from "@/types";
 import { useAuth } from "@/App";
 import { useGroupPresence } from "@/hooks/useGroupPresence";
 import { MapPin, Paperclip, Send, X, Smile, Reply, Loader2, Trash } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
+import {
+  applyMentionAtCursor,
+  detectMentionQuery,
+  extractMentionCandidates,
+  normalizePublicId,
+  replaceMentionToken,
+  resolveMentionCandidate,
+} from "@/lib/mentions";
 
-type Profile = { user_id: string; id?: string; name: string | null; avatar_url?: string | null };
-type Member = { user_id: string; name: string | null; avatar_url?: string | null };
+type Profile = { user_id: string; id?: string; name: string | null; public_id?: string | null; avatar_url?: string | null };
+type Member = { user_id: string; name: string | null; public_id?: string | null; avatar_url?: string | null };
 type Reaction = { id: string; message_id: string; user_id: string; emoji: string };
 type ReadRow = { message_id: string; user_id: string; read_at: string };
 
@@ -35,6 +43,8 @@ const randomName = (file: File) => {
   return `${id}_${file.name}`;
 };
 
+const MAX_MENTIONS_PER_MESSAGE = 5;
+
 type ChatPanelProps = {
   groupId: string;
   onClose: () => void;
@@ -53,6 +63,8 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [memberReady, setMemberReady] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+  const [activeMentionQuery, setActiveMentionQuery] = useState<ReturnType<typeof detectMentionQuery> | null>(null);
 
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -68,6 +80,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
   const [members, setMembers] = useState<Member[]>([]);
   const [showMembers, setShowMembers] = useState(false);
+  const profilesRef = useRef<Map<string, Profile>>(new Map());
 
   const listRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -85,6 +98,10 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
   const me = authUser?.id || null;
   const myEmail = authUser?.email || null;
   const myProfile = me ? profiles.get(me) ?? null : null;
+
+  useEffect(() => {
+    profilesRef.current = profiles;
+  }, [profiles]);
 
   // --- LOCATION PRESENCE HOOK ---
   const { isTogether } = useGroupPresence(groupId, me ?? undefined);
@@ -130,6 +147,11 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     return () => cancelAnimationFrame(id);
   }, [groupId]);
 
+  useEffect(() => {
+    setComposerError(null);
+    setActiveMentionQuery(null);
+  }, [groupId]);
+
   // load messages + profiles + reactions + reads
   useEffect(() => {
     let aborted = false;
@@ -139,7 +161,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       if (!missing.length) return;
       const { data: profs } = await supabase
         .from("profiles")
-        .select("user_id,id,name,avatar_url")
+        .select("user_id,id,name,public_id,avatar_url")
         .in("user_id", missing);
       if (profs) {
         setProfiles(prev => {
@@ -308,21 +330,70 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     const loadMembers = async () => {
       const { data, error } = await supabase
         .from("group_members")
-        .select("user_id, status, profiles(name,avatar_url)")
+        .select("user_id, status, profiles(name,public_id,avatar_url)")
         .eq("group_id", groupId)
-        .or("status.is.null,status.eq.active,status.eq.accepted");
+        .or("status.is.null,status.eq.active,status.eq.accepted,status.eq.invited");
       if (error) { console.warn("[members] load error", error); return; }
       if (cancelled) return;
-      const list: Member[] = (data || []).map((r: any) => ({
-        user_id: r.user_id,
-        name: r.profiles?.name ?? null,
-        avatar_url: r.profiles?.avatar_url ?? null,
-      }));
+      const baseList: Member[] = (data || []).map((r: any) => {
+        const profile = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
+        return {
+          user_id: r.user_id,
+          name: profile?.name ?? null,
+          public_id: profile?.public_id ?? null,
+          avatar_url: profile?.avatar_url ?? null,
+        };
+      });
+
+      const missingPublicIdUserIds = Array.from(
+        new Set(
+          baseList
+            .filter((m) => !normalizePublicId(m.public_id))
+            .map((m) => m.user_id)
+            .filter(Boolean)
+        )
+      );
+
+      let list = baseList;
+      if (missingPublicIdUserIds.length > 0) {
+        const { data: fallbackProfiles, error: fallbackError } = await supabase
+          .from("profiles")
+          .select("user_id,name,public_id,avatar_url")
+          .in("user_id", missingPublicIdUserIds);
+        if (fallbackError) {
+          console.warn("[members] fallback profile load error", fallbackError);
+        } else if (Array.isArray(fallbackProfiles) && fallbackProfiles.length > 0) {
+          const fallbackMap = new Map(
+            fallbackProfiles.map((p: any) => [
+              p.user_id,
+              {
+                name: p.name ?? null,
+                public_id: p.public_id ?? null,
+                avatar_url: p.avatar_url ?? null,
+              },
+            ])
+          );
+          list = baseList.map((member) => {
+            const fallback = fallbackMap.get(member.user_id);
+            if (!fallback) return member;
+            return {
+              ...member,
+              name: member.name || fallback.name,
+              public_id: member.public_id || fallback.public_id,
+              avatar_url: member.avatar_url || fallback.avatar_url,
+            };
+          });
+        }
+      }
+
       setMembers(list);
       setProfiles(prev => {
         const next = new Map(prev);
         for (const m of list) {
-          next.set(m.user_id, { user_id: m.user_id, name: m.name, avatar_url: m.avatar_url } as Profile);
+          next.set(
+            m.user_id,
+            { user_id: m.user_id, name: m.name, public_id: m.public_id ?? null, avatar_url: m.avatar_url } as Profile
+          );
         }
         return next;
       });
@@ -340,6 +411,40 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
     return () => { cancelled = true; supabase.removeChannel(ch); };
   }, [groupId]);
+
+  const mentionableMembers = useMemo(
+    () =>
+      members
+        .filter((m) => !!normalizePublicId(m.public_id))
+        .sort((a, b) => normalizePublicId(a.public_id).localeCompare(normalizePublicId(b.public_id))),
+    [members]
+  );
+
+  const mentionPublicIdSet = useMemo(
+    () => new Set(mentionableMembers.map((m) => normalizePublicId(m.public_id))),
+    [mentionableMembers]
+  );
+
+  const mentionSuggestions = useMemo(() => {
+    if (!activeMentionQuery) return [] as Member[];
+    const q = normalizePublicId(activeMentionQuery.query);
+    const exact = mentionableMembers.filter((m) => normalizePublicId(m.public_id) === q);
+    if (exact.length) return exact.slice(0, 8);
+    return mentionableMembers
+      .filter((m) => {
+        const pid = normalizePublicId(m.public_id);
+        const name = String(m.name || "").toLowerCase();
+        return pid.includes(q) || q.startsWith(pid) || name.includes(q);
+      })
+      .slice(0, 8);
+  }, [activeMentionQuery, mentionableMembers]);
+
+  const showAllSuggestion = useMemo(() => {
+    if (!activeMentionQuery) return false;
+    const q = normalizePublicId(activeMentionQuery.query);
+    if (!q) return true;
+    return "all".includes(q);
+  }, [activeMentionQuery]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -379,7 +484,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
         if (!profiles.get(m.user_id)) {
           const { data: p } = await supabase
             .from("profiles")
-            .select("user_id,id,name,avatar_url")
+            .select("user_id,id,name,public_id,avatar_url")
             .eq("user_id", m.user_id)
            .maybeSingle();
           if (p) setProfiles(prev => new Map(prev).set(p.user_id, p));
@@ -460,7 +565,6 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     presence.on("presence", { event: "sync" }, () => {
       const state = presence.presenceState();
       const keys = Object.keys(state);
-      setOnlineCount(keys.length);
       let anyTyping: string | null = null;
       for (const k of keys) {
         const metas = state[k] as any[]; const last = metas[metas.length - 1];
@@ -487,11 +591,17 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'profiles' },
         (payload) => {
-          const p = payload.new as { user_id: string; name: string | null; avatar_url?: string | null };
+          const p = payload.new as { user_id: string; name: string | null; public_id?: string | null; avatar_url?: string | null };
           if (!p?.user_id) return;
           setProfiles((prev) => {
             const next = new Map(prev);
-            next.set(p.user_id, { user_id: p.user_id, id: p.user_id, name: p.name, avatar_url: (p as any).avatar_url ?? null });
+            next.set(p.user_id, {
+              user_id: p.user_id,
+              id: p.user_id,
+              name: p.name,
+              public_id: (p as any).public_id ?? null,
+              avatar_url: (p as any).avatar_url ?? null,
+            });
             return next;
           });
         }
@@ -502,24 +612,29 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
 
   // Backfill profiles
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       if (!msgs.length) return;
-      const unknown = Array.from(new Set(msgs.map(m => m.user_id))).filter(id => !profiles.has(id));
+      const unknown = Array.from(new Set(msgs.map((m) => m.user_id))).filter((id) => !profilesRef.current.has(id));
       if (!unknown.length) return;
       const { data: profs, error } = await supabase
         .from("profiles")
-        .select("user_id,id,name,avatar_url")
+        .select("user_id,id,name,public_id,avatar_url")
         .in("user_id", unknown);
+      if (cancelled) return;
       if (error) return;
       if (profs?.length) {
-        setProfiles(prev => {
+        setProfiles((prev) => {
           const next = new Map(prev);
-          for (const p of profs) next.set(p.user_id, p as any);
+          for (const p of profs) next.set(p.user_id, p as Profile);
           return next;
         });
       }
     })();
-  }, [msgs, profiles]);
+    return () => {
+      cancelled = true;
+    };
+  }, [msgs]);
 
 
   // read receipt
@@ -553,13 +668,41 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     if (!uid || !memberReady) return;
     if ((!text && files.length === 0) || sending || uploading) return;
 
+    const hasAllMention = /(^|\s)@all\b/i.test(text);
+    const rawCandidates = extractMentionCandidates(text).filter((token) => token !== "all");
+    const allowedPublicIds = mentionableMembers.map((m) => normalizePublicId(m.public_id));
+    let finalText = text;
+    const resolvedPublicIds = new Set<string>();
+
+    for (const candidate of rawCandidates) {
+      const { resolved, ambiguous } = resolveMentionCandidate(candidate, allowedPublicIds);
+      if (!resolved) {
+        setComposerError(
+          ambiguous
+            ? `@${candidate} matches multiple members. Pick from the mention list.`
+            : `@${candidate} is not a member of this circle.`
+        );
+        return;
+      }
+      resolvedPublicIds.add(resolved);
+      finalText = replaceMentionToken(finalText, candidate, resolved);
+    }
+
+    if (!hasAllMention && resolvedPublicIds.size > MAX_MENTIONS_PER_MESSAGE) {
+      setComposerError(`You can tag up to ${MAX_MENTIONS_PER_MESSAGE} members in one message.`);
+      return;
+    }
+
+    setComposerError(null);
+    setActiveMentionQuery(null);
+
     setSending(true);
     const phantomId = `phantom-${getUUID()}`;
     const phantom: Message = {
       id: phantomId,
       group_id: groupId,
       user_id: uid,
-      content: text,
+      content: finalText,
       created_at: new Date().toISOString(),
       parent_id: parentId,
       attachments: []
@@ -591,22 +734,30 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       } catch (e) {
         console.error(e);
         setUploading(false);
+        setSending(false);
         return;
       }
       setUploading(false);
       setFiles([]);
     }
 
-    const { error } = await supabase.rpc('send_group_message', {
-  p_group_id: groupId,
-  p_content: text,
-  p_parent_id: parentId,
-  p_attachments: attachments,
-});
+    const { error } = await supabase.rpc("send_group_message", {
+      p_group_id: groupId,
+      p_content: finalText,
+      p_parent_id: parentId,
+      p_attachments: attachments,
+    });
     setSending(false);
     if (error) {
       setMsgs(prev => prev.filter(m => m.id !== phantomId));
-      alert(error.message);
+      const msg = String(error.message || "");
+      if (/too_many_tags/i.test(msg)) {
+        setComposerError(`You can tag up to ${MAX_MENTIONS_PER_MESSAGE} members in one message.`);
+      } else if (/invalid_tag/i.test(msg)) {
+        setComposerError("One or more tags are invalid for this group.");
+      } else {
+        setComposerError(msg || "Could not send message.");
+      }
       return;
     }
     scrollToBottom("smooth");
@@ -716,8 +867,9 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
   const avatar = (uid: string) => {
     const p = profiles.get(uid);
     return (
-      <img
-        src={getAvatarUrl(p?.avatar_url, p?.user_id || uid)}
+      <AvatarImage
+        avatarUrl={p?.avatar_url}
+        seed={p?.user_id || uid}
         alt={displayName(uid)}
         className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow-sm"
       />
@@ -752,16 +904,110 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     if (fl.length) setFiles(prev => [...prev, ...fl]);
   };
 
+  const refreshMentionQuery = useCallback(
+    (value: string, explicitCursor?: number) => {
+      const cursor = explicitCursor ?? inputRef.current?.selectionStart ?? value.length;
+      setActiveMentionQuery(detectMentionQuery(value, cursor));
+    },
+    []
+  );
+
+  const applyMentionSelection = useCallback(
+    (member: Member) => {
+      const publicId = normalizePublicId(member.public_id);
+      if (!publicId || !activeMentionQuery) return;
+      const cursor = inputRef.current?.selectionStart ?? input.length;
+      const { nextText, nextCursor } = applyMentionAtCursor(input, cursor, activeMentionQuery, publicId);
+      setInput(nextText);
+      setComposerError(null);
+      setActiveMentionQuery(null);
+      requestAnimationFrame(() => {
+        if (!inputRef.current) return;
+        inputRef.current.focus({ preventScroll: true });
+        inputRef.current.selectionStart = nextCursor;
+        inputRef.current.selectionEnd = nextCursor;
+      });
+    },
+    [activeMentionQuery, input]
+  );
+
+  const applyMentionLiteral = useCallback(
+    (literal: string) => {
+      const token = normalizePublicId(literal);
+      if (!token || !activeMentionQuery) return;
+      const cursor = inputRef.current?.selectionStart ?? input.length;
+      const { nextText, nextCursor } = applyMentionAtCursor(input, cursor, activeMentionQuery, token);
+      setInput(nextText);
+      setComposerError(null);
+      setActiveMentionQuery(null);
+      requestAnimationFrame(() => {
+        if (!inputRef.current) return;
+        inputRef.current.focus({ preventScroll: true });
+        inputRef.current.selectionStart = nextCursor;
+        inputRef.current.selectionEnd = nextCursor;
+      });
+    },
+    [activeMentionQuery, input]
+  );
+
+  const renderMessageContent = useCallback(
+    (value: string, isMine: boolean): ReactNode[] => {
+      const text = String(value || "");
+      const out: ReactNode[] = [];
+      const regex = /@([a-z0-9_]{2,40})/gi;
+      let last = 0;
+      let idx = 0;
+      for (const match of text.matchAll(regex)) {
+        const at = match.index ?? 0;
+        if (at > last) {
+          out.push(text.slice(last, at));
+        }
+        const token = String(match[0] || "");
+        const raw = normalizePublicId(match[1]);
+        const resolved = resolveMentionCandidate(raw, Array.from(mentionPublicIdSet)).resolved;
+        const isAll = raw === "all";
+        const highlight = isAll || !!resolved;
+        if (highlight) {
+          out.push(
+            <span
+              key={`mention-${idx}-${at}`}
+              className={
+                isAll
+                  ? isMine
+                    ? "rounded bg-indigo-200/25 px-1 py-0.5 font-semibold text-white"
+                    : "rounded bg-indigo-100 px-1 py-0.5 font-semibold text-indigo-700"
+                  : isMine
+                  ? "rounded bg-white/20 px-1 py-0.5 font-semibold text-white"
+                  : "rounded bg-emerald-100 px-1 py-0.5 font-semibold text-emerald-700"
+              }
+            >
+              {token}
+            </span>
+          );
+        } else {
+          out.push(token);
+        }
+        idx += 1;
+        last = at + token.length;
+      }
+      if (last < text.length) out.push(text.slice(last));
+      if (out.length === 0) out.push(text);
+      return out;
+    },
+    [mentionPublicIdSet]
+  );
+
   const renderAttachments = (atts: any[]) => {
     if (!atts?.length) return null;
     return (
       <div className="mt-2 flex flex-wrap gap-2">
         {atts.map((a, idx) => {
+          const key = `${a?.path || a?.url || a?.name || "attachment"}-${idx}`;
           if (a?.type?.startsWith("image/") && a.url) {
-            return <img key={idx} src={a.url} alt={a.name || ""} className="max-h-48 rounded-lg border border-neutral-100 shadow-sm" />;
+            return <img key={key} src={a.url} alt={a.name || ""} className="max-h-48 rounded-lg border border-neutral-100 shadow-sm" />;
           }
           return (
-            <a key={idx} href={a.url || "#"} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg bg-neutral-100 px-3 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-200">
+            <a key={key} href={a.url || "#"} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg bg-neutral-100 px-3 py-2 text-xs font-medium text-neutral-700 hover:bg-neutral-200">
               <Paperclip className="h-3 w-3" />
               {a.name || a.path}
             </a>
@@ -824,8 +1070,9 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                       className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-neutral-50 transition-colors"
                     >
                     <div className="relative">
-                      <img
-                        src={getAvatarUrl(m.avatar_url, m.user_id)}
+                      <AvatarImage
+                        avatarUrl={m.avatar_url}
+                        seed={m.user_id}
                         alt={(m.name && m.name.trim()) || "Player"}
                         className="h-8 w-8 rounded-full object-cover border border-neutral-100"
                       />
@@ -838,6 +1085,9 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="truncate text-sm font-semibold text-neutral-900">{(m.name && m.name.trim()) || "Player"}</div>
+                      {m.public_id ? (
+                        <div className="truncate text-[10px] font-semibold text-neutral-500">@{m.public_id}</div>
+                      ) : null}
                       {nearby ? (
                         <div className="text-[10px] font-medium text-emerald-600 flex items-center gap-1">Here with you</div>
                       ) : (
@@ -948,7 +1198,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
                             );
                           })()}
                           
-                          <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                          <div className="whitespace-pre-wrap break-words">{renderMessageContent(m.content, isMine)}</div>
                           {renderAttachments(m.attachments)}
                         </div>
 
@@ -1084,7 +1334,7 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
         {files.length > 0 && (
           <div className="mb-2 flex gap-2 overflow-x-auto pb-2">
             {files.map((f, i) => (
-              <div key={i} className="flex items-center gap-2 rounded-lg bg-neutral-50 px-3 py-2 text-xs font-medium text-neutral-700 border border-neutral-100">
+              <div key={`${f.name}-${f.size}-${f.lastModified}-${i}`} className="flex items-center gap-2 rounded-lg bg-neutral-50 px-3 py-2 text-xs font-medium text-neutral-700 border border-neutral-100">
                 <Paperclip className="h-3 w-3" />
                 <span className="max-w-[100px] truncate">{f.name}</span>
                 <button onClick={() => setFiles(prev => prev.filter((_, idx) => idx !== i))}><X className="h-3 w-3 hover:text-red-500" /></button>
@@ -1093,6 +1343,12 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
           </div>
         )}
         
+        {composerError && (
+          <div className="mb-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">
+            {composerError}
+          </div>
+        )}
+
         <div className="flex items-end gap-2">
           <label className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full bg-neutral-50 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 transition-colors">
             <Paperclip className="h-5 w-5" />
@@ -1103,14 +1359,96 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
             <textarea
               ref={inputRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              onChange={(e) => {
+                const next = e.target.value;
+                setInput(next);
+                setComposerError(null);
+                refreshMentionQuery(next, e.target.selectionStart ?? next.length);
+              }}
+              onClick={(e) => refreshMentionQuery(input, (e.currentTarget as HTMLTextAreaElement).selectionStart ?? input.length)}
+              onKeyUp={(e) => refreshMentionQuery(input, (e.currentTarget as HTMLTextAreaElement).selectionStart ?? input.length)}
+              onBlur={() => {
+                window.setTimeout(() => setActiveMentionQuery(null), 120);
+              }}
+              onFocus={(e) => refreshMentionQuery(input, (e.currentTarget as HTMLTextAreaElement).selectionStart ?? input.length)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && activeMentionQuery) {
+                  e.preventDefault();
+                  setActiveMentionQuery(null);
+                  return;
+                }
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  activeMentionQuery &&
+                  (showAllSuggestion || mentionSuggestions.length > 0)
+                ) {
+                  e.preventDefault();
+                  if (showAllSuggestion) {
+                    applyMentionLiteral("all");
+                  } else if (mentionSuggestions.length > 0) {
+                    applyMentionSelection(mentionSuggestions[0]);
+                  }
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
               onPaste={onPaste}
               placeholder="Type a message..."
               rows={1}
               className="w-full resize-none rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-2.5 text-sm text-neutral-900 placeholder-neutral-400 focus:border-neutral-300 focus:bg-white focus:outline-none focus:ring-0 max-h-32 transition-all"
               style={{ minHeight: '42px' }}
             />
+            {activeMentionQuery && (showAllSuggestion || mentionSuggestions.length > 0) && (
+              <div className="absolute bottom-[calc(100%+8px)] left-0 right-0 z-20 max-h-52 overflow-y-auto rounded-2xl border border-neutral-200 bg-white p-1.5 shadow-xl">
+                {showAllSuggestion && (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyMentionLiteral("all");
+                    }}
+                    className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-neutral-50"
+                  >
+                    <div className="grid h-7 w-7 place-items-center rounded-full bg-indigo-100 text-[10px] font-bold text-indigo-700">
+                      ALL
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-neutral-900">Notify everyone</div>
+                      <div className="truncate text-[11px] font-semibold text-indigo-700">@all</div>
+                    </div>
+                  </button>
+                )}
+                {mentionSuggestions.map((member) => {
+                  const publicId = normalizePublicId(member.public_id);
+                  return (
+                    <button
+                      key={`${member.user_id}:${publicId}`}
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyMentionSelection(member);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-neutral-50"
+                    >
+                      <AvatarImage
+                        avatarUrl={member.avatar_url}
+                        seed={member.user_id}
+                        alt={member.name || "Player"}
+                        className="h-7 w-7 rounded-full object-cover border border-neutral-100"
+                      />
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-semibold text-neutral-900">{member.name || "Player"}</div>
+                        <div className="truncate text-[11px] font-semibold text-emerald-700">@{publicId}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <button 

@@ -1,5 +1,5 @@
 // src/hooks/useMyGroups.ts
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/App";
 import { supabase } from "@/lib/supabase";
 import type { MyGroupRow } from "@/types";
@@ -27,6 +27,7 @@ export function useMyGroups({ category, search }: Args) {
   const [openPolls, setOpenPolls] = useState<Record<string, boolean>>({});
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [allowedByCat, setAllowedByCat] = useState<Record<string, string[]>>({});
+  const groupIdsRef = useRef<string[]>([]);
 
   const modeJoined = true;
   const modeCreated = true;
@@ -151,12 +152,17 @@ export function useMyGroups({ category, search }: Args) {
     };
   }, [me, refreshUnreadCounts]);
 
+  // Keep latest group ids without recreating listeners on every list change.
+  useEffect(() => {
+    groupIdsRef.current = groups.map((g) => g.id);
+  }, [groups]);
+
   // --- Fallback refresh for unread counts ---
   useEffect(() => {
     if (!me) return;
 
     const refreshAll = () => {
-      const ids = groups.map((g) => g.id);
+      const ids = groupIdsRef.current;
       if (ids.length) void refreshUnreadCounts(ids);
     };
 
@@ -173,7 +179,7 @@ export function useMyGroups({ category, search }: Args) {
       document.removeEventListener("visibilitychange", onVis);
       window.clearInterval(timer);
     };
-  }, [me, groups, refreshUnreadCounts]);
+  }, [me, refreshUnreadCounts]);
 
   // --- Core load function (page-based) ---
   const loadPage = useCallback(
