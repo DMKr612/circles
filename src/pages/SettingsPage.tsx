@@ -1079,7 +1079,11 @@ export default function SettingsPage() {
             <h2 className="text-xl font-bold text-neutral-900">{tx("Notifications", "Benachrichtigungen", "اعلان‌ها")}</h2>
           </div>
           <p className="mb-3 text-xs text-neutral-500">
-            {tx("Only notify me when it matters.", "Nur benachrichtigen, wenn es wichtig ist.", "فقط وقتی مهم است به من اطلاع بده.")}
+            {tx(
+              "These are local preferences on this device and do not currently block server notifications.",
+              "Das sind lokale Einstellungen auf diesem Gerat und blockieren derzeit keine Server-Benachrichtigungen.",
+              "این‌ها تنظیمات محلی روی همین دستگاه هستند و فعلاً اعلان‌های سمت سرور را مسدود نمی‌کنند."
+            )}
           </p>
 
         <div className="space-y-2">
@@ -1155,10 +1159,17 @@ export default function SettingsPage() {
           <Shield className="h-4 w-4 text-emerald-600" />
           <h2 className="text-xl font-bold text-neutral-900">{tx("Privacy & Safety", "Datenschutz & Sicherheit", "حریم خصوصی و امنیت")}</h2>
         </div>
+        <p className="mb-3 text-xs text-neutral-500">
+          {tx(
+            "These privacy controls are saved as preferences and are not yet enforced by backend access rules.",
+            "Diese Datenschutz-Optionen werden als Einstellungen gespeichert und noch nicht durch Backend-Zugriffsregeln erzwungen.",
+            "این گزینه‌های حریم خصوصی به‌صورت ترجیح ذخیره می‌شوند و هنوز با قوانین دسترسی بک‌اند enforce نشده‌اند."
+          )}
+        </p>
 
         <div className="space-y-3">
           <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Visible to", "Sichtbar fur", "نمایش برای")}
+            {tx("Profile visibility preference", "Profil-Sichtbarkeits-Einstellung", "ترجیح نمایش پروفایل")}
             <select
               value={privacy.profileVisibility}
               onChange={(e) =>
@@ -1176,7 +1187,7 @@ export default function SettingsPage() {
           </label>
 
           <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Who can message me", "Wer kann mir schreiben", "چه کسانی می‌توانند پیام بدهند")}
+            {tx("Message access preference", "Nachrichten-Zugriffs-Einstellung", "ترجیح دسترسی پیام")}
             <select
               value={privacy.whoCanMessage}
               onChange={(e) =>
@@ -1195,9 +1206,13 @@ export default function SettingsPage() {
 
           <div className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2.5">
             <div>
-                <div className="text-sm font-semibold text-neutral-900">{tx("Show online status", "Online-Status anzeigen", "نمایش وضعیت آنلاین")}</div>
+                <div className="text-sm font-semibold text-neutral-900">{tx("Online status preference", "Online-Status-Einstellung", "ترجیح وضعیت آنلاین")}</div>
                 <div className="text-xs text-neutral-500">
-                  {tx("Let others see when you are active.", "Andere konnen sehen, wann du aktiv bist.", "به دیگران نشان بده چه زمانی فعال هستی.")}
+                  {tx(
+                    "Saved on this device. Presence visibility is not fully controlled by this toggle yet.",
+                    "Wird auf diesem Gerat gespeichert. Die Sichtbarkeit der Anwesenheit wird noch nicht vollstandig von diesem Schalter gesteuert.",
+                    "روی همین دستگاه ذخیره می‌شود. نمایش حضور هنوز به‌طور کامل توسط این سوییچ کنترل نمی‌شود."
+                  )}
                 </div>
               </div>
             <Toggle

@@ -266,7 +266,7 @@ export default function Landing() {
             whileInView="show"
             viewport={{ once: true, amount: 0.2 }}
           >
-            Small trusted groups • Verified profiles • Real-world meetups
+            Small groups • Member profiles • Real-world meetups
           </motion.section>
 
           <motion.section

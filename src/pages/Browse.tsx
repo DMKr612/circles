@@ -714,7 +714,7 @@ export default function BrowsePage() {
           <div>
             <h1 className="text-2xl font-black tracking-tight text-neutral-900">Meetups Near You</h1>
             <p className="mt-1 text-sm text-neutral-600">
-              Real meetups first. Join quickly and show up this week.
+              Uses your latest location when available, otherwise your profile city.
             </p>
           </div>
           <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-600">

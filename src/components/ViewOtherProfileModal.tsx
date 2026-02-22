@@ -712,16 +712,16 @@ export default function ViewOtherProfileModal({ isOpen = true, onClose, viewUser
         <div className="mb-4 rounded-xl border border-neutral-200 bg-white px-3 py-3">
           <div className="text-xs font-bold uppercase tracking-wide text-neutral-500">Trust Summary</div>
           <div className="mt-2 space-y-1 text-xs text-neutral-700">
-            <div>Attended: {attendedMeetups} meetups</div>
-            <div>Show-up rate: {showUpRate}%</div>
+            <div>Attended (estimate): {attendedMeetups} meetups</div>
+            <div>Show-up rate (estimate): {showUpRate}%</div>
             <div>Member since: {memberSince}</div>
             <div>Reports: {reportsReceived}</div>
           </div>
           <div className="mt-2 inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
-            Trust Level: {trustLevel}
+            Trust Level (beta estimate): {trustLevel}
           </div>
           <div className="mt-1 text-[11px] text-neutral-500">
-            Based on meetup attendance and peer ratings.
+            Estimated from meetup votes/messages and peer ratings. Display only.
           </div>
         </div>
 

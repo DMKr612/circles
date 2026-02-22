@@ -465,7 +465,7 @@ export default function Onboarding() {
               Meet your people this week.
             </h1>
             <p className="mt-5 max-w-xl text-balance text-[clamp(1.15rem,2.2vw,1.9rem)] font-medium text-[color:var(--muted)]">
-              Join small trusted circles near you.
+              Join small circles near you.
             </p>
 
             <div className="mt-12 w-full max-w-xl rounded-[2rem] border border-white/72 bg-white/70 px-5 py-8 shadow-[0_24px_80px_rgba(17,30,56,0.18)] backdrop-blur-md">
