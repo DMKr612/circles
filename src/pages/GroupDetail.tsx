@@ -1079,7 +1079,7 @@ export default function GroupDetail() {
     const { data: auth } = await supabase.auth.getUser();
     if (!auth?.user) {
       setMsg("Please sign in to vote.");
-      nav("/onboarding", { state: { from: `${location.pathname}${location.search}${location.hash}` } });
+      nav("/auth", { state: { from: `${location.pathname}${location.search}${location.hash}` } });
       return;
     }
 

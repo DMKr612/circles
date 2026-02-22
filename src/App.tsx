@@ -37,6 +37,7 @@ const GroupsByGame = lazy(() => import("./pages/groups/GroupsByGame"));
 const MyGroups = lazy(() => import("./pages/groups/MyGroups"));
 const Landing = lazy(() => import("./pages/Landing"));
 const Onboarding = lazy(() => import("./pages/Onboarding"));
+const AuthEntry = lazy(() => import("./pages/AuthEntry"));
 const JoinByCode = lazy(() => import("./pages/JoinByCode"));
 const NotificationsPage = lazy(() => import("./pages/Notifications"));
 const Chats = lazy(() => import("./pages/Chats"));
@@ -99,9 +100,10 @@ function RequireAuth({ children }: PropsWithChildren): JSX.Element | null {
     return <LoadingScreen />;
   }
 
-  // 2. If not logged in, send to Onboarding
+  // 2. If not logged in, send to auth entry
   if (!user) {
-    return <Navigate to="/onboarding" replace state={{ from: loc.pathname }} />;
+    const from = `${loc.pathname}${loc.search}${loc.hash}`;
+    return <Navigate to="/auth" replace state={{ from }} />;
   }
 
   // 3. If logged in but profile not created/onboarded, send to Profile Creation
@@ -178,7 +180,10 @@ export default function App() {
   }, []);
 
   const loc = useLocation();
-  const hideSupportButton = loc.pathname.startsWith("/chats") || loc.pathname.startsWith("/onboarding");
+  const hideSupportButton =
+    loc.pathname.startsWith("/chats") ||
+    loc.pathname.startsWith("/onboarding") ||
+    loc.pathname.startsWith("/auth");
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [loc.pathname, loc.search]);
@@ -206,6 +211,7 @@ export default function App() {
             >
               <Routes>
                 <Route path="/" element={<Landing />} />
+                <Route path="/auth" element={<AuthEntry />} />
                 <Route path="/onboarding" element={<Onboarding />} />
                 <Route path="/legal" element={<Legal />} />
                 <Route path="/invite/:code" element={<JoinByCode />} />

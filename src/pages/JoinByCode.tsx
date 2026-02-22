@@ -34,7 +34,7 @@ export default function JoinByCode() {
       if (!auth?.user) {
         try { localStorage.setItem("postLoginRedirect", invitePath); } catch {}
         // Use SPA navigation; BrowserRouter basename will handle GitHub Pages subpath
-        nav("/onboarding", { state: { redirect: invitePath }, replace: true });
+        nav("/auth", { state: { from: invitePath }, replace: true });
         return;
       }
 

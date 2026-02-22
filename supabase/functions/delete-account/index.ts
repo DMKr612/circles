@@ -16,6 +16,17 @@ const json = (status: number, body: Record<string, unknown>) =>
     headers: { ...corsHeaders, "content-type": "application/json" },
   });
 
+const errText = (error: any) =>
+  `${String(error?.message || "")} ${String(error?.details || "")} ${String(error?.hint || "")}`.toLowerCase();
+
+const isMissingColumnError = (error: any, column: string) => {
+  const msg = errText(error);
+  return msg.includes(column.toLowerCase()) && (
+    msg.includes("column") ||
+    msg.includes("schema cache")
+  );
+};
+
 const chunk = <T,>(arr: T[], size: number) => {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) {
@@ -107,18 +118,43 @@ serve(async (req) => {
     }
   };
 
-  const listUserAttachments = async (userId: string) => {
+  const resolveGroupMessageAuthorColumn = async (): Promise<"user_id" | "sender_id"> => {
+    const tryProbe = async (col: "user_id" | "sender_id") => {
+      const { error } = await admin
+        .from("group_messages")
+        .select(col, { head: true })
+        .limit(1);
+      return error ?? null;
+    };
+
+    // Prefer sender_id first because this project schema uses sender_id in chat tables.
+    const senderErr = await tryProbe("sender_id");
+    if (!senderErr) return "sender_id";
+
+    const userErr = await tryProbe("user_id");
+    if (!userErr) return "user_id";
+
+    throw new Error(
+      `group_messages probe failed for sender_id and user_id: sender_id=${String(senderErr?.message || "")}; user_id=${String(userErr?.message || "")}`
+    );
+  };
+
+  const listUserAttachments = async (userId: string, authorColumn: "user_id" | "sender_id") => {
     const out: Array<{ bucket: string; path: string }> = [];
     let from = 0;
     const pageSize = 500;
     while (true) {
-      const { data, error } = await admin
+      const query = admin
         .from("group_messages")
         .select("attachments")
-        .eq("user_id", userId)
+        .eq(authorColumn, userId)
         .order("created_at", { ascending: true })
         .range(from, from + pageSize - 1);
-      if (error) throw new Error(`group_messages attachments select failed: ${error.message}`);
+      const { data, error } = await query;
+      if (error) {
+        if (isMissingColumnError(error, "attachments")) return out;
+        throw new Error(`group_messages attachments select failed: ${error.message}`);
+      }
       const rows = data || [];
       rows.forEach((row: any) => {
         const attachments = Array.isArray(row?.attachments) ? row.attachments : [];
@@ -135,6 +171,15 @@ serve(async (req) => {
   };
 
   try {
+    // Fast path: if FK cascades are configured correctly, deleting the auth user
+    // handles profile + related row cleanup automatically.
+    const directDelete = await admin.auth.admin.deleteUser(uid);
+    if (!directDelete.error) {
+      return json(200, { ok: true });
+    }
+
+    const groupMessageAuthorColumn = await resolveGroupMessageAuthorColumn();
+
     const { data: groupRows, error: groupErr } = await admin
       .from("groups")
       .select("id")
@@ -171,7 +216,7 @@ serve(async (req) => {
       await deleteIn("groups", "id", groupIds);
     }
 
-    const userAttachments = await listUserAttachments(uid);
+    const userAttachments = await listUserAttachments(uid, groupMessageAuthorColumn);
     const byBucket = new Map<string, string[]>();
     userAttachments.forEach((att) => {
       if (!att.bucket || !att.path) return;
@@ -187,7 +232,7 @@ serve(async (req) => {
       await removePaths(bucket, paths);
     }
 
-    const userMessageIds = await selectIds("group_messages", "id", "user_id", [uid]);
+    const userMessageIds = await selectIds("group_messages", "id", groupMessageAuthorColumn, [uid]);
     if (userMessageIds.length) {
       await deleteIn("group_message_reactions", "message_id", userMessageIds);
       await deleteIn("group_message_reads", "message_id", userMessageIds);
@@ -204,12 +249,6 @@ serve(async (req) => {
       .delete()
       .or(`user_id_a.eq.${uid},user_id_b.eq.${uid}`);
     if (friendshipsErr) throw new Error(`friendships delete failed: ${friendshipsErr.message}`);
-
-    const { error: friendsErr } = await admin
-      .from("friends")
-      .delete()
-      .or(`user_id.eq.${uid},friend_id.eq.${uid}`);
-    if (friendsErr) throw new Error(`friends delete failed: ${friendsErr.message}`);
 
     const { error: ratingsErr } = await admin
       .from("rating_pairs")
@@ -268,7 +307,7 @@ serve(async (req) => {
     const { error: userMsgsErr } = await admin
       .from("group_messages")
       .delete()
-      .eq("user_id", uid);
+      .eq(groupMessageAuthorColumn, uid);
     if (userMsgsErr) throw new Error(`group_messages delete failed: ${userMsgsErr.message}`);
 
     const { error: votesErr } = await admin

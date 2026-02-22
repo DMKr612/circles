@@ -156,7 +156,7 @@ export default function Landing() {
           </div>
 
           <div className="flex items-center gap-3">
-            <Link to="/onboarding" className="text-sm font-semibold text-neutral-700 underline-offset-2 hover:text-neutral-900 hover:underline">
+            <Link to="/auth" className="text-sm font-semibold text-neutral-700 underline-offset-2 hover:text-neutral-900 hover:underline">
               Already have an account? Sign in
             </Link>
             {user ? (
@@ -199,7 +199,7 @@ export default function Landing() {
                 >
                   <motion.button
                     type="button"
-                    onClick={() => navigate("/onboarding")}
+                    onClick={() => navigate("/auth")}
                     whileHover={prefersReducedMotion ? undefined : { scale: 1.045, boxShadow: "0 14px 36px rgba(5, 150, 105, 0.30)" }}
                     whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
                     className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-6 py-3 text-base font-bold text-white shadow-lg shadow-emerald-600/20 transition-all duration-300 ease-out hover:bg-emerald-700"
@@ -390,7 +390,7 @@ export default function Landing() {
                   </div>
                   <button
                     type="button"
-                    onClick={() => navigate("/onboarding")}
+                    onClick={() => navigate("/auth")}
                     className="rounded-full border border-neutral-300 bg-white px-4 py-1.5 text-xs font-semibold text-neutral-700 transition-all duration-300 ease-out hover:border-neutral-400 hover:text-neutral-900"
                   >
                     Join
@@ -470,7 +470,7 @@ export default function Landing() {
             <div className="mt-5">
               <motion.button
                 type="button"
-                onClick={() => navigate("/onboarding")}
+                onClick={() => navigate("/auth")}
                 whileHover={prefersReducedMotion ? undefined : { scale: 1.045, boxShadow: "0 14px 36px rgba(5, 150, 105, 0.30)" }}
                 whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
                 className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-7 py-3 text-base font-bold text-white shadow-lg shadow-emerald-600/20 transition-all duration-300 ease-out hover:bg-emerald-700"

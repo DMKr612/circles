@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, useReducedMotion } from "framer-motion";
 import { supabase } from "@/lib/supabase";
@@ -12,38 +12,7 @@ type BeforeInstallPromptEvent = Event & {
 
 type FlowStep = 0 | 1 | 2 | 3 | 4 | 5;
 
-type CircleTemplate = {
-  id: string;
-  name: string;
-  interest: string;
-  members: number;
-  daysAhead: number;
-};
-
-type NearbyCircle = {
-  id: string;
-  name: string;
-  city: string;
-  members: number;
-  nextMeetup: string;
-  source: "live" | "sample";
-};
-
 const INTEREST_OPTIONS = ["Games", "Study", "Outdoors", "Sports", "Music", "Other"];
-
-const CIRCLE_TEMPLATES: CircleTemplate[] = [
-  { id: "circle-1", name: "Board Game Fridays", interest: "Games", members: 6, daysAhead: 2 },
-  { id: "circle-2", name: "Sunset Walk Crew", interest: "Outdoors", members: 8, daysAhead: 3 },
-  { id: "circle-3", name: "Weekend Study Sprint", interest: "Study", members: 5, daysAhead: 4 },
-  { id: "circle-4", name: "City Soccer Group", interest: "Sports", members: 9, daysAhead: 5 },
-  { id: "circle-5", name: "Live Music Meetups", interest: "Music", members: 7, daysAhead: 6 },
-];
-
-function formatMeetup(daysAhead: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + daysAhead);
-  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-}
 
 function readSessionValue(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -58,6 +27,7 @@ function readSessionStep(): FlowStep {
   const raw = readSessionValue("onboarding_step");
   const parsed = Number(raw);
   if (!Number.isInteger(parsed)) return 0;
+  if (parsed === 3) return 4;
   if (parsed < 0 || parsed > 4) return 0;
   return parsed as FlowStep;
 }
@@ -119,9 +89,6 @@ export default function Onboarding() {
   const [locationErr, setLocationErr] = useState<string | null>(null);
 
   const [interests, setInterests] = useState<string[]>(() => readSessionInterests());
-  const [selectedCircleId, setSelectedCircleId] = useState<string | null>(() => readSessionValue("onboarding_circle"));
-  const [liveCircles, setLiveCircles] = useState<NearbyCircle[]>([]);
-  const [circlesLoading, setCirclesLoading] = useState(false);
 
   const [authMode, setAuthMode] = useState<"signin" | "signup">(() => (readAccountHint() ? "signin" : "signup"));
   const [showEmailForm, setShowEmailForm] = useState(false);
@@ -136,29 +103,9 @@ export default function Onboarding() {
 
   const redirectTimerRef = useRef<number | null>(null);
   const hasQueuedRedirectRef = useRef(false);
-  const markedUserRef = useRef<string | null>(null);
-  const joinedCircleRef = useRef<string | null>(null);
+  const shouldRouteToProfileCreationRef = useRef(false);
 
   const city = cityInput.trim() || detectedCity.trim();
-
-  const sampleCircles = useMemo<NearbyCircle[]>(() => {
-    const matched = interests.length
-      ? CIRCLE_TEMPLATES.filter((c) => interests.includes(c.interest) || c.interest === "Other")
-      : CIRCLE_TEMPLATES;
-
-    const ordered = [...matched, ...CIRCLE_TEMPLATES.filter((c) => !matched.some((m) => m.id === c.id))];
-
-    return ordered.slice(0, 3).map((c) => ({
-      id: c.id,
-      name: c.name,
-      nextMeetup: formatMeetup(c.daysAhead),
-      city: city || "Near you",
-      members: c.members,
-      source: "sample",
-    }));
-  }, [city, interests]);
-
-  const circles = liveCircles.length ? liveCircles : sampleCircles;
 
   const computeDestination = useCallback(() => {
     const previous = location?.state?.from;
@@ -177,15 +124,11 @@ export default function Onboarding() {
     }, 700);
   }, [navigate]);
 
-  const markOnboarded = useCallback(async (userId: string) => {
-    localStorage.setItem("onboardingSeen", "1");
+  const markOnboardingSeen = useCallback(() => {
     try {
-      await supabase
-        .from("profiles")
-        .update({ onboarded: true })
-        .eq("user_id", userId);
-    } catch (err) {
-      console.error("Failed to update onboarding:", err);
+      localStorage.setItem("onboardingSeen", "1");
+    } catch {
+      // no-op
     }
   }, []);
 
@@ -194,30 +137,8 @@ export default function Onboarding() {
       sessionStorage.removeItem("onboarding_step");
       sessionStorage.removeItem("onboarding_city");
       sessionStorage.removeItem("onboarding_interests");
-      sessionStorage.removeItem("onboarding_circle");
     } catch {
       // no-op
-    }
-  }, []);
-
-  const ensureJoinedCircle = useCallback(async (groupId: string, userId: string) => {
-    try {
-      const nowIso = new Date().toISOString();
-      const { error } = await supabase
-        .from("group_members")
-        .upsert(
-          {
-            group_id: groupId,
-            user_id: userId,
-            role: "member",
-            status: "active",
-            last_joined_at: nowIso,
-          },
-          { onConflict: "group_id,user_id" }
-        );
-      if (error) throw error;
-    } catch (err) {
-      console.error("Failed to join selected circle:", err);
     }
   }, []);
 
@@ -232,12 +153,10 @@ export default function Onboarding() {
       sessionStorage.setItem("onboarding_step", String(Math.min(step, 4)));
       sessionStorage.setItem("onboarding_city", cityInput);
       sessionStorage.setItem("onboarding_interests", JSON.stringify(interests));
-      if (selectedCircleId) sessionStorage.setItem("onboarding_circle", selectedCircleId);
-      else sessionStorage.removeItem("onboarding_circle");
     } catch {
       // no-op
     }
-  }, [cityInput, interests, selectedCircleId, step]);
+  }, [cityInput, interests, step]);
 
   useEffect(() => {
     try {
@@ -291,85 +210,6 @@ export default function Onboarding() {
   }, [user?.id]);
 
   useEffect(() => {
-    if (step !== 3) return;
-
-    let cancelled = false;
-
-    const loadLiveCircles = async () => {
-      setCirclesLoading(true);
-      try {
-        let query = supabase
-          .from("groups")
-          .select("id,title,city,capacity,created_at")
-          .eq("visibility", "public")
-          .order("created_at", { ascending: false })
-          .limit(12);
-
-        if (city) query = query.ilike("city", `%${city}%`);
-
-        const { data, error } = await query;
-        if (error || !data?.length) {
-          if (!cancelled) setLiveCircles([]);
-          return;
-        }
-
-        const picked = data.slice(0, 3);
-        const nowIso = new Date().toISOString();
-
-        const hydrated = await Promise.all(
-          picked.map(async (g: any) => {
-            const [memberRes, eventRes] = await Promise.all([
-              supabase
-                .from("group_members")
-                .select("*", { count: "exact", head: true })
-                .eq("group_id", g.id)
-                .in("status", ["active", "accepted"]),
-              supabase
-                .from("group_events")
-                .select("starts_at")
-                .eq("group_id", g.id)
-                .not("starts_at", "is", null)
-                .gte("starts_at", nowIso)
-                .order("starts_at", { ascending: true })
-                .limit(1),
-            ]);
-
-            const members = !memberRes.error && typeof memberRes.count === "number"
-              ? memberRes.count
-              : Math.max(1, Number(g.capacity) || 1);
-
-            const startsAt = eventRes.data?.[0]?.starts_at || null;
-            const nextMeetup = startsAt
-              ? new Date(startsAt).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
-              : formatMeetup(3);
-
-            return {
-              id: g.id,
-              name: g.title || "Circle",
-              city: g.city || city || "Near you",
-              members,
-              nextMeetup,
-              source: "live" as const,
-            };
-          })
-        );
-
-        if (!cancelled) setLiveCircles(hydrated);
-      } catch {
-        if (!cancelled) setLiveCircles([]);
-      } finally {
-        if (!cancelled) setCirclesLoading(false);
-      }
-    };
-
-    void loadLiveCircles();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [city, step]);
-
-  useEffect(() => {
     const checkStandalone = () => {
       const standalone = window.matchMedia?.("(display-mode: standalone)")?.matches || (window.navigator as any)?.standalone;
       if (standalone) {
@@ -402,28 +242,29 @@ export default function Onboarding() {
 
   useEffect(() => {
     if (!user) {
-      markedUserRef.current = null;
+      shouldRouteToProfileCreationRef.current = false;
       return;
     }
 
-    if (markedUserRef.current !== user.id) {
-      markedUserRef.current = user.id;
-      void markOnboarded(user.id);
-    }
+    markOnboardingSeen();
 
-    if (selectedCircleId) {
-      const joinKey = `${user.id}:${selectedCircleId}`;
-      if (joinedCircleRef.current !== joinKey) {
-        joinedCircleRef.current = joinKey;
-        void ensureJoinedCircle(selectedCircleId, user.id);
-      }
-      setStep(5);
+    if (shouldRouteToProfileCreationRef.current) {
+      shouldRouteToProfileCreationRef.current = false;
+      clearOnboardingDraft();
+      navigate("/profile-creation", { replace: true });
       return;
     }
 
     clearOnboardingDraft();
     queueProfileRedirect(computeDestination());
-  }, [clearOnboardingDraft, computeDestination, ensureJoinedCircle, markOnboarded, queueProfileRedirect, selectedCircleId, user]);
+  }, [
+    clearOnboardingDraft,
+    computeDestination,
+    markOnboardingSeen,
+    navigate,
+    queueProfileRedirect,
+    user,
+  ]);
 
   const detectLocation = useCallback(() => {
     if (!("geolocation" in navigator)) {
@@ -477,15 +318,6 @@ export default function Onboarding() {
       return;
     }
     setStepErr(null);
-    setStep(3);
-  }
-
-  function continueFromCircles() {
-    if (!selectedCircleId) {
-      setStepErr("Join one circle to continue.");
-      return;
-    }
-    setStepErr(null);
     setStep(4);
   }
 
@@ -507,9 +339,23 @@ export default function Onboarding() {
         setHasAccountHint(true);
 
         if (!data?.session) {
-          setAuthErr("Check your email to confirm your account, then sign in.");
-          return;
+          // If signUp doesn't return a session, try direct sign-in before asking for email confirmation.
+          const { error: signInAfterSignupError } = await supabase.auth.signInWithPassword({
+            email: email.trim(),
+            password: password.trim(),
+          });
+          if (signInAfterSignupError) {
+            setAuthErr("Check your email to confirm your account, then sign in.");
+            setAuthMode("signin");
+            setShowEmailForm(true);
+            return;
+          }
         }
+
+        shouldRouteToProfileCreationRef.current = true;
+        clearOnboardingDraft();
+        navigate("/profile-creation", { replace: true });
+        return;
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: password.trim() });
         if (error) throw error;
@@ -680,7 +526,7 @@ export default function Onboarding() {
 
             {step > 0 && step < 5 ? (
               <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700 ring-1 ring-black/10">
-                Step {Math.min(step, 4)} of 4
+                Step {Math.min(step >= 4 ? 3 : step, 3)} of 3
               </span>
             ) : null}
           </header>
@@ -769,57 +615,10 @@ export default function Onboarding() {
               </div>
             ) : null}
 
-            {step === 3 ? (
-              <div className="space-y-5">
-                <h1 className="text-3xl font-black text-slate-900">Here are circles near you.</h1>
-                <p className="text-base text-slate-700">Join one to continue.</p>
-
-                <div className="space-y-3">
-                  {circlesLoading ? <p className="text-sm text-slate-600">Finding circles near you...</p> : null}
-
-                  {circles.map((circle) => {
-                    const joined = selectedCircleId === circle.id;
-                    return (
-                      <div key={circle.id} className="rounded-2xl border border-slate-200 bg-white p-4">
-                        <p className="text-base font-semibold text-slate-900">{circle.name}</p>
-                        <p className="mt-1 text-sm text-slate-600">{circle.city}</p>
-                        <div className="mt-2 flex items-center gap-3 text-xs font-medium text-slate-600">
-                          <span>{circle.members} members</span>
-                          <span>Next meetup {circle.nextMeetup}</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedCircleId(circle.id);
-                            setStepErr(null);
-                          }}
-                          className={`mt-3 rounded-full px-4 py-2 text-sm font-semibold transition ${
-                            joined
-                              ? "bg-emerald-600 text-white"
-                              : "border border-slate-300 bg-white text-slate-800 hover:border-slate-400"
-                          }`}
-                        >
-                          {joined ? "Joined" : "Join"}
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <button
-                  type="button"
-                  onClick={continueFromCircles}
-                  className="w-full rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black"
-                >
-                  Join one to continue
-                </button>
-              </div>
-            ) : null}
-
             {step === 4 ? (
               <div className="space-y-5">
                 <h1 className="text-3xl font-black text-slate-900">
-                  {authMode === "signin" ? "Sign in to continue." : "Create your account to join your first circle."}
+                  {authMode === "signin" ? "Sign in to continue." : "Create your account to continue."}
                 </h1>
                 <p className="text-base text-slate-700">{authMode === "signin" ? "Welcome back." : "One quick step left."}</p>
 

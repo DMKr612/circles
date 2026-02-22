@@ -693,7 +693,7 @@ export default function SettingsPage() {
     setLogoutBusy(true);
     try {
       await supabase.auth.signOut();
-      navigate("/onboarding", { replace: true });
+      navigate("/auth", { replace: true });
     } catch (err: any) {
       setToast({ kind: "error", text: err?.message || "Could not log out." });
       setLogoutBusy(false);
