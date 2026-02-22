@@ -36,7 +36,6 @@ const ProfileCreation = lazy(() => import("./pages/ProfileCreation"));
 const GroupsByGame = lazy(() => import("./pages/groups/GroupsByGame"));
 const MyGroups = lazy(() => import("./pages/groups/MyGroups"));
 const Landing = lazy(() => import("./pages/Landing"));
-const Onboarding = lazy(() => import("./pages/Onboarding"));
 const AuthEntry = lazy(() => import("./pages/AuthEntry"));
 const JoinByCode = lazy(() => import("./pages/JoinByCode"));
 const NotificationsPage = lazy(() => import("./pages/Notifications"));
@@ -182,7 +181,6 @@ export default function App() {
   const loc = useLocation();
   const hideSupportButton =
     loc.pathname.startsWith("/chats") ||
-    loc.pathname.startsWith("/onboarding") ||
     loc.pathname.startsWith("/auth");
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -212,7 +210,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<Landing />} />
                 <Route path="/auth" element={<AuthEntry />} />
-                <Route path="/onboarding" element={<Onboarding />} />
+                <Route path="/onboarding" element={<Navigate to="/auth" replace />} />
                 <Route path="/legal" element={<Legal />} />
                 <Route path="/invite/:code" element={<JoinByCode />} />
                 <Route path="/auth/callback" element={<AuthCallback />} />
