@@ -128,13 +128,6 @@ function toStars(score: number) {
   return Math.round((score / 20) * 10) / 10;
 }
 
-function countWords(value: string): number {
-  return value
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean).length;
-}
-
 type Props = {
   open: boolean;
   onClose: () => void;
@@ -204,7 +197,7 @@ export default function PersonalityQuizModal({
       if (name.length < 2) throw new Error("Please add your name in Settings first.");
       if (!city) throw new Error("Please add your city in Settings first.");
       if (!bio) throw new Error("Please add your bio in Settings first.");
-      if (countWords(bio) < 10) throw new Error("Your bio must be at least 10 words.");
+      if (bio.length < 10) throw new Error("Your bio must be at least 10 characters.");
       if (age === null || age < 13 || age > 120) {
         throw new Error("Please add a valid age (13-120) in Settings first.");
       }
