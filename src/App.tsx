@@ -227,6 +227,7 @@ export default function App() {
 
                 <Route element={<RequireAuth><Layout /></RequireAuth>}>
                   <Route path="/browse" element={<BrowsePage />} />
+                  <Route path="/browse/:activity" element={<GroupsByGame />} />
                   <Route path="/groups" element={<Groups />} />
                   <Route path="/announcements" element={<AnnouncementsPage />} />
                   <Route path="/notifications" element={<NotificationsPage />} />

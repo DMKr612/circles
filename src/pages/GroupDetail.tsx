@@ -44,6 +44,14 @@ type GroupAnnouncement = {
 
 type PollWithLate = Poll & { late_voter_ids?: string[] | null };
 
+type NextMeetupPreview = {
+  source: "poll_leader" | "event" | "announcement";
+  title: string;
+  startsAt: string | null;
+  place: string | null;
+  voteCount?: number;
+};
+
 export default function GroupDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -554,14 +562,29 @@ export default function GroupDetail() {
     let cancelled = false;
     (async () => {
       if (!group?.id) return;
-      const { data } = await supabase
+      const upcoming = await supabase
+        .from('group_events')
+        .select('*')
+        .eq('group_id', group.id)
+        .not('starts_at', 'is', null)
+        .gte('starts_at', new Date().toISOString())
+        .order('starts_at', { ascending: true })
+        .limit(1);
+
+      if (cancelled) return;
+      if (!upcoming.error && (upcoming.data ?? []).length > 0) {
+        setEvent((upcoming.data?.[0] as GroupEvent) || null);
+        return;
+      }
+
+      const latest = await supabase
         .from('group_events')
         .select('*')
         .eq('group_id', group.id)
         .order('created_at', { ascending: false })
         .limit(1);
       if (cancelled) return;
-      setEvent(((data ?? [])[0] as GroupEvent) || null);
+      setEvent(((latest.data ?? [])[0] as GroupEvent) || null);
     })();
     return () => { cancelled = true; };
   }, [group?.id, poll?.id]);
@@ -1107,6 +1130,21 @@ export default function GroupDetail() {
     setVotingBusy(null);
   }
 
+  const pollLeader = useMemo(() => {
+    if (!poll || options.length === 0) return null;
+
+    let best: { option: PollOption; total: number; idx: number } | null = null;
+    options.forEach((option, idx) => {
+      const voteCount = counts[option.id] ?? 0;
+      const isNotComing = option.label.trim().toLowerCase() === "not coming";
+      const total = isNotComing ? voteCount + Math.max(0, memberCount - votedCount) : voteCount;
+      if (!best || total > best.total || (total === best.total && idx < best.idx)) {
+        best = { option, total, idx };
+      }
+    });
+    return best;
+  }, [poll, options, counts, memberCount, votedCount]);
+
   if (loading) return <div className="p-20 flex justify-center"><div className="animate-spin h-8 w-8 border-2 border-neutral-300 border-t-black rounded-full"/></div>;
   if (!group) return <div className="p-10 text-center">Group not found.</div>;
 
@@ -1123,47 +1161,44 @@ export default function GroupDetail() {
     }) ||
     announcements[0] ||
     null;
-  const nextMeetup =
-    event?.starts_at
+  const nextMeetup: NextMeetupPreview | null =
+    pollLeader
       ? {
-          source: "event" as const,
-          title: event.title || "Circle meetup",
-          startsAt: event.starts_at,
-          place: event.place || group.city || null,
+          source: "poll_leader",
+          title: pollLeader.option.label || poll?.title || "Poll leader",
+          startsAt: pollLeader.option.starts_at || null,
+          place: pollLeader.option.place || group.city || null,
+          voteCount: pollLeader.total,
         }
-      : upcomingAnnouncement
+      : event?.starts_at
         ? {
-            source: "announcement" as const,
-            title: upcomingAnnouncement.title || "Circle meetup",
-            startsAt: upcomingAnnouncement.datetime,
-            place: upcomingAnnouncement.location || group.city || null,
+            source: "event",
+            title: event.title || "Circle meetup",
+            startsAt: event.starts_at,
+            place: event.place || group.city || null,
           }
-        : null;
+        : upcomingAnnouncement
+          ? {
+              source: "announcement",
+              title: upcomingAnnouncement.title || "Circle meetup",
+              startsAt: upcomingAnnouncement.datetime,
+              place: upcomingAnnouncement.location || group.city || null,
+            }
+          : null;
   const nextMeetupTs = nextMeetup?.startsAt ? new Date(nextMeetup.startsAt).getTime() : Number.NaN;
   const meetupSoon =
     Number.isFinite(nextMeetupTs) &&
     nextMeetupTs > Date.now() &&
     nextMeetupTs - Date.now() <= 7 * 24 * 60 * 60 * 1000;
-  const activityLabel = meetupSoon ? "Meetup happening soon" : "Active this week";
-  const groupId = group.id;
-
-  async function handleConfirmAttendance() {
-    if (!isMember) {
-      await joinGroup();
-      return;
-    }
-    if (poll?.status === "open") {
-      const el = document.getElementById("poll-section");
-      if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-      if (location.hash !== "#poll") nav(`/group/${id}#poll`, { replace: true });
-      setMsg("Vote in the poll to confirm your attendance.");
-      return;
-    }
-    nav(`/chats?groupId=${groupId}`);
-  }
+  const activityLabel =
+    nextMeetup?.source === "poll_leader"
+      ? "Based on current votes"
+      : meetupSoon
+        ? "Meetup happening soon"
+        : "Active this week";
 
   function handleAddMeetupToCalendar() {
-    if (!nextMeetup) return;
+    if (!nextMeetup || !nextMeetup.startsAt) return;
     if (nextMeetup.source === "event" && event) {
       downloadCalendar(event);
       return;
@@ -1272,11 +1307,25 @@ export default function GroupDetail() {
                 <div className="text-xs font-bold uppercase tracking-wide text-emerald-700">Next Meetup</div>
                 {nextMeetup ? (
                   <>
-                    <div className="mt-1 text-2xl font-extrabold text-neutral-900">{formatMeetupHeadline(nextMeetup.startsAt)}</div>
-                    <div className="mt-1 text-sm font-semibold text-neutral-700">{nextMeetup.place || "Location TBD"}</div>
-                    <div className="mt-2 inline-flex items-center rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                      {spotsLeft} spot{spotsLeft === 1 ? "" : "s"} left
+                    <div className="mt-1 text-2xl font-extrabold text-neutral-900">
+                      {nextMeetup.startsAt
+                        ? formatMeetupHeadline(nextMeetup.startsAt)
+                        : nextMeetup.source === "poll_leader"
+                          ? `${nextMeetup.title} is leading`
+                          : "Meetup time TBD"}
                     </div>
+                    <div className="mt-1 text-sm font-semibold text-neutral-700">
+                      {nextMeetup.startsAt ? (nextMeetup.place || "Location TBD") : "No date selected yet"}
+                    </div>
+                    {nextMeetup.source === "poll_leader" ? (
+                      <div className="mt-2 inline-flex items-center rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                        {(nextMeetup.voteCount ?? 0)} vote{(nextMeetup.voteCount ?? 0) === 1 ? "" : "s"} leading
+                      </div>
+                    ) : (
+                      <div className="mt-2 inline-flex items-center rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                        {spotsLeft} spot{spotsLeft === 1 ? "" : "s"} left
+                      </div>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1286,12 +1335,6 @@ export default function GroupDetail() {
                 )}
               </div>
               <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => { void handleConfirmAttendance(); }}
-                  className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
-                >
-                  <Check className="h-4 w-4" /> Confirm Attendance
-                </button>
                 <button
                   onClick={() => nav(`/chats?groupId=${group.id}`)}
                   disabled={!isMember}
@@ -1305,9 +1348,9 @@ export default function GroupDetail() {
                 </button>
                 <button
                   onClick={handleAddMeetupToCalendar}
-                  disabled={!nextMeetup}
+                  disabled={!nextMeetup || !nextMeetup.startsAt}
                   className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-bold ${
-                    nextMeetup
+                    nextMeetup && nextMeetup.startsAt
                       ? "border-neutral-300 bg-white text-neutral-800 hover:border-neutral-400"
                       : "border-neutral-200 bg-neutral-100 text-neutral-400 cursor-not-allowed"
                   }`}

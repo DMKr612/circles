@@ -243,15 +243,28 @@ async function refreshFriendData(userId: string) {
     return q ? list.filter((o) => o.label.toLowerCase().includes(q) || o.id.includes(q)) : list;
   }, [category, gameQuery, opts]);
 
+  const isAllowedCategory = useMemo(
+    () => cats.some((c) => c.name.toLowerCase() === (category || "").toLowerCase()),
+    [cats, category]
+  );
+  const selectedGameOpt = useMemo(
+    () => opts.find((o) => o.id === gameId) || null,
+    [opts, gameId]
+  );
+  const isAllowedGameForCategory = useMemo(() => {
+    if (!selectedGameOpt) return false;
+    return selectedGameOpt.category.toLowerCase() === (category || "").toLowerCase();
+  }, [selectedGameOpt, category]);
+
   const canSubmit = !listsLoading
     && title.trim().length > 0
-    && category
-    && gameId
+    && isAllowedCategory
+    && isAllowedGameForCategory
     && capacity >= 3 && capacity <= 16
     && cityValid; // city required and must be in whitelist
 
   const [step, setStep] = useState<number>(1);
-  const canNextFrom1 = title.trim().length > 0 && !!category && !!gameId;
+  const canNextFrom1 = title.trim().length > 0 && isAllowedCategory && isAllowedGameForCategory;
   const canNextFrom2 = cityValid && capacity >= 3 && capacity <= 16;
 
   function goNext() {
@@ -340,6 +353,14 @@ async function refreshFriendData(userId: string) {
   async function handleSubmit() {
     if (!canSubmit) return;
     if (!cityValid) { setCityTouched(true); return; }
+    if (!isAllowedCategory) {
+      alert("Please choose a valid category from the allowed list.");
+      return;
+    }
+    if (!selectedGameOpt || !isAllowedGameForCategory) {
+      alert("Please choose an allowed activity for the selected category.");
+      return;
+    }
     const { data: u, error: uErr } = await supabase.auth.getUser();
     if (uErr || !u?.user?.id) {
       alert(uErr?.message || "Sign in required");
@@ -355,8 +376,8 @@ async function refreshFriendData(userId: string) {
     const row: Record<string, any> = {
       title: title.trim(),
       description: (description.trim().replace(/\s+$/, "") || null),
-      category: (category || "").toLowerCase(),
-      game: gameId,                          // allowed_games.id
+      category: selectedGameOpt.category.toLowerCase(),
+      game: selectedGameOpt.id,              // allowed_games.id
       city: cleanedCity,                     // <-- persist city to DB
       lat: geo?.lat ?? null,
       lng: geo?.lng ?? null,

@@ -1,417 +1,1019 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { supabase } from "../../lib/supabase";
-import { checkGroupJoinBlock, joinBlockMessage } from "../../lib/ratings";
-import { Search, MapPin, ArrowLeft, Clock, HelpCircle, Lightbulb } from "lucide-react";
-import { GAME_LIST } from "../../lib/constants";
-import { useAuth } from "../../App";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { ArrowLeft, ChevronDown, Filter, Loader2, MapPin } from "lucide-react";
+import { supabase } from "@/lib/supabase";
+import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
+import { formatDistanceKm, haversineKm, type LatLng } from "@/lib/location";
+import { GAME_LIST } from "@/lib/constants";
+import { useAuth } from "@/App";
 
-type Group = {
-  id: string;
-  title: string | null;
-  description: string | null;
-  game: string | null;
-  category: string | null;
-  is_online: boolean | null;
-  online_link: string | null;
+type ActivitySort =
+  | "newest_groups"
+  | "nearest_groups"
+  | "upcoming_meetups"
+  | "most_members"
+  | "most_active";
+
+type LocationMode = "gps" | "profile_city";
+
+type ProfileLocation = {
   city: string | null;
-  created_at: string | null;
-  code?: string | null;
-  capacity?: number | null;
-  requires_verification_level?: number | null;
+  lat: number | null;
+  lng: number | null;
+  location_updated_at: string | null;
+  location_source: "gps" | "manual" | null;
 };
 
-const GROUP_LIST_FIELDS = [
-  "id",
-  "title",
-  "description",
-  "game",
-  "category",
-  "is_online",
-  "online_link",
-  "city",
-  "created_at",
-  "code",
-  "capacity",
-  "requires_verification_level",
-].join(",");
+type ActivityCatalogItem = {
+  id: string;
+  name: string;
+  category: string | null;
+  emoji: string | null;
+  slug: string;
+};
 
-function fmtDate(d?: string | null) {
-  if (!d) return '';
-  try { return new Date(d).toLocaleDateString(); } catch { return ''; }
+type GroupRow = {
+  id: string;
+  title: string | null;
+  city: string | null;
+  capacity: number | null;
+  created_at: string;
+  game: string | null;
+  game_slug: string | null;
+  category: string | null;
+  lat: number | null;
+  lng: number | null;
+  requires_verification_level: number | null;
+};
+
+type GroupMemberRow = {
+  group_id: string;
+  user_id: string;
+  status: string | null;
+};
+
+type GroupEventRow = {
+  group_id: string;
+  title: string | null;
+  starts_at: string | null;
+  place: string | null;
+};
+
+type GroupPollRow = {
+  group_id: string;
+  status: string | null;
+  closes_at: string | null;
+};
+
+type GroupReadRow = {
+  group_id: string;
+};
+
+type GroupCard = {
+  id: string;
+  title: string;
+  city: string | null;
+  distanceKm: number | null;
+  cityRank: number;
+  memberCount: number;
+  capacity: number | null;
+  isJoined: boolean;
+  requiresVerificationLevel: number;
+  hasOpenPoll: boolean;
+  nextMeetup: GroupEventRow | null;
+  upcomingMeetups: number;
+  createdTs: number;
+  activeScore: number;
+};
+
+const MAX_GROUPS = 7;
+const LOCATION_MODE_KEY = "circles.browse.location_mode.v1";
+const DEFAULT_SORT: ActivitySort = "most_active";
+const GROUP_SELECT_FULL =
+  "id,title,city,capacity,created_at,game,game_slug,category,lat,lng,requires_verification_level";
+const GROUP_SELECT_NO_GAME_SLUG =
+  "id,title,city,capacity,created_at,game,category,lat,lng,requires_verification_level";
+const GROUP_SELECT_MINIMAL = "id,title,city,capacity,created_at,game,category,requires_verification_level";
+
+const SORT_OPTIONS: Array<{ key: ActivitySort; label: string }> = [
+  { key: "newest_groups", label: "Newest groups" },
+  { key: "nearest_groups", label: "Nearest groups" },
+  { key: "upcoming_meetups", label: "Upcoming meetups (soonest)" },
+  { key: "most_members", label: "Most members" },
+  { key: "most_active", label: "Most active" },
+];
+
+function normalizeCity(value: string | null | undefined): string {
+  return (value || "").trim().toLowerCase();
 }
 
-function normCity(s?: string | null) {
-  if (!s) return '';
+function normalizeLoose(value: string | null | undefined): string {
+  return (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "").trim();
+}
+
+function slugify(value: string | null | undefined): string {
+  return (value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+}
+
+function toTitleCase(value: string): string {
+  const cleaned = value.replace(/[-_]+/g, " ").trim();
+  if (!cleaned) return "Activity";
+  return cleaned
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function cityDistanceRank(city: string | null, userCity: string | null): number {
+  if (!userCity) return 1;
+  if (!city) return 2;
+  return normalizeCity(city) === normalizeCity(userCity) ? 0 : 1;
+}
+
+function formatMeetupDate(iso: string | null): string {
+  if (!iso) return "Date TBD";
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "Date TBD";
+  const day = date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return `${day} · ${time}`;
+}
+
+function hasColumnError(error: any): boolean {
+  return String(error?.code || "") === "42703";
+}
+
+function isActiveMemberStatus(status: string | null | undefined): boolean {
+  const normalized = String(status || "").toLowerCase();
+  return !normalized || normalized === "active" || normalized === "accepted";
+}
+
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(max-width: 767px)").matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const media = window.matchMedia("(max-width: 767px)");
+    const onChange = () => setIsMobile(media.matches);
+    onChange();
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  return isMobile;
+}
+
+function readSavedLocationMode(): LocationMode {
   try {
-    return s.normalize('NFKD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
+    const raw = localStorage.getItem(LOCATION_MODE_KEY);
+    return raw === "profile_city" ? "profile_city" : "gps";
   } catch {
-    return s.toLowerCase().trim();
+    return "gps";
   }
+}
+
+async function fetchProfileLocation(userId: string): Promise<ProfileLocation> {
+  const full = await supabase
+    .from("profiles")
+    .select("city, lat, lng, location_updated_at, location_source")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (!full.error) {
+    const row = (full.data ?? null) as
+      | {
+          city?: string | null;
+          lat?: number | null;
+          lng?: number | null;
+          location_updated_at?: string | null;
+          location_source?: "gps" | "manual" | null;
+        }
+      | null;
+
+    return {
+      city: row?.city || null,
+      lat: typeof row?.lat === "number" ? row.lat : null,
+      lng: typeof row?.lng === "number" ? row.lng : null,
+      location_updated_at: row?.location_updated_at || null,
+      location_source: row?.location_source || null,
+    };
+  }
+
+  if (!hasColumnError(full.error)) throw full.error;
+
+  const fallback = await supabase.from("profiles").select("city").eq("user_id", userId).maybeSingle();
+  if (fallback.error) throw fallback.error;
+  const row = (fallback.data ?? null) as { city?: string | null } | null;
+
+  return {
+    city: row?.city || null,
+    lat: null,
+    lng: null,
+    location_updated_at: null,
+    location_source: null,
+  };
+}
+
+function matchesActivity(group: GroupRow, routeSlug: string, meta: ActivityCatalogItem | null): boolean {
+  const targetSlug = slugify(routeSlug);
+  const targetLoose = normalizeLoose(routeSlug);
+
+  const tokens = [group.game, group.game_slug].filter(Boolean) as string[];
+  const tokenSlugs = tokens.map((token) => slugify(token));
+  const tokenLoose = tokens.map((token) => normalizeLoose(token));
+
+  if (targetSlug && tokenSlugs.includes(targetSlug)) return true;
+  if (targetLoose && tokenLoose.includes(targetLoose)) return true;
+
+  if (!meta) return false;
+
+  const metaTokens = [meta.id, meta.name];
+  const metaSlugs = metaTokens.map((token) => slugify(token));
+  const metaLoose = metaTokens.map((token) => normalizeLoose(token));
+
+  if (tokenSlugs.some((token) => metaSlugs.includes(token)) || tokenLoose.some((token) => metaLoose.includes(token))) {
+    return true;
+  }
+
+  // Legacy fallback: older rows may miss `game` but still include activity in title.
+  const titleLoose = normalizeLoose(group.title);
+  const metaNameLoose = normalizeLoose(meta.name);
+  const metaIdLoose = normalizeLoose(meta.id);
+  if (!titleLoose) return false;
+  return (!!metaNameLoose && titleLoose.includes(metaNameLoose)) || (!!metaIdLoose && titleLoose.includes(metaIdLoose));
+}
+
+function sortGroupCards(cards: GroupCard[], sortBy: ActivitySort): GroupCard[] {
+  const rows = [...cards];
+
+  rows.sort((a, b) => {
+    if (sortBy === "newest_groups") {
+      if (b.createdTs !== a.createdTs) return b.createdTs - a.createdTs;
+      return a.title.localeCompare(b.title);
+    }
+
+    if (sortBy === "nearest_groups") {
+      const aDist = a.distanceKm ?? Number.POSITIVE_INFINITY;
+      const bDist = b.distanceKm ?? Number.POSITIVE_INFINITY;
+      if (aDist !== bDist) return aDist - bDist;
+      if (a.cityRank !== b.cityRank) return a.cityRank - b.cityRank;
+      return a.title.localeCompare(b.title);
+    }
+
+    if (sortBy === "upcoming_meetups") {
+      const aTs = a.nextMeetup?.starts_at ? new Date(a.nextMeetup.starts_at).getTime() : Number.POSITIVE_INFINITY;
+      const bTs = b.nextMeetup?.starts_at ? new Date(b.nextMeetup.starts_at).getTime() : Number.POSITIVE_INFINITY;
+      if (aTs !== bTs) return aTs - bTs;
+      if (b.upcomingMeetups !== a.upcomingMeetups) return b.upcomingMeetups - a.upcomingMeetups;
+      return a.title.localeCompare(b.title);
+    }
+
+    if (sortBy === "most_members") {
+      if (b.memberCount !== a.memberCount) return b.memberCount - a.memberCount;
+      return a.title.localeCompare(b.title);
+    }
+
+    if (b.activeScore !== a.activeScore) return b.activeScore - a.activeScore;
+    if (b.upcomingMeetups !== a.upcomingMeetups) return b.upcomingMeetups - a.upcomingMeetups;
+    return a.title.localeCompare(b.title);
+  });
+
+  return rows;
 }
 
 export default function GroupsByGame() {
   const { user } = useAuth();
   const userId = user?.id || null;
+  const isMobile = useIsMobile();
 
-  const { game = '' } = useParams();
-  const key = (game || '').toLowerCase().replace(/[^a-z0-9]+/g, '').trim();
-  const gameMeta = useMemo(() => GAME_LIST.find(g => g.id === key) || null, [key]);
-  const display = (game || '').replace(/-/g, ' ').trim();
-  const displayName = gameMeta?.name || display || 'Game';
-  const howTo = useMemo(() => {
-    const raw = gameMeta?.howTo;
-    if (!raw) return [] as string[];
-    return (Array.isArray(raw) ? raw : [raw]).map((s) => s.trim()).filter(Boolean);
-  }, [gameMeta]);
+  const { activity, game } = useParams();
+  const routeToken = (activity || game || "").trim();
+  const activitySlug = slugify(routeToken) || "activity";
 
-  const [rows, setRows] = useState<Group[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<ActivityCatalogItem[]>(() =>
+    GAME_LIST.map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      category: entry.tag || null,
+      emoji: entry.image || null,
+      slug: slugify(entry.id || entry.name),
+    }))
+  );
+
+  const activityMeta = useMemo(() => {
+    const bySlug = catalog.find((entry) => entry.slug === activitySlug);
+    if (bySlug) return bySlug;
+    const byLoose = catalog.find(
+      (entry) =>
+        normalizeLoose(entry.id) === normalizeLoose(routeToken) ||
+        normalizeLoose(entry.name) === normalizeLoose(routeToken)
+    );
+    return byLoose || null;
+  }, [activitySlug, catalog, routeToken]);
+
+  const displayName = activityMeta?.name || toTitleCase(routeToken || "Activity");
+  const displayEmoji = activityMeta?.emoji || null;
+
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [rows, setRows] = useState<GroupRow[]>([]);
 
-  const [memberOf, setMemberOf] = useState<Set<string>>(new Set());
+  const [memberCountByGroup, setMemberCountByGroup] = useState<Record<string, number>>({});
+  const [nextEventByGroup, setNextEventByGroup] = useState<Record<string, GroupEventRow>>({});
+  const [upcomingCountByGroup, setUpcomingCountByGroup] = useState<Record<string, number>>({});
+  const [openPollByGroup, setOpenPollByGroup] = useState<Record<string, boolean>>({});
+  const [recentReadsByGroup, setRecentReadsByGroup] = useState<Record<string, number>>({});
+
+  const [joinedGroupIds, setJoinedGroupIds] = useState<Set<string>>(new Set());
+  const [joinedCount, setJoinedCount] = useState(0);
+  const [myVerificationLevel, setMyVerificationLevel] = useState(1);
   const [joiningId, setJoiningId] = useState<string | null>(null);
-  const [joinedCount, setJoinedCount] = useState<number>(0);
-  const [myVerificationLevel, setMyVerificationLevel] = useState<number>(1);
-  const MAX_GROUPS = 7;
 
-  const [sortBy, setSortBy] = useState<'new' | 'online'>('new');
-  const [onlineCounts, setOnlineCounts] = useState<Record<string, number>>({});
-  
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [cityMode, setCityMode] = useState<'all' | 'mine'>('all');
-  const [myCity, setMyCity] = useState<string | null>(null);
-  const [myCityLoading, setMyCityLoading] = useState(false);
-  const [showGuide, setShowGuide] = useState(false);
+  const [profileLocation, setProfileLocation] = useState<ProfileLocation>({
+    city: null,
+    lat: null,
+    lng: null,
+    location_updated_at: null,
+    location_source: null,
+  });
+  const [locationMode] = useState<LocationMode>(() => readSavedLocationMode());
+  const [gpsCoords, setGpsCoords] = useState<LatLng | null>(null);
+
+  const [sortBy, setSortBy] = useState<ActivitySort>(DEFAULT_SORT);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterPanelRef = useRef<HTMLDivElement | null>(null);
+
+  const profileCoords = useMemo<LatLng | null>(() => {
+    if (typeof profileLocation.lat === "number" && typeof profileLocation.lng === "number") {
+      return { lat: profileLocation.lat, lng: profileLocation.lng };
+    }
+    return null;
+  }, [profileLocation.lat, profileLocation.lng]);
+
+  const activeCoords = useMemo<LatLng | null>(() => {
+    if (locationMode === "gps") return gpsCoords || profileCoords || null;
+    return profileCoords || null;
+  }, [gpsCoords, locationMode, profileCoords]);
+
+  const activeSortLabel = useMemo(
+    () => SORT_OPTIONS.find((option) => option.key === sortBy)?.label || "Most active",
+    [sortBy]
+  );
 
   useEffect(() => {
-    setShowGuide(false);
-  }, [key]);
+    if (isMobile) return;
 
-  // Fetch User's City
-  async function refreshMyCity() {
-    try {
-      setMyCityLoading(true);
-      const { data: u } = await supabase.auth.getUser();
-      const uid = u?.user?.id ?? null;
-      if (!uid) { setMyCity(null); setMyCityLoading(false); return; }
-      
-      const { data: prof } = await supabase
-        .from('profiles')
-        .select('city')
-        .eq('user_id', uid)
-        .maybeSingle();
-        
-      const val = (prof?.city as string) || null;
-      const normalized = val && typeof val === 'string' ? val.trim() : null;
-      setMyCity(normalized);
-    } catch {
-      setMyCity(null);
-    } finally {
-      setMyCityLoading(false);
+    function handleOutsideClick(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (filterPanelRef.current && !filterPanelRef.current.contains(target)) {
+        setFilterOpen(false);
+      }
     }
-  }
 
-  // Initial Data Load
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [isMobile]);
+
   useEffect(() => {
     let mounted = true;
+
     (async () => {
-      setLoading(true);
-      
-      // Build query: Find groups for this game OR match the code directly if user typed a code
-      let q = supabase
-        .from('groups')
-        .select(GROUP_LIST_FIELDS)
-        .order('created_at', { ascending: false })
-        .limit(100);
+      const fallback = GAME_LIST.map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        category: entry.tag || null,
+        emoji: entry.image || null,
+        slug: slugify(entry.id || entry.name),
+      }));
 
-      // Basic filter: Match the game slug/title
-      // We fetch mostly everything for this game, then filter in memory for search
-      // If the user searches for a specific code globally, we handle that in memory below
-      // or you could make a separate query if you want global code search.
-      // For now, let's assume we are browsing groups FOR THIS GAME.
-      q = q.or(`game_slug.eq.${key},game.ilike.${display}`);
+      try {
+        const { data, error: fetchError } = await supabase
+          .from("allowed_games")
+          .select("id, name, category")
+          .eq("is_active", true)
+          .order("name", { ascending: true });
 
-      const { data, error } = await q;
-      
-      if (!mounted) return;
-      if (error) {
-        setErr(error.message);
-      } else {
-        const gs = (data ?? []) as Group[];
-        setRows(gs);
-        
-        // Fetch online counts
-        try {
-          const ids = gs.map((g) => g.id).filter(Boolean);
-          if (ids.length) {
-            const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-            const { data: reads } = await supabase
-              .from('group_reads')
-              .select('group_id')
-              .in('group_id', ids)
-              .gt('last_read_at', since);
-            
-            const map: Record<string, number> = {};
-            (reads ?? []).forEach((r: any) => {
-              const k = String(r.group_id);
-              map[k] = (map[k] ?? 0) + 1;
-            });
-            setOnlineCounts(map);
-          }
-        } catch (e) { console.warn(e); }
+        if (!mounted) return;
+        if (fetchError || !data || data.length === 0) {
+          setCatalog(fallback);
+          return;
+        }
+
+        const emojiById = new Map(
+          GAME_LIST.map((entry) => [normalizeLoose(entry.id), entry.image || null] as const)
+        );
+
+        const rows = (data as Array<{ id: string; name: string; category: string | null }>)
+          .map((item) => {
+            const id = String(item.id || "").trim();
+            if (!id) return null;
+            return {
+              id,
+              name: String(item.name || id),
+              category: item.category || null,
+              emoji: emojiById.get(normalizeLoose(id)) || null,
+              slug: slugify(id),
+            } as ActivityCatalogItem;
+          })
+          .filter(Boolean) as ActivityCatalogItem[];
+
+        setCatalog(rows.length ? rows : fallback);
+      } catch (catalogError) {
+        console.warn("[activity] failed to load activity catalog", catalogError);
+        if (!mounted) return;
+        setCatalog(fallback);
       }
-      setLoading(false);
     })();
-    return () => { mounted = false; };
-  }, [key, display]);
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
+
     (async () => {
-      if (!userId) { 
-        setMemberOf(new Set());
+      if (!userId) {
+        setJoinedGroupIds(new Set());
         setJoinedCount(0);
         setMyVerificationLevel(1);
+        setProfileLocation({
+          city: null,
+          lat: null,
+          lng: null,
+          location_updated_at: null,
+          location_source: null,
+        });
         return;
       }
+
       try {
-        const { data: prof } = await supabase.from('profiles').select('verification_level').eq('user_id', userId).maybeSingle();
-        if (active) setMyVerificationLevel(prof?.verification_level ?? 1);
-      } catch {
-        if (active) setMyVerificationLevel(1);
+        const [profileRes, membershipsRes, profileLocationRes] = await Promise.all([
+          supabase.from("profiles").select("verification_level").eq("user_id", userId).maybeSingle(),
+          supabase
+            .from("group_members")
+            .select("group_id,status", { count: "exact" })
+            .eq("user_id", userId)
+            .in("status", ["active", "accepted"]),
+          fetchProfileLocation(userId),
+        ]);
+
+        if (!active) return;
+
+        setMyVerificationLevel(profileRes.data?.verification_level ?? 1);
+
+        const ids = new Set(
+          ((membershipsRes.data || []) as Array<{ group_id: string | null; status: string | null }>)
+            .filter((item) => !!item.group_id && isActiveMemberStatus(item.status))
+            .map((item) => String(item.group_id))
+        );
+        setJoinedGroupIds(ids);
+        setJoinedCount(membershipsRes.count ?? ids.size);
+
+        setProfileLocation(profileLocationRes);
+      } catch (bootstrapError) {
+        if (!active) return;
+        console.warn("[activity] failed to load user context", bootstrapError);
+        setMyVerificationLevel(1);
+        setJoinedGroupIds(new Set());
+        setJoinedCount(0);
       }
-      const { data, count } = await supabase
-        .from('group_members')
-        .select('group_id', { count: 'exact' })
-        .eq('user_id', userId)
-        .eq('status', 'active');
-      if (!active) return;
-      const ids = new Set((data ?? []).map((r: any) => r.group_id));
-      setMemberOf(ids);
-      setJoinedCount(count ?? (data?.length ?? 0));
     })();
-    return () => { active = false; };
+
+    return () => {
+      active = false;
+    };
   }, [userId]);
 
-  async function joinGroup(group: Group) {
-    if (!userId) { setErr('Sign in required'); return; }
-    if (joinedCount >= MAX_GROUPS) { setErr('You can only be in 7 circles at a time. Leave one to join another.'); return; }
+  useEffect(() => {
+    if (locationMode !== "gps") return;
+    if (!("geolocation" in navigator)) return;
 
-    const requiredLevel = Number(group.requires_verification_level ?? 1);
-    if (myVerificationLevel < requiredLevel) {
-      setErr('This circle is for verified members only. Increase your verification level to join.');
+    let cancelled = false;
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        if (cancelled) return;
+        setGpsCoords({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+        });
+      },
+      () => {
+        if (cancelled) return;
+        setGpsCoords(null);
+      },
+      {
+        enableHighAccuracy: false,
+        timeout: 8000,
+        maximumAge: 5 * 60 * 1000,
+      }
+    );
+
+    return () => {
+      cancelled = true;
+    };
+  }, [locationMode]);
+
+  const loadActivityGroups = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      let groupsData: GroupRow[] = [];
+
+      const full = await supabase.from("groups").select(GROUP_SELECT_FULL).order("created_at", { ascending: false }).limit(520);
+      if (!full.error) {
+        groupsData = (full.data || []) as GroupRow[];
+      } else if (hasColumnError(full.error)) {
+        const withoutGameSlug = await supabase
+          .from("groups")
+          .select(GROUP_SELECT_NO_GAME_SLUG)
+          .order("created_at", { ascending: false })
+          .limit(520);
+
+        if (!withoutGameSlug.error) {
+          groupsData = ((withoutGameSlug.data || []) as Array<Omit<GroupRow, "game_slug">>).map((group) => ({
+            ...group,
+            game_slug: null,
+          }));
+        } else if (hasColumnError(withoutGameSlug.error)) {
+          const minimal = await supabase
+            .from("groups")
+            .select(GROUP_SELECT_MINIMAL)
+            .order("created_at", { ascending: false })
+            .limit(520);
+          if (minimal.error) throw minimal.error;
+
+          groupsData = ((minimal.data || []) as Array<Omit<GroupRow, "game_slug" | "lat" | "lng">>).map((group) => ({
+            ...group,
+            game_slug: null,
+            lat: null,
+            lng: null,
+          }));
+        } else {
+          throw withoutGameSlug.error;
+        }
+      } else {
+        throw full.error;
+      }
+
+      const filteredGroups = groupsData.filter((group) => matchesActivity(group, activitySlug, activityMeta));
+      setRows(filteredGroups);
+
+      const groupIds = filteredGroups.map((group) => group.id).filter(Boolean);
+      if (groupIds.length === 0) {
+        setMemberCountByGroup({});
+        setNextEventByGroup({});
+        setUpcomingCountByGroup({});
+        setOpenPollByGroup({});
+        setRecentReadsByGroup({});
+        setLoading(false);
+        return;
+      }
+
+      const sinceIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [membersRes, eventsRes, pollsRes, readsRes] = await Promise.all([
+        supabase.from("group_members").select("group_id,user_id,status").in("group_id", groupIds),
+        supabase
+          .from("group_events")
+          .select("group_id,title,starts_at,place")
+          .in("group_id", groupIds)
+          .not("starts_at", "is", null)
+          .gte("starts_at", new Date().toISOString())
+          .order("starts_at", { ascending: true })
+          .limit(1200),
+        supabase
+          .from("group_polls")
+          .select("group_id,status,closes_at")
+          .in("group_id", groupIds)
+          .eq("status", "open")
+          .limit(1200),
+        supabase
+          .from("group_reads")
+          .select("group_id")
+          .in("group_id", groupIds)
+          .gt("last_read_at", sinceIso)
+          .limit(2000),
+      ]);
+
+      if (membersRes.error) throw membersRes.error;
+      if (eventsRes.error) throw eventsRes.error;
+      if (pollsRes.error) throw pollsRes.error;
+      if (readsRes.error) throw readsRes.error;
+
+      const membersMap: Record<string, number> = {};
+      ((membersRes.data || []) as GroupMemberRow[]).forEach((row) => {
+        if (!isActiveMemberStatus(row.status)) return;
+        const gid = String(row.group_id || "");
+        if (!gid) return;
+        membersMap[gid] = (membersMap[gid] || 0) + 1;
+      });
+
+      const nextEventMap: Record<string, GroupEventRow> = {};
+      const upcomingCountMap: Record<string, number> = {};
+      ((eventsRes.data || []) as GroupEventRow[]).forEach((row) => {
+        const gid = String(row.group_id || "");
+        if (!gid) return;
+        upcomingCountMap[gid] = (upcomingCountMap[gid] || 0) + 1;
+        if (!nextEventMap[gid]) nextEventMap[gid] = row;
+      });
+
+      const nowTs = Date.now();
+      const pollMap: Record<string, boolean> = {};
+      ((pollsRes.data || []) as GroupPollRow[]).forEach((row) => {
+        const gid = String(row.group_id || "");
+        if (!gid) return;
+        const closesAt = row.closes_at ? new Date(row.closes_at).getTime() : null;
+        if (Number.isFinite(closesAt as number) && (closesAt as number) < nowTs) return;
+        pollMap[gid] = true;
+      });
+
+      const readsMap: Record<string, number> = {};
+      ((readsRes.data || []) as GroupReadRow[]).forEach((row) => {
+        const gid = String(row.group_id || "");
+        if (!gid) return;
+        readsMap[gid] = (readsMap[gid] || 0) + 1;
+      });
+
+      setMemberCountByGroup(membersMap);
+      setNextEventByGroup(nextEventMap);
+      setUpcomingCountByGroup(upcomingCountMap);
+      setOpenPollByGroup(pollMap);
+      setRecentReadsByGroup(readsMap);
+    } catch (loadErr: any) {
+      console.error("[activity] failed to load groups", loadErr);
+      setError(loadErr?.message || "Could not load this activity yet.");
+      setRows([]);
+      setMemberCountByGroup({});
+      setNextEventByGroup({});
+      setUpcomingCountByGroup({});
+      setOpenPollByGroup({});
+      setRecentReadsByGroup({});
+    } finally {
+      setLoading(false);
+    }
+  }, [activityMeta, activitySlug]);
+
+  useEffect(() => {
+    void loadActivityGroups();
+  }, [loadActivityGroups]);
+
+  async function joinGroup(card: GroupCard) {
+    if (!userId) {
+      setError("Sign in required.");
       return;
     }
-    const blockReason = await checkGroupJoinBlock(userId, group.id);
+
+    if (joinedCount >= MAX_GROUPS) {
+      setError("You can only be in 7 circles at a time. Leave one to join another.");
+      return;
+    }
+
+    if (myVerificationLevel < card.requiresVerificationLevel) {
+      setError("This circle is for verified members only. Increase your verification level to join.");
+      return;
+    }
+
+    const blockReason = await checkGroupJoinBlock(userId, card.id);
     if (blockReason) {
       const message = joinBlockMessage(blockReason);
       window.alert(message);
-      setErr(message);
+      setError(message);
       return;
     }
 
-    setJoiningId(group.id);
-    const { error } = await supabase.from('group_members').insert({ group_id: group.id, user_id: userId, role: 'member', status: 'active', last_joined_at: new Date().toISOString() });
+    setJoiningId(card.id);
+    const { error: joinError } = await supabase.from("group_members").insert({
+      group_id: card.id,
+      user_id: userId,
+      role: "member",
+      status: "active",
+      last_joined_at: new Date().toISOString(),
+    });
     setJoiningId(null);
-    
-    if (!error || error.code === '23505') {
-      const next = new Set(memberOf);
-      next.add(group.id);
-      setMemberOf(next);
-      setJoinedCount((c) => Math.min(MAX_GROUPS, c + (memberOf.has(group.id) ? 0 : 1)));
-    } else {
-      const text = (error.message || '').toLowerCase();
-      if (text.includes('group_join_limit')) setErr('You can only be in 7 circles at a time. Leave one to join another.');
-      else if (text.includes('verification')) setErr('This circle is for verified members only.');
-      else setErr(error.message);
+
+    if (!joinError || joinError.code === "23505") {
+      const alreadyJoined = joinedGroupIds.has(card.id);
+      if (!alreadyJoined) {
+        setJoinedGroupIds((prev) => {
+          const next = new Set(prev);
+          next.add(card.id);
+          return next;
+        });
+        setJoinedCount((value) => Math.min(MAX_GROUPS, value + 1));
+        setMemberCountByGroup((prev) => ({
+          ...prev,
+          [card.id]: (prev[card.id] || 0) + 1,
+        }));
+      }
+      return;
     }
+
+    const text = String(joinError.message || "").toLowerCase();
+    if (text.includes("group_join_limit")) {
+      setError("You can only be in 7 circles at a time. Leave one to join another.");
+      return;
+    }
+    if (text.includes("verification")) {
+      setError("This circle is for verified members only.");
+      return;
+    }
+
+    setError(joinError.message || "Could not join this circle right now.");
   }
 
-  // Filter & Sort
-  const visibleRows = useMemo(() => {
-    let list = [...rows];
+  const cards = useMemo(() => {
+    const list: GroupCard[] = rows.map((group) => {
+      const groupId = group.id;
+      const distanceKm =
+        activeCoords && typeof group.lat === "number" && typeof group.lng === "number"
+          ? haversineKm(activeCoords, { lat: group.lat, lng: group.lng })
+          : null;
 
-    // 1. City Mode Filter
-    if (cityMode === 'mine' && myCity) {
-      const mc = normCity(myCity);
-      list = list.filter(r => normCity(r.city).includes(mc));
-    }
+      const memberCount = memberCountByGroup[groupId] || 0;
+      const nextMeetup = nextEventByGroup[groupId] || null;
+      const upcomingMeetups = upcomingCountByGroup[groupId] || 0;
+      const hasOpenPoll = !!openPollByGroup[groupId];
+      const recentReads = recentReadsByGroup[groupId] || 0;
+      const createdTs = new Date(group.created_at || "").getTime();
 
-    // 2. Search Query (City OR Code OR Title)
-    const q = searchQuery.trim().toLowerCase();
-    if (q) {
-        list = list.filter(r => 
-            normCity(r.city).includes(q) || 
-            (r.code && r.code.toLowerCase().includes(q)) || // SEARCH BY CODE
-            (r.title && r.title.toLowerCase().includes(q))
-        );
-    }
+      const activeScore =
+        recentReads * 2 +
+        upcomingMeetups * 3 +
+        (hasOpenPoll ? 2 : 0) +
+        Math.min(memberCount, 20) * 0.7;
 
-    // 3. Sort
-    if (sortBy === 'online') {
-      list.sort((a, b) => (onlineCounts[b.id] ?? 0) - (onlineCounts[a.id] ?? 0));
-    } else {
-      list.sort((a, b) =>
-        new Date(b.created_at ?? '').getTime() - new Date(a.created_at ?? '').getTime()
-      );
-    }
-    return list;
-  }, [rows, cityMode, myCity, searchQuery, sortBy, onlineCounts]);
+      return {
+        id: groupId,
+        title: (group.title || "Untitled circle").trim(),
+        city: group.city || null,
+        distanceKm,
+        cityRank: cityDistanceRank(group.city, profileLocation.city),
+        memberCount,
+        capacity: typeof group.capacity === "number" ? group.capacity : null,
+        isJoined: joinedGroupIds.has(groupId),
+        requiresVerificationLevel: Number(group.requires_verification_level ?? 1),
+        hasOpenPoll,
+        nextMeetup,
+        upcomingMeetups,
+        createdTs: Number.isFinite(createdTs) ? createdTs : 0,
+        activeScore,
+      };
+    });
 
-  // Trigger my-city fetch if needed
-  useEffect(() => {
-    if (cityMode === 'mine' && !myCity && !myCityLoading) {
-      refreshMyCity();
-    }
-  }, [cityMode]);
+    return sortGroupCards(list, sortBy);
+  }, [
+    activeCoords,
+    joinedGroupIds,
+    memberCountByGroup,
+    nextEventByGroup,
+    openPollByGroup,
+    profileLocation.city,
+    recentReadsByGroup,
+    rows,
+    sortBy,
+    upcomingCountByGroup,
+  ]);
+
+  const totalMembers = useMemo(
+    () => cards.reduce((sum, card) => sum + card.memberCount, 0),
+    [cards]
+  );
+
+  const totalUpcomingMeetups = useMemo(
+    () => cards.reduce((sum, card) => sum + card.upcomingMeetups, 0),
+    [cards]
+  );
+
+  const filterLabel = sortBy === DEFAULT_SORT ? "Filter" : `Filter · ${activeSortLabel}`;
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-6 pb-32">
-      
-      {/* Header */}
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-2">
-             <Link to="/browse" className="flex h-8 w-8 items-center justify-center rounded-full bg-neutral-100 hover:bg-neutral-200 transition-colors">
-               <ArrowLeft className="h-4 w-4 text-neutral-700" />
-             </Link>
-            <span className="text-sm font-semibold text-neutral-500 uppercase tracking-wider">Game</span>
-        </div>
-        <h1 className="text-3xl font-extrabold tracking-tight text-neutral-900 capitalize">{displayName}</h1>
-        <p className="mt-2 text-neutral-600">
-            {rows.length} active group{rows.length !== 1 && 's'} found.
-        </p>
-        <p className="mt-1 text-xs font-semibold text-neutral-500">Joined {joinedCount}/{MAX_GROUPS} circles.</p>
-        {howTo.length > 0 && (
-          <div className="mt-3 space-y-2">
+    <>
+      <main className="mx-auto w-full max-w-4xl px-4 pb-28 pt-5">
+        <header className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
+          <Link
+            to="/browse"
+            className="inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back to browse
+          </Link>
+
+          <h1 className="mt-3 text-2xl font-black tracking-tight text-neutral-900">
+            {displayEmoji ? `${displayEmoji} ` : ""}
+            {displayName}
+          </h1>
+          <p className="mt-1 text-sm text-neutral-600">
+            {cards.length} group{cards.length === 1 ? "" : "s"} · {totalMembers} member
+            {totalMembers === 1 ? "" : "s"}
+            {totalUpcomingMeetups > 0 ? ` · ${totalUpcomingMeetups} meetup${totalUpcomingMeetups === 1 ? "" : "s"} coming up` : ""}
+          </p>
+
+          {error && (
+            <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {error}
+            </div>
+          )}
+
+          <div ref={filterPanelRef} className="relative mt-4">
             <button
-              onClick={() => setShowGuide((v) => !v)}
-              className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-4 py-2 text-xs font-bold text-neutral-800 shadow-sm hover:border-neutral-300"
+              type="button"
+              onClick={() => setFilterOpen((open) => !open)}
+              className="inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-sm font-semibold text-neutral-900 hover:bg-neutral-50"
             >
-              <HelpCircle className="h-4 w-4" />
-              {showGuide ? "Hide how to play" : "How to play"}
+              <Filter className="h-4 w-4" />
+              {filterLabel}
+              <ChevronDown className="h-4 w-4" />
             </button>
-            {showGuide && (
-              <div className="rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm">
-                <div className="flex gap-3">
-                  <div className="mt-0.5"><Lightbulb className="h-5 w-5 text-amber-500" /></div>
-                  <div className="flex-1 space-y-2 text-sm text-neutral-700 leading-relaxed">
-                    {howTo.map((line, idx) => (
-                      <div key={idx} className="flex gap-3">
-                        <span className="inline-flex h-6 w-6 flex-none items-center justify-center rounded-full bg-neutral-900 text-[11px] font-bold text-white">{idx + 1}</span>
-                        <p className="flex-1">{line}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+
+            {!isMobile && filterOpen && (
+              <div className="absolute left-0 top-[calc(100%+8px)] z-40 w-72 rounded-2xl border border-neutral-200 bg-white p-2 shadow-xl">
+                {SORT_OPTIONS.map((option) => {
+                  const active = option.key === sortBy;
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => {
+                        setSortBy(option.key);
+                        setFilterOpen(false);
+                      }}
+                      className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                        active ? "bg-neutral-900 text-white" : "text-neutral-700 hover:bg-neutral-100"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSortBy(DEFAULT_SORT);
+                    setFilterOpen(false);
+                  }}
+                  className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-left text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+                >
+                  Reset to default
+                </button>
               </div>
             )}
           </div>
-        )}
-        {err && (
-          <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
-            {err}
-            <button onClick={() => setErr(null)} className="text-red-500 hover:text-red-700">×</button>
-          </div>
-        )}
-      </div>
+        </header>
 
-      {/* Filters */}
-      <div className="sticky top-0 z-20 mb-6 flex flex-col gap-3 bg-neutral-50/95 py-2 backdrop-blur-sm sm:flex-row sm:items-center">
-          <div className="relative flex-1">
-             <Search className="absolute left-3 top-2.5 h-4 w-4 text-neutral-400" />
-             <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search city, title, or code..."
-              className="w-full rounded-xl border border-neutral-200 bg-white py-2 pl-9 pr-4 text-sm outline-none focus:border-black focus:ring-1 focus:ring-black"
-            />
-          </div>
-          
-          <div className="flex gap-2">
-            <select
-              value={cityMode}
-              onChange={(e) => setCityMode(e.target.value as 'all' | 'mine')}
-              className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-black"
-            >
-              <option value="all">All Cities</option>
-              <option value="mine">My City {myCity ? `(${myCity})` : ''}</option>
-            </select>
-            
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-black"
-            >
-              <option value="new">Newest</option>
-              <option value="online">Active</option>
-            </select>
-          </div>
-      </div>
+        <section>
+          {loading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 5 }).map((_, index) => (
+                <div key={index} className="h-28 animate-pulse rounded-2xl border border-neutral-200 bg-neutral-100" />
+              ))}
+              <div className="inline-flex items-center gap-2 text-xs text-neutral-500">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Loading groups for this activity...
+              </div>
+            </div>
+          ) : cards.length === 0 ? (
+            <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-600">
+              No groups in this activity yet.
+            </div>
+          ) : (
+            <ul className="space-y-3">
+              {cards.map((card) => {
+                const isFull = typeof card.capacity === "number" && card.memberCount >= card.capacity;
+                const memberLine =
+                  typeof card.capacity === "number"
+                    ? `${card.memberCount}/${card.capacity} members`
+                    : `${card.memberCount} members`;
 
-      {/* List */}
-      <ul className="space-y-3">
-        {visibleRows.map(g => (
-            <li key={g.id} className="group relative overflow-hidden rounded-2xl border border-neutral-100 bg-white p-4 shadow-sm transition-all hover:shadow-md active:scale-[0.99]">
-                <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                            <h2 className="truncate text-base font-bold text-neutral-900">
-                                {g.title || "Untitled Group"}
-                            </h2>
-                            {g.is_online && (
-                                <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-100">
-                                    ONLINE
-                                </span>
-                            )}
-                        </div>
-                        
-                        <p className="line-clamp-1 text-sm text-neutral-600 mb-3">
-                            {g.description || "No description"}
+                let statusText = "No meetup yet";
+                let statusTone = "text-neutral-600";
+                if (card.nextMeetup?.starts_at) {
+                  statusText = `Meetup scheduled · ${formatMeetupDate(card.nextMeetup.starts_at)}`;
+                  statusTone = "text-emerald-700";
+                } else if (card.hasOpenPoll) {
+                  statusText = "Poll open · planning";
+                  statusTone = "text-amber-700";
+                }
+
+                return (
+                  <li
+                    key={card.id}
+                    className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:shadow-md"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h2 className="truncate text-base font-bold text-neutral-900">{card.title}</h2>
+
+                        <p className="mt-1 flex items-center gap-1 text-xs text-neutral-600">
+                          <MapPin className="h-3.5 w-3.5" />
+                          {card.city || "City TBD"}
+                          {typeof card.distanceKm === "number" ? ` · ${formatDistanceKm(card.distanceKm)} away` : ""}
                         </p>
 
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-neutral-500 font-medium">
-                            <span className="flex items-center gap-1">
-                                <MapPin className="h-3 w-3" />
-                                {g.city || "Anywhere"}
-                            </span>
-                            <span className="flex items-center gap-1">
-                                <Clock className="h-3 w-3" />
-                                {fmtDate(g.created_at)}
-                            </span>
-                            {g.code && (
-                                <span className="rounded-md bg-neutral-100 px-1.5 py-0.5 font-mono text-neutral-600">
-                                    #{g.code}
-                                </span>
-                            )}
-                        </div>
-                    </div>
+                        <p className="mt-1 text-xs text-neutral-600">{memberLine}</p>
 
-                    <div className="flex flex-col items-end gap-2">
-                         {memberOf.has(g.id) ? (
-                             <Link 
-                                to={`/group/${g.id}`}
-                                className="rounded-full border border-neutral-200 bg-white px-4 py-1.5 text-xs font-bold text-neutral-900 hover:bg-neutral-50 transition-colors"
-                             >
-                                Open
-                             </Link>
-                         ) : (
-                             <button 
-                                onClick={() => joinGroup(g)}
-                                disabled={joiningId === g.id || joinedCount >= MAX_GROUPS}
-                                className="rounded-full bg-black px-4 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-neutral-800 disabled:opacity-50 transition-all"
-                             >
-                                {joiningId === g.id ? "Joining..." : joinedCount >= MAX_GROUPS ? "Limit Reached" : "Join"}
-                             </button>
-                         )}
+                        <p className={`mt-2 text-xs font-semibold ${statusTone}`}>
+                          {statusText}
+                          {card.nextMeetup?.place ? ` · ${card.nextMeetup.place}` : ""}
+                        </p>
+                      </div>
+
+                      <div className="shrink-0">
+                        {card.isJoined ? (
+                          <Link
+                            to={`/group/${card.id}`}
+                            className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
+                          >
+                            Joined
+                          </Link>
+                        ) : isFull ? (
+                          <Link
+                            to={`/group/${card.id}`}
+                            className="rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50"
+                          >
+                            View
+                          </Link>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void joinGroup(card)}
+                            disabled={joiningId === card.id || joinedCount >= MAX_GROUPS}
+                            className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-neutral-800 disabled:opacity-60"
+                          >
+                            {joiningId === card.id
+                              ? "Joining..."
+                              : joinedCount >= MAX_GROUPS
+                                ? "Limit reached"
+                                : "Join"}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                </div>
-            </li>
-        ))}
-      </ul>
-      {!loading && !err && visibleRows.length === 0 && (
-        <div className="py-10 text-center text-neutral-500">No groups found.</div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      </main>
+
+      {isMobile && filterOpen && (
+        <div className="fixed inset-0 z-[120]">
+          <button
+            type="button"
+            onClick={() => setFilterOpen(false)}
+            className="absolute inset-0 bg-black/45"
+            aria-label="Close activity filter"
+          />
+          <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-neutral-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl">
+            <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-200" />
+            <div className="text-sm font-semibold text-neutral-900">Sort groups by</div>
+            <div className="mt-3 space-y-2">
+              {SORT_OPTIONS.map((option) => {
+                const active = option.key === sortBy;
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => {
+                      setSortBy(option.key);
+                      setFilterOpen(false);
+                    }}
+                    className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                      active ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-700"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setSortBy(DEFAULT_SORT);
+                setFilterOpen(false);
+              }}
+              className="mt-3 w-full rounded-xl border border-neutral-200 px-3 py-2 text-left text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+            >
+              Reset to default
+            </button>
+          </div>
+        </div>
       )}
-    </main>
+    </>
   );
 }
