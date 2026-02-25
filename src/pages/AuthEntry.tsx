@@ -36,6 +36,7 @@ export default function AuthEntry() {
   const [mode, setMode] = useState<AuthMode | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -44,17 +45,36 @@ export default function AuthEntry() {
     () => (typeof location.state?.from === "string" ? location.state.from : null),
     [location.state]
   );
+  const waitlistContext = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const status = params.get("waitlist");
+    const emailFromLink = params.get("email")?.trim().toLowerCase() ?? "";
+    const code = params.get("code")?.trim() ?? "";
+    return {
+      approved: status === "approved" && Boolean(emailFromLink) && Boolean(code),
+      emailFromLink,
+    };
+  }, [location.search]);
 
   useEffect(() => {
     if (!user || mode) return;
     navigate("/browse", { replace: true });
   }, [mode, navigate, user]);
 
+  useEffect(() => {
+    if (!waitlistContext.approved) return;
+    setMode((current) => current ?? "signup");
+    setEmail((current) => current || waitlistContext.emailFromLink);
+    setError(null);
+    setNotice("You're approved. Create your account to activate access.");
+  }, [waitlistContext.approved, waitlistContext.emailFromLink]);
+
   function goToLanding() {
     navigate("/", { replace: true });
   }
 
   function openMode(nextMode: AuthMode) {
+    if (waitlistContext.approved && nextMode === "signin") return;
     setMode(nextMode);
     setError(null);
     setNotice(null);
@@ -65,6 +85,7 @@ export default function AuthEntry() {
     setError(null);
     setNotice(null);
     setPassword("");
+    setConfirmPassword("");
   }
 
   async function submit(e: React.FormEvent) {
@@ -74,11 +95,32 @@ export default function AuthEntry() {
     setError(null);
     setNotice(null);
 
-    const cleanEmail = email.trim();
+    const approvedSignup = mode === "signup" && waitlistContext.approved;
+    const cleanEmail = (approvedSignup ? waitlistContext.emailFromLink : email.trim()).toLowerCase();
     const cleanPassword = password.trim();
-    if (!cleanEmail || !cleanPassword) {
-      setError("Enter both email and password.");
+    const cleanConfirmPassword = confirmPassword.trim();
+    if (!cleanEmail) {
+      setError("Enter your email.");
       return;
+    }
+    const requiresPassword = mode === "signin" || approvedSignup;
+    if (requiresPassword && !cleanPassword) {
+      setError("Enter your password.");
+      return;
+    }
+    if (approvedSignup) {
+      if (cleanPassword.length < 6) {
+        setError("Password must be at least 6 characters.");
+        return;
+      }
+      if (!cleanConfirmPassword) {
+        setError("Confirm your password.");
+        return;
+      }
+      if (cleanPassword !== cleanConfirmPassword) {
+        setError("Passwords do not match.");
+        return;
+      }
     }
 
     try {
@@ -98,6 +140,19 @@ export default function AuthEntry() {
         return;
       }
 
+      if (!waitlistContext.approved) {
+        const { error: waitlistError } = await supabase.functions.invoke("waitlist-request", {
+          body: { email: cleanEmail },
+        });
+        if (waitlistError) throw waitlistError;
+
+        setMode(null);
+        setPassword("");
+        setConfirmPassword("");
+        setNotice("You're on the waitlist. We’ll email you when you're approved.");
+        return;
+      }
+
       const { data, error: signUpError } = await supabase.auth.signUp({
         email: cleanEmail,
         password: cleanPassword,
@@ -114,6 +169,7 @@ export default function AuthEntry() {
           setNotice("Check your email to confirm your account, then sign in.");
           setMode("signin");
           setPassword("");
+          setConfirmPassword("");
           return;
         }
       }
@@ -173,7 +229,7 @@ export default function AuthEntry() {
                     onClick={() => openMode("signup")}
                     className="w-full rounded-xl border border-slate-300 bg-white px-5 py-3 text-base font-semibold text-slate-900 transition hover:border-slate-400"
                   >
-                    Sign Up
+                    Join Waitlist
                   </button>
                 </div>
               </div>
@@ -181,56 +237,88 @@ export default function AuthEntry() {
               <div className="space-y-5">
                 <div className="flex items-center justify-between">
                   <h1 className="text-3xl font-black text-slate-900">
-                    {mode === "signin" ? "Sign in" : "Create account"}
+                    {mode === "signin" ? "Sign in" : waitlistContext.approved ? "Activate account" : "Join waitlist"}
                   </h1>
-                  <button
-                    type="button"
-                    onClick={openChoice}
-                    className="text-sm font-semibold text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
-                  >
-                    Back to options
-                  </button>
+                  {!waitlistContext.approved ? (
+                    <button
+                      type="button"
+                      onClick={openChoice}
+                      className="text-sm font-semibold text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
+                    >
+                      Back to options
+                    </button>
+                  ) : null}
                 </div>
                 <p className="text-base text-slate-700">
                   {mode === "signin"
                     ? "Welcome back. Sign in to continue."
-                    : "Sign up to start your onboarding and profile setup."}
+                    : waitlistContext.approved
+                    ? "You're approved. Your email is locked. Set your password twice to activate."
+                    : "Sign up to join the waitlist. We’ll email you once approved."}
                 </p>
 
                 <form onSubmit={submit} className="space-y-3">
                   <input
                     type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    value={mode === "signup" && waitlistContext.approved ? waitlistContext.emailFromLink : email}
+                    onChange={(e) => {
+                      if (mode === "signup" && waitlistContext.approved) return;
+                      setEmail(e.target.value);
+                    }}
                     placeholder="you@example.com"
                     autoComplete="email"
-                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                    readOnly={mode === "signup" && waitlistContext.approved}
+                    className={`w-full rounded-xl border px-4 py-3 text-slate-900 outline-none transition ${
+                      mode === "signup" && waitlistContext.approved
+                        ? "border-emerald-200 bg-emerald-50/70"
+                        : "border-slate-300 bg-white focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                    }`}
                   />
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Password (min 6)"
-                    autoComplete={mode === "signin" ? "current-password" : "new-password"}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
-                  />
+                  {(mode === "signin" || waitlistContext.approved) ? (
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Password (min 6)"
+                      autoComplete={mode === "signin" ? "current-password" : "new-password"}
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                    />
+                  ) : null}
+                  {mode === "signup" && waitlistContext.approved ? (
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm password"
+                      autoComplete="new-password"
+                      className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-black/10"
+                    />
+                  ) : null}
                   <button
                     type="submit"
                     disabled={busy}
                     className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-5 py-3 text-base font-semibold text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {busy ? "Please wait..." : mode === "signin" ? "Sign In" : "Sign Up"}
+                    {busy
+                      ? "Please wait..."
+                      : mode === "signin"
+                      ? "Sign In"
+                      : waitlistContext.approved
+                      ? "Activate Account"
+                      : "Join Waitlist"}
                     {!busy ? <ArrowRight className="h-4 w-4" /> : null}
                   </button>
                 </form>
 
-                <button
-                  type="button"
-                  onClick={() => openMode(mode === "signin" ? "signup" : "signin")}
-                  className="text-sm font-semibold text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
-                >
-                  {mode === "signin" ? "No account? Sign Up" : "Have an account? Sign In"}
-                </button>
+                {!waitlistContext.approved ? (
+                  <button
+                    type="button"
+                    onClick={() => openMode(mode === "signin" ? "signup" : "signin")}
+                    className="text-sm font-semibold text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline"
+                  >
+                    {mode === "signin" ? "No account? Join Waitlist" : "Have an account? Sign In"}
+                  </button>
+                ) : null}
               </div>
             )}
 

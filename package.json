@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "deploy": "vercel --prod"
+    "deploy": "vercel --prod",
+    "delete:user": "bash scripts/delete-user.sh"
   },
   "dependencies": {
     "@capacitor/cli": "^7.4.3",

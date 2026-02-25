@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Shield, Battery, Loader2, AlertTriangle } from "lucide-react";
+import { Shield, Battery, Loader2, AlertTriangle, Trash2 } from "lucide-react";
 import { useAuth } from "@/App";
 import { supabase } from "@/lib/supabase";
 
@@ -12,8 +12,47 @@ export default function AdminDashboard() {
   const [rows, setRows] = useState<HeatRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [deleteUserId, setDeleteUserId] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
 
   const authorized = user?.id && ADMIN_ID && user.id === ADMIN_ID;
+
+  function isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  async function handleDeleteUser() {
+    const uid = deleteUserId.trim();
+    setDeleteErr(null);
+    setDeleteNotice(null);
+
+    if (!uid || !isUuid(uid)) {
+      setDeleteErr("Enter a valid user UUID.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete user ${uid}? This permanently removes their account, groups, messages, and uploads.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeleteBusy(true);
+      const { error } = await supabase.functions.invoke("admin-delete-user", {
+        body: { user_id: uid, confirm: true },
+      });
+      if (error) throw error;
+
+      setDeleteNotice(`Deleted user ${uid}.`);
+      setDeleteUserId("");
+    } catch (e: any) {
+      setDeleteErr(e?.message || "Failed to delete user");
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!authorized) return;
@@ -77,6 +116,34 @@ export default function AdminDashboard() {
       </div>
 
       {err && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>}
+
+      <section className="rounded-2xl border border-red-200 bg-red-50/70 p-4">
+        <div className="flex items-center gap-2 text-sm font-semibold text-red-900">
+          <Trash2 className="h-4 w-4" />
+          Delete User Permanently
+        </div>
+        <p className="mt-1 text-xs text-red-800">
+          This deletes the auth account plus profile, groups, messages, and uploaded files.
+        </p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input
+            value={deleteUserId}
+            onChange={(e) => setDeleteUserId(e.target.value)}
+            placeholder="Target user UUID"
+            className="w-full rounded-lg border border-red-200 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-red-300 focus:ring-2 focus:ring-red-200"
+          />
+          <button
+            type="button"
+            onClick={handleDeleteUser}
+            disabled={deleteBusy}
+            className="inline-flex items-center justify-center rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {deleteBusy ? "Deleting..." : "Delete user"}
+          </button>
+        </div>
+        {deleteErr ? <div className="mt-2 text-xs text-red-700">{deleteErr}</div> : null}
+        {deleteNotice ? <div className="mt-2 text-xs text-emerald-700">{deleteNotice}</div> : null}
+      </section>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {sorted.map((row) => {
