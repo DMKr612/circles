@@ -67,7 +67,18 @@ serve(async (req) => {
   }
 
   const uid = userData.user.id;
+  const userEmail = (userData.user.email || "").trim().toLowerCase() || null;
   const admin = createClient(url, serviceKey, { auth: { persistSession: false } });
+
+  const cleanupWaitlistByEmail = async (): Promise<string | null> => {
+    if (!userEmail) return null;
+    const { error } = await admin
+      .from("waitlist_requests")
+      .delete()
+      .eq("email", userEmail);
+    if (!error) return null;
+    return `waitlist cleanup failed for ${userEmail}: ${error.message}`;
+  };
 
   const deleteIn = async (table: string, column: string, ids: string[]) => {
     const unique = Array.from(new Set(ids.filter(Boolean)));
@@ -176,7 +187,8 @@ serve(async (req) => {
     // handles profile + related row cleanup automatically.
     const directDelete = await admin.auth.admin.deleteUser(uid);
     if (!directDelete.error) {
-      return json(200, { ok: true });
+      const warning = await cleanupWaitlistByEmail();
+      return json(200, warning ? { ok: true, warning } : { ok: true });
     }
 
     const groupMessageAuthorColumn = await resolveGroupMessageAuthorColumn();
@@ -349,7 +361,8 @@ serve(async (req) => {
     const { error: authErr } = await admin.auth.admin.deleteUser(uid);
     if (authErr) throw new Error(`auth delete failed: ${authErr.message}`);
 
-    return json(200, { ok: true });
+    const warning = await cleanupWaitlistByEmail();
+    return json(200, warning ? { ok: true, warning } : { ok: true });
   } catch (err: any) {
     return json(500, { error: err?.message || "Delete failed" });
   }

@@ -37,6 +37,13 @@ function cleanText(value: unknown): string | null {
   return cleaned.length ? cleaned : null;
 }
 
+function isReservedTestDomain(email: string): boolean {
+  const at = email.lastIndexOf("@");
+  if (at < 0) return false;
+  const domain = email.slice(at + 1).toLowerCase();
+  return domain === "example.com" || domain === "example.net" || domain === "example.org";
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -217,6 +224,17 @@ serve(async (req) => {
       return text(400, renderAdminText({ title: "Code Mismatch", message: "The approval code does not match this request." }));
     }
     return json(400, { error: "Approval code mismatch" });
+  }
+
+  if (isReservedTestDomain(payload.email)) {
+    if (req.method === "GET") {
+      return text(400, renderAdminText({
+        title: "Invalid Recipient Email",
+        message: "This approval email uses a reserved test domain. Use a real user email address.",
+        email: payload.email,
+      }));
+    }
+    return json(400, { error: "Reserved test email domain is not allowed" });
   }
 
   const activationCode = crypto.randomUUID().replace(/-/g, "");

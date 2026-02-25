@@ -36,6 +36,13 @@ function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function isReservedTestDomain(email: string): boolean {
+  const at = email.lastIndexOf("@");
+  if (at < 0) return false;
+  const domain = email.slice(at + 1).toLowerCase();
+  return domain === "example.com" || domain === "example.net" || domain === "example.org";
+}
+
 function randomCode(length = 14): string {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const random = new Uint8Array(length);
@@ -164,6 +171,9 @@ serve(async (req) => {
 
   if (!emailInput || !isValidEmail(emailInput)) {
     return json(400, { error: "Missing or invalid email" });
+  }
+  if (isReservedTestDomain(emailInput)) {
+    return json(400, { error: "Please use a real email address." });
   }
 
   try {
