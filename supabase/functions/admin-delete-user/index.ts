@@ -21,12 +21,31 @@ const json = (status: number, body: Record<string, unknown>) =>
 const errText = (error: any) =>
   `${String(error?.message || "")} ${String(error?.details || "")} ${String(error?.hint || "")}`.toLowerCase();
 
+const formatError = (error: any) => {
+  if (!error) return "unknown";
+  const parts = [
+    String(error?.message || "").trim(),
+    String(error?.details || "").trim(),
+    String(error?.hint || "").trim(),
+  ].filter(Boolean);
+  const code = String(error?.code || "").trim();
+  const status = String(error?.status || "").trim();
+  if (code) parts.push(`code=${code}`);
+  if (status) parts.push(`status=${status}`);
+  return parts.length ? parts.join(" | ") : "unknown";
+};
+
 const isMissingColumnError = (error: any, column: string) => {
   const msg = errText(error);
   return msg.includes(column.toLowerCase()) && (
     msg.includes("column") ||
     msg.includes("schema cache")
   );
+};
+
+const isPermissionDeniedError = (error: any) => {
+  const msg = errText(error);
+  return String(error?.code || "") === "42501" || msg.includes("permission denied");
 };
 
 const chunk = <T,>(arr: T[], size: number) => {
@@ -205,7 +224,7 @@ serve(async (req) => {
     const tryProbe = async (col: "user_id" | "sender_id") => {
       const { error } = await admin
         .from("group_messages")
-        .select(col, { head: true })
+        .select(col)
         .limit(1);
       return error ?? null;
     };
@@ -213,11 +232,18 @@ serve(async (req) => {
     const senderErr = await tryProbe("sender_id");
     if (!senderErr) return "sender_id";
 
+    if (isPermissionDeniedError(senderErr)) {
+      throw new Error(
+        "Missing DB grant: role service_role cannot read public.group_messages. " +
+        "Run SQL: grant select, delete on table public.group_messages to service_role;"
+      );
+    }
+
     const userErr = await tryProbe("user_id");
     if (!userErr) return "user_id";
 
     throw new Error(
-      `group_messages probe failed for sender_id and user_id: sender_id=${String(senderErr?.message || "")}; user_id=${String(userErr?.message || "")}`
+      `group_messages probe failed for sender_id and user_id: sender_id=${formatError(senderErr)}; user_id=${formatError(userErr)}`
     );
   };
 
@@ -256,6 +282,16 @@ serve(async (req) => {
     const directDelete = await admin.auth.admin.deleteUser(uid);
     if (!directDelete.error) {
       return json(200, { ok: true, deleted_user_id: uid });
+    }
+
+    const directDeleteErrText = errText(directDelete.error);
+    const canFallback =
+      directDeleteErrText.includes("database") ||
+      directDeleteErrText.includes("constraint") ||
+      directDeleteErrText.includes("foreign key") ||
+      directDeleteErrText.includes("violat");
+    if (!canFallback) {
+      throw new Error(`auth direct delete failed: ${formatError(directDelete.error)}`);
     }
 
     const groupMessageAuthorColumn = await resolveGroupMessageAuthorColumn();

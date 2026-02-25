@@ -141,10 +141,24 @@ export default function AuthEntry() {
       }
 
       if (!waitlistContext.approved) {
-        const { error: waitlistError } = await supabase.functions.invoke("waitlist-request", {
+        const { data: waitlistData, error: waitlistError } = await supabase.functions.invoke("waitlist-request", {
           body: { email: cleanEmail },
         });
         if (waitlistError) throw waitlistError;
+
+        const status = String((waitlistData as any)?.status || "");
+        const message = String((waitlistData as any)?.message || "");
+        if (status === "already_waitlisted") {
+          setError(message || "You are in waitlist.");
+          return;
+        }
+        if (status === "already_has_account") {
+          setError(message || "You have been approved. Join and click Login with your password.");
+          setMode("signin");
+          setPassword("");
+          setConfirmPassword("");
+          return;
+        }
 
         setMode(null);
         setPassword("");

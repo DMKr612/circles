@@ -1,11 +1,13 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { sendZeptoMail } from "../_shared/zeptomail.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.2";
+import { sendBrevoEmail } from "../_shared/brevo.ts";
 import { verifyWaitlistToken, type WaitlistTokenPayload } from "../_shared/waitlist-token.ts";
 
+const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
 const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-const zeptoApiKey = Deno.env.get("ZEPTO_API_KEY") ?? "";
-const zeptoApiUrl = Deno.env.get("ZEPTO_API_URL") ?? "";
+const brevoApiKey = Deno.env.get("BREVO_API_KEY") ?? "";
+const brevoApiUrl = (Deno.env.get("BREVO_API_URL") ?? "").trim() || "https://api.brevo.com/v3/smtp/email";
 const waitlistEmailFrom = Deno.env.get("WAITLIST_EMAIL_FROM") ?? "";
 const waitlistAppUrl = (Deno.env.get("WAITLIST_APP_URL") ?? "").replace(/\/+$/, "");
 
@@ -27,6 +29,8 @@ const text = (status: number, content: string) =>
     headers: { "content-type": "text/plain; charset=utf-8" },
   });
 
+const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+
 function cleanText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const cleaned = value.trim();
@@ -44,9 +48,9 @@ function escapeHtml(value: string): string {
 
 function ensureConfig(): string[] {
   const missing: string[] = [];
+  if (!supabaseUrl) missing.push("SUPABASE_URL");
   if (!serviceKey) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-  if (!zeptoApiKey) missing.push("ZEPTO_API_KEY");
-  if (!zeptoApiUrl) missing.push("ZEPTO_API_URL");
+  if (!brevoApiKey) missing.push("BREVO_API_KEY");
   if (!waitlistEmailFrom) missing.push("WAITLIST_EMAIL_FROM");
   if (!waitlistAppUrl) missing.push("WAITLIST_APP_URL");
   return missing;
@@ -126,10 +130,10 @@ function renderAdminText(opts: { title: string; message: string; email?: string 
 }
 
 async function sendApprovalEmail(payload: WaitlistTokenPayload, activationCode: string) {
-  await sendZeptoMail(
+  await sendBrevoEmail(
     {
-      apiKey: zeptoApiKey,
-      apiUrl: zeptoApiUrl,
+      apiKey: brevoApiKey,
+      apiUrl: brevoApiUrl,
       fromAddress: waitlistEmailFrom,
       fromName: "Circles",
     },
@@ -141,6 +145,23 @@ async function sendApprovalEmail(payload: WaitlistTokenPayload, activationCode: 
       textBody: buildApprovalEmailText(payload, activationCode),
     },
   );
+}
+
+async function markApproved(payload: WaitlistTokenPayload) {
+  const now = new Date().toISOString();
+  const { error } = await admin
+    .from("waitlist_requests")
+    .upsert(
+      {
+        email: payload.email.toLowerCase(),
+        full_name: payload.full_name ?? null,
+        status: "approved",
+        approved_at: now,
+        updated_at: now,
+      },
+      { onConflict: "email" },
+    );
+  if (error) throw new Error(`Waitlist approval save failed: ${error.message}`);
 }
 
 serve(async (req) => {
@@ -202,6 +223,7 @@ serve(async (req) => {
 
   try {
     await sendApprovalEmail(payload, activationCode);
+    await markApproved(payload);
 
     if (req.method === "GET") {
       return text(
@@ -229,7 +251,7 @@ serve(async (req) => {
     }
     return json(502, {
       error: "User was approved but approval email failed",
-      details: String(error?.message || "Unknown ZeptoMail error"),
+      details: String(error?.message || "Unknown Brevo error"),
     });
   }
 });
