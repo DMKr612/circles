@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase";
 
 const PROFILE_SELECT_FIELDS = [
   "name",
+  "bio",
   "public_id",
   "avatar_url",
   "city",
@@ -17,6 +18,7 @@ const PROFILE_SELECT_FIELDS = [
 export type ProfileData = {
   id: string;
   name: string;
+  bio: string | null;
   public_id: string | null;
   avatar_url: string | null;
   city: string | null;
@@ -76,6 +78,7 @@ export function useProfile(userId: string | null) {
       return {
         id: userId,
         name: pData.name || "",
+        bio: pData.bio || null,
         public_id: pData.public_id || null,
         avatar_url: pData.avatar_url,
         city: pData.city,

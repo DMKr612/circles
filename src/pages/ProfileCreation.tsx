@@ -5,17 +5,12 @@ import { ArrowLeft, ArrowRight, Check, Sparkles, Upload } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/App";
-import { geocodePlace, reverseGeocodeCity } from "@/lib/geocode";
+import { geocodePlace, reverseGeocodeCity, searchGermanCitySuggestions, type CitySuggestion } from "@/lib/geocode";
 
 type Coords = { lat: number; lng: number };
 type Step = 1 | 2 | 3;
 type Gender = "man" | "woman" | "nonbinary" | "prefer_not_say";
-type AvatarPreset = {
-  id: string;
-  label: string;
-  from: string;
-  to: string;
-};
+type GenderInput = Gender | "";
 
 const INTEREST_OPTIONS = [
   "Board Games",
@@ -28,17 +23,10 @@ const INTEREST_OPTIONS = [
   "Music",
 ] as const;
 
-const AVATAR_PRESETS: AvatarPreset[] = [
-  { id: "soft-sky", label: "Sky", from: "#bfdbfe", to: "#86efac" },
-  { id: "rose-dawn", label: "Rose", from: "#fbcfe8", to: "#fed7aa" },
-  { id: "mint-lake", label: "Mint", from: "#a7f3d0", to: "#93c5fd" },
-  { id: "sand-stone", label: "Sand", from: "#fde68a", to: "#fdba74" },
-  { id: "steel-night", label: "Night", from: "#cbd5e1", to: "#a5b4fc" },
-  { id: "pearl-wave", label: "Pearl", from: "#ddd6fe", to: "#bae6fd" },
-];
-
 const MAX_AVATAR_MB = 5;
 const ALLOWED_AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const BIO_MAX_LEN = 220;
+const CITY_SUGGESTION_LIMIT = 10;
 
 function normalizeHandle(raw: string): string {
   const cleaned = raw
@@ -58,25 +46,6 @@ function parseAgeInput(value: string): number | null {
   return age;
 }
 
-function buildPresetAvatarUrl(preset: AvatarPreset): string {
-  const initial = preset.label.slice(0, 1).toUpperCase();
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160">
-      <defs>
-        <linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="${preset.from}" />
-          <stop offset="100%" stop-color="${preset.to}" />
-        </linearGradient>
-      </defs>
-      <rect width="160" height="160" rx="80" fill="url(#g)" />
-      <text x="80" y="97" text-anchor="middle" font-size="52" font-family="ui-sans-serif, system-ui" fill="#0f172a" opacity="0.82">
-        ${initial}
-      </text>
-    </svg>
-  `;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-}
-
 function stepLabel(step: Step): string {
   if (step === 1) return "Your identity";
   if (step === 2) return "Your location";
@@ -90,20 +59,24 @@ export default function ProfileCreation() {
   const [step, setStep] = useState<Step>(1);
 
   const [fullName, setFullName] = useState("");
+  const [bio, setBio] = useState("");
   const [age, setAge] = useState("");
   const [username, setUsername] = useState("");
   const [usernameEdited, setUsernameEdited] = useState(false);
-  const [gender, setGender] = useState<Gender>("prefer_not_say");
+  const [gender, setGender] = useState<GenderInput>("");
 
   const [city, setCity] = useState("");
   const [coords, setCoords] = useState<Coords | null>(null);
+  const [coordsSource, setCoordsSource] = useState<"gps" | "manual" | null>(null);
+  const [cityFocused, setCityFocused] = useState(false);
+  const [citySuggestions, setCitySuggestions] = useState<CitySuggestion[]>([]);
+  const [citySuggestionBusy, setCitySuggestionBusy] = useState(false);
   const [locationBusy, setLocationBusy] = useState(false);
   const [locationMsg, setLocationMsg] = useState<string | null>(null);
 
   const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
 
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(AVATAR_PRESETS[0].id);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(() => buildPresetAvatarUrl(AVATAR_PRESETS[0]));
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
 
   const [saving, setSaving] = useState(false);
@@ -114,16 +87,45 @@ export default function ProfileCreation() {
 
   const parsedAge = useMemo(() => parseAgeInput(age), [age]);
   const normalizedUsername = useMemo(() => normalizeHandle(username), [username]);
-  const displayName = useMemo(() => fullName.trim() || normalizedUsername, [fullName, normalizedUsername]);
   const previewInterests = useMemo(
     () => (selectedInterests.length ? selectedInterests.join(" / ") : "—"),
     [selectedInterests]
   );
 
-  const identityReady = normalizedUsername.length >= 2 && parsedAge !== null;
+  const identityReady =
+    fullName.trim().length >= 2 &&
+    normalizedUsername.length >= 2 &&
+    parsedAge !== null &&
+    Boolean(gender) &&
+    Boolean(avatarUrl);
   const locationReady = city.trim().length > 0;
   const interestsReady = selectedInterests.length >= 3 && selectedInterests.length <= 5;
   const canContinue = step === 1 ? identityReady : step === 2 ? locationReady : interestsReady;
+
+  useEffect(() => {
+    if (!cityFocused) return;
+    const query = city.trim();
+    if (!query) {
+      setCitySuggestions([]);
+      setCitySuggestionBusy(false);
+      return;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setCitySuggestionBusy(true);
+      const suggestions = await searchGermanCitySuggestions(query, CITY_SUGGESTION_LIMIT);
+      if (!cancelled) {
+        setCitySuggestions(suggestions);
+        setCitySuggestionBusy(false);
+      }
+    }, 160);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [city, cityFocused]);
 
   useEffect(() => {
     if (!user || usernameEdited) return;
@@ -160,8 +162,11 @@ export default function ProfileCreation() {
 
   function validateCurrentStep(currentStep: Step): string | null {
     if (currentStep === 1) {
+      if (fullName.trim().length < 2) return "Please enter your full name.";
       if (normalizedUsername.length < 2) return "Please choose a valid username.";
       if (parsedAge === null) return "Please enter a valid age (13-120).";
+      if (!gender) return "Please choose your gender.";
+      if (!avatarUrl) return "Please upload an avatar photo.";
       return null;
     }
     if (currentStep === 2) {
@@ -180,6 +185,7 @@ export default function ProfileCreation() {
     try {
       const nextCoords = await getBrowserCoords();
       setCoords(nextCoords);
+      setCoordsSource("gps");
       const reverse = await reverseGeocodeCity(nextCoords);
       if (reverse?.city) {
         setCity(reverse.city);
@@ -194,6 +200,20 @@ export default function ProfileCreation() {
     } finally {
       setLocationBusy(false);
     }
+  }
+
+  function chooseCitySuggestion(item: CitySuggestion) {
+    setCity(item.name);
+    if (item.lat != null && item.lng != null) {
+      setCoords({ lat: item.lat, lng: item.lng });
+      setCoordsSource("manual");
+    } else {
+      setCoords(null);
+      setCoordsSource(null);
+    }
+    setLocationMsg(`City selected: ${item.name}`);
+    setCityFocused(false);
+    setError(null);
   }
 
   async function onAvatarFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -223,18 +243,11 @@ export default function ProfileCreation() {
       const { data: pub } = supabase.storage.from("avatars").getPublicUrl(path);
       if (!pub?.publicUrl) throw new Error("Could not resolve avatar URL.");
       setAvatarUrl(pub.publicUrl);
-      setSelectedPresetId("");
     } catch (err: any) {
       setError(err?.message || "Avatar upload failed.");
     } finally {
       setAvatarUploading(false);
     }
-  }
-
-  function choosePreset(preset: AvatarPreset) {
-    setSelectedPresetId(preset.id);
-    setAvatarUrl(buildPresetAvatarUrl(preset));
-    setError(null);
   }
 
   function toggleInterest(tag: string) {
@@ -268,12 +281,14 @@ export default function ProfileCreation() {
     setSaving(true);
     setError(null);
     try {
+      const trimmedName = fullName.trim();
+      const trimmedBio = bio.trim();
       const trimmedCity = city.trim();
       const autoTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
       let finalCity: string | null = trimmedCity || null;
       let lat: number | null = coords?.lat ?? null;
       let lng: number | null = coords?.lng ?? null;
-      let locationSource: "gps" | "manual" | null = coords ? "gps" : trimmedCity ? "manual" : null;
+      let locationSource: "gps" | "manual" | null = coordsSource ?? (trimmedCity ? "manual" : null);
 
       if (!coords && trimmedCity) {
         const geo = await geocodePlace(trimmedCity);
@@ -286,11 +301,12 @@ export default function ProfileCreation() {
       }
 
       const payload = {
-        name: displayName,
+        name: trimmedName,
+        bio: trimmedBio || null,
         username: normalizedUsername,
         age: parsedAge,
         city: finalCity,
-        gender,
+        gender: gender as Gender,
         timezone: autoTimezone,
         interests: selectedInterests.join(", "),
         avatar_url: avatarUrl,
@@ -310,6 +326,7 @@ export default function ProfileCreation() {
         return {
           ...prev,
           name: payload.name,
+          bio: payload.bio,
           city: payload.city,
           avatar_url: payload.avatar_url,
           onboarded: true,
@@ -466,7 +483,7 @@ export default function ProfileCreation() {
 
                     <div>
                       <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        Full name (optional)
+                        Full name
                       </label>
                       <input
                         type="text"
@@ -475,6 +492,7 @@ export default function ProfileCreation() {
                         className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
                         placeholder="Your full name"
                         autoComplete="name"
+                        required
                       />
                     </div>
 
@@ -494,49 +512,45 @@ export default function ProfileCreation() {
                       </div>
                       <div>
                         <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Gender (optional)
+                          Gender
                         </label>
                         <select
                           value={gender}
-                          onChange={(e) => setGender(e.target.value as Gender)}
+                          onChange={(e) => setGender(e.target.value as GenderInput)}
                           className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                          required
                         >
-                          <option value="prefer_not_say">Prefer not to say</option>
+                          <option value="" disabled>
+                            Select gender
+                          </option>
                           <option value="woman">Woman</option>
                           <option value="man">Man</option>
                           <option value="nonbinary">Non-binary</option>
+                          <option value="prefer_not_say">Prefer not to say</option>
                         </select>
                       </div>
                     </div>
 
                     <div>
+                      <label className="mb-1 block text-sm font-semibold text-slate-800">Bio</label>
+                      <textarea
+                        value={bio}
+                        onChange={(e) => setBio(e.target.value.slice(0, BIO_MAX_LEN))}
+                        className="min-h-[88px] w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                        placeholder="Write a short intro about yourself..."
+                        maxLength={BIO_MAX_LEN}
+                      />
+                      <p className="mt-1 text-xs text-slate-500">{bio.length}/{BIO_MAX_LEN}</p>
+                    </div>
+
+                    <div>
                       <div className="mb-2 flex items-center justify-between">
-                        <label className="text-sm font-semibold text-slate-800">Pick an avatar</label>
+                        <label className="text-sm font-semibold text-slate-800">Upload avatar</label>
                         {avatarUploading ? <span className="text-xs text-slate-500">Uploading...</span> : null}
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
-                        {AVATAR_PRESETS.map((preset) => {
-                          const selected = selectedPresetId === preset.id;
-                          return (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => choosePreset(preset)}
-                              className={`rounded-xl border px-2 py-3 text-xs font-semibold transition ${
-                                selected
-                                  ? "border-slate-700 shadow-[0_8px_20px_rgba(15,23,42,0.15)]"
-                                  : "border-slate-200 hover:border-slate-300"
-                              }`}
-                              style={{ background: `linear-gradient(135deg, ${preset.from}, ${preset.to})` }}
-                            >
-                              {preset.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <label className="mt-2 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">
+                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">
                         <Upload className="h-3.5 w-3.5" />
-                        Upload
+                        Choose image
                         <input
                           type="file"
                           accept="image/jpeg,image/png,image/webp"
@@ -544,6 +558,9 @@ export default function ProfileCreation() {
                           onChange={onAvatarFileChange}
                         />
                       </label>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Avatar is required. JPG, PNG or WEBP, max {MAX_AVATAR_MB}MB.
+                      </p>
                     </div>
                   </div>
                 </motion.section>
@@ -578,11 +595,36 @@ export default function ProfileCreation() {
                     <input
                       type="text"
                       value={city}
-                      onChange={(e) => setCity(e.target.value)}
+                      onChange={(e) => {
+                        setCity(e.target.value);
+                        setCoords(null);
+                        setCoordsSource(null);
+                        setLocationMsg(null);
+                      }}
+                      onFocus={() => setCityFocused(true)}
+                      onBlur={() => window.setTimeout(() => setCityFocused(false), 120)}
                       className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-                      placeholder="e.g., Freiburg, Toronto, Berlin"
+                      placeholder="Start typing (Germany cities suggestions appear)"
                       required
                     />
+                    {cityFocused && citySuggestions.length ? (
+                      <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-200 bg-white shadow-sm">
+                        {citySuggestions.map((item) => (
+                          <button
+                            key={`${item.label}-${item.lat ?? "na"}-${item.lng ?? "na"}`}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => chooseCitySuggestion(item)}
+                            className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm text-slate-700 last:border-b-0 hover:bg-slate-50"
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {cityFocused && citySuggestionBusy ? (
+                      <p className="mt-2 text-xs text-slate-500">Searching German cities...</p>
+                    ) : null}
                     {locationMsg ? <p className="mt-2 text-xs text-slate-500">{locationMsg}</p> : null}
                   </div>
                 </motion.section>

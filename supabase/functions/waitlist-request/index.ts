@@ -135,6 +135,7 @@ async function saveWaitlistPending(email: string, fullName: string | null, sourc
         full_name: fullName,
         source,
         status: "pending",
+        approved_at: null,
         requested_at: now,
         updated_at: now,
       },
@@ -184,13 +185,7 @@ serve(async (req) => {
         message: "You are in waitlist.",
       });
     }
-    if (waitlistStatus === "approved") {
-      return json(200, {
-        ok: true,
-        status: "already_has_account",
-        message: "You have been approved. Join and click Login with your password.",
-      });
-    }
+    const isReactivationRequest = waitlistStatus === "approved";
 
     const approveCode = randomCode(14);
     const token = await createWaitlistToken(
@@ -204,7 +199,9 @@ serve(async (req) => {
       serviceKey,
     );
     const approveLink = buildApproveLink(token, approveCode);
-    const subject = `Circles waitlist request: ${fullName || email}`;
+    const subject = isReactivationRequest
+      ? `Circles reactivation request: ${fullName || email}`
+      : `Circles waitlist request: ${fullName || email}`;
 
     await sendBrevoEmail(
       {

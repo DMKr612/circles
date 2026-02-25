@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ChevronDown, Filter, Loader2, MapPin } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
@@ -291,6 +291,7 @@ function sortGroupCards(cards: GroupCard[], sortBy: ActivitySort): GroupCard[] {
 }
 
 export default function GroupsByGame() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const userId = user?.id || null;
   const isMobile = useIsMobile();
@@ -671,6 +672,13 @@ export default function GroupsByGame() {
     void loadActivityGroups();
   }, [loadActivityGroups]);
 
+  const openGroup = useCallback(
+    (groupId: string) => {
+      navigate(`/group/${groupId}`);
+    },
+    [navigate]
+  );
+
   async function joinGroup(card: GroupCard) {
     if (!userId) {
       setError("Sign in required.");
@@ -911,7 +919,17 @@ export default function GroupsByGame() {
                 return (
                   <li
                     key={card.id}
-                    className="rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:shadow-md"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openGroup(card.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openGroup(card.id);
+                      }
+                    }}
+                    aria-label={`Open ${card.title}`}
+                    className="cursor-pointer rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-neutral-300"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
@@ -931,10 +949,15 @@ export default function GroupsByGame() {
                         </p>
                       </div>
 
-                      <div className="shrink-0">
+                      <div
+                        className="shrink-0"
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
                         {card.isJoined ? (
                           <Link
                             to={`/group/${card.id}`}
+                            onClick={(event) => event.stopPropagation()}
                             className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
                           >
                             Joined
@@ -942,6 +965,7 @@ export default function GroupsByGame() {
                         ) : isFull ? (
                           <Link
                             to={`/group/${card.id}`}
+                            onClick={(event) => event.stopPropagation()}
                             className="rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50"
                           >
                             View
@@ -949,7 +973,10 @@ export default function GroupsByGame() {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => void joinGroup(card)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void joinGroup(card);
+                            }}
                             disabled={joiningId === card.id || joinedCount >= MAX_GROUPS}
                             className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-neutral-800 disabled:opacity-60"
                           >
