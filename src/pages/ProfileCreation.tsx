@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, ArrowRight, Check, Sparkles, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, Sparkles } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/App";
 import { geocodePlace, reverseGeocodeCity, searchGermanCitySuggestions, type CitySuggestion } from "@/lib/geocode";
+import { getAvatarUrl } from "@/lib/avatar";
 
 type Coords = { lat: number; lng: number };
 type Step = 1 | 2 | 3;
@@ -23,10 +24,9 @@ const INTEREST_OPTIONS = [
   "Music",
 ] as const;
 
-const MAX_AVATAR_MB = 5;
-const ALLOWED_AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const BIO_MAX_LEN = 220;
 const CITY_SUGGESTION_LIMIT = 10;
+const AVATAR_OPTION_COUNT = 8;
 
 function normalizeHandle(raw: string): string {
   const cleaned = raw
@@ -77,7 +77,6 @@ export default function ProfileCreation() {
   const [selectedInterests, setSelectedInterests] = useState<string[]>([]);
 
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
-  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [completedFx, setCompletedFx] = useState(false);
@@ -91,6 +90,12 @@ export default function ProfileCreation() {
     () => (selectedInterests.length ? selectedInterests.join(" / ") : "—"),
     [selectedInterests]
   );
+  const avatarOptions = useMemo(() => {
+    const base = String(user.id || user.email || "circles-user");
+    return Array.from({ length: AVATAR_OPTION_COUNT }, (_, idx) =>
+      getAvatarUrl(null, `${base}-preset-${idx + 1}`, 160)
+    );
+  }, [user.id, user.email]);
 
   const identityReady =
     fullName.trim().length >= 2 &&
@@ -166,7 +171,7 @@ export default function ProfileCreation() {
       if (normalizedUsername.length < 2) return "Please choose a valid username.";
       if (parsedAge === null) return "Please enter a valid age (13-120).";
       if (!gender) return "Please choose your gender.";
-      if (!avatarUrl) return "Please upload an avatar photo.";
+      if (!avatarUrl) return "Please choose an avatar.";
       return null;
     }
     if (currentStep === 2) {
@@ -214,40 +219,6 @@ export default function ProfileCreation() {
     setLocationMsg(`City selected: ${item.name}`);
     setCityFocused(false);
     setError(null);
-  }
-
-  async function onAvatarFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-
-    if (!ALLOWED_AVATAR_TYPES.has(file.type)) {
-      setError("Please upload JPG, PNG, or WEBP.");
-      return;
-    }
-    if (file.size > MAX_AVATAR_MB * 1024 * 1024) {
-      setError(`Max image size is ${MAX_AVATAR_MB}MB.`);
-      return;
-    }
-
-    setAvatarUploading(true);
-    setError(null);
-    try {
-      const ext = file.name.split(".").pop() || "jpg";
-      const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-      const path = `${user.id}/${fileName}`;
-      const { error: uploadError } = await supabase.storage.from("avatars").upload(path, file, {
-        upsert: true,
-      });
-      if (uploadError) throw uploadError;
-      const { data: pub } = supabase.storage.from("avatars").getPublicUrl(path);
-      if (!pub?.publicUrl) throw new Error("Could not resolve avatar URL.");
-      setAvatarUrl(pub.publicUrl);
-    } catch (err: any) {
-      setError(err?.message || "Avatar upload failed.");
-    } finally {
-      setAvatarUploading(false);
-    }
   }
 
   function toggleInterest(tag: string) {
@@ -544,23 +515,36 @@ export default function ProfileCreation() {
                     </div>
 
                     <div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <label className="text-sm font-semibold text-slate-800">Upload avatar</label>
-                        {avatarUploading ? <span className="text-xs text-slate-500">Uploading...</span> : null}
+                      <label className="mb-2 block text-sm font-semibold text-slate-800">Choose avatar</label>
+                      <div className="grid grid-cols-4 gap-2">
+                        {avatarOptions.map((option, idx) => {
+                          const active = avatarUrl === option;
+                          return (
+                            <button
+                              key={option}
+                              type="button"
+                              onClick={() => {
+                                setAvatarUrl(option);
+                                setError(null);
+                              }}
+                              className={`relative h-14 w-14 overflow-hidden rounded-full border transition ${
+                                active
+                                  ? "border-slate-900 ring-2 ring-slate-300"
+                                  : "border-slate-300 hover:border-slate-500"
+                              }`}
+                              aria-label={`Choose avatar ${idx + 1}`}
+                            >
+                              <img src={option} alt="" className="h-full w-full object-cover" />
+                              {active ? (
+                                <span className="absolute bottom-0 right-0 inline-flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-white">
+                                  <Check className="h-3 w-3" />
+                                </span>
+                              ) : null}
+                            </button>
+                          );
+                        })}
                       </div>
-                      <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50">
-                        <Upload className="h-3.5 w-3.5" />
-                        Choose image
-                        <input
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp"
-                          className="hidden"
-                          onChange={onAvatarFileChange}
-                        />
-                      </label>
-                      <p className="mt-2 text-xs text-slate-500">
-                        Avatar is required. JPG, PNG or WEBP, max {MAX_AVATAR_MB}MB.
-                      </p>
+                      <p className="mt-2 text-xs text-slate-500">Pick one avatar to continue.</p>
                     </div>
                   </div>
                 </motion.section>
@@ -691,7 +675,7 @@ export default function ProfileCreation() {
 
             <button
               type="submit"
-              disabled={saving || avatarUploading}
+              disabled={saving}
               className={`inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-slate-900 via-blue-800 to-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_12px_30px_rgba(30,64,175,0.35)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60 ${
                 canContinue && !saving ? "animate-pulse" : ""
               }`}
