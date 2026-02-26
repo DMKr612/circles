@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { geocodePlace, reverseGeocodeCity } from "@/lib/geocode";
 import { formatDistanceKm, haversineKm, isLocationStale, movedMoreThanMeters, type LatLng } from "@/lib/location";
 import { GAME_LIST } from "@/lib/constants";
+import { fetchGroupRatingSnapshots, type GroupRatingSnapshot } from "@/lib/groupRatings";
 
 type LocationMode = "gps" | "profile_city";
 
@@ -245,65 +246,32 @@ async function fetchProfileLocation(userId: string): Promise<ProfileLocation> {
   };
 }
 
-async function queryGroupsByCity(city: string | null): Promise<GroupRow[]> {
-  let fullQuery = supabase
-    .from("groups")
-    .select(GROUP_SELECT_FULL)
-    .order("created_at", { ascending: false })
-    .limit(GROUP_FETCH_LIMIT);
-  if (city) fullQuery = fullQuery.ilike("city", city);
-
-  const full = await fullQuery;
-  if (!full.error) {
-    return ((full.data || []) as GroupRow[]).map((group) => ({ ...group, distance_km: null }));
-  }
-
-  if (!hasColumnError(full.error)) throw full.error;
-
-  let fallbackQuery = supabase
-    .from("groups")
-    .select(GROUP_SELECT_FALLBACK)
-    .order("created_at", { ascending: false })
-    .limit(GROUP_FETCH_LIMIT);
-  if (city) fallbackQuery = fallbackQuery.ilike("city", city);
-
-  const fallback = await fallbackQuery;
-  if (fallback.error) throw fallback.error;
-
-  return ((fallback.data || []) as Array<Omit<GroupRow, "lat" | "lng">>).map((group) => ({
-    ...group,
-    lat: null,
-    lng: null,
+function mapSnapshotToGroupRow(row: GroupRatingSnapshot): GroupRow {
+  return {
+    id: row.groupId,
+    title: row.groupTitle,
+    city: row.groupCity,
+    capacity: row.capacity,
+    created_at: row.createdAt || new Date(0).toISOString(),
+    game: row.game,
+    category: row.category,
+    lat: row.lat,
+    lng: row.lng,
     distance_km: null,
-  }));
+  };
+}
+
+async function queryGroupsByCity(city: string | null): Promise<GroupRow[]> {
+  const rows = (await fetchGroupRatingSnapshots()).map(mapSnapshotToGroupRow);
+  if (!city) return rows.slice(0, GROUP_FETCH_LIMIT);
+  const target = normalizeCity(city);
+  return rows
+    .filter((row) => normalizeCity(row.city) === target)
+    .slice(0, GROUP_FETCH_LIMIT);
 }
 
 async function queryRecentGroups(): Promise<GroupRow[]> {
-  const full = await supabase
-    .from("groups")
-    .select(GROUP_SELECT_FULL)
-    .order("created_at", { ascending: false })
-    .limit(GROUP_FETCH_LIMIT);
-
-  if (!full.error) {
-    return ((full.data || []) as GroupRow[]).map((group) => ({ ...group, distance_km: null }));
-  }
-
-  if (!hasColumnError(full.error)) throw full.error;
-
-  const fallback = await supabase
-    .from("groups")
-    .select(GROUP_SELECT_FALLBACK)
-    .order("created_at", { ascending: false })
-    .limit(GROUP_FETCH_LIMIT);
-  if (fallback.error) throw fallback.error;
-
-  return ((fallback.data || []) as Array<Omit<GroupRow, "lat" | "lng">>).map((group) => ({
-    ...group,
-    lat: null,
-    lng: null,
-    distance_km: null,
-  }));
+  return (await fetchGroupRatingSnapshots()).map(mapSnapshotToGroupRow).slice(0, GROUP_FETCH_LIMIT);
 }
 
 async function queryGroupsByGps(coords: LatLng, radiusKm: number): Promise<GroupRow[]> {
@@ -325,26 +293,9 @@ async function queryGroupsByGps(coords: LatLng, radiusKm: number): Promise<Group
       distanceById.set(id, row.distance_km);
     });
 
-    const full = await supabase.from("groups").select(GROUP_SELECT_FULL).in("id", ids);
-    if (!full.error) {
-      const rows = (full.data || []) as GroupRow[];
-      return rows
-        .map((row) => ({ ...row, distance_km: distanceById.get(row.id) ?? null }))
-        .sort((a, b) => (a.distance_km ?? Number.POSITIVE_INFINITY) - (b.distance_km ?? Number.POSITIVE_INFINITY));
-    }
-
-    if (!hasColumnError(full.error)) throw full.error;
-
-    const fallback = await supabase.from("groups").select(GROUP_SELECT_FALLBACK).in("id", ids);
-    if (fallback.error) throw fallback.error;
-
-    return ((fallback.data || []) as Array<Omit<GroupRow, "lat" | "lng">>)
-      .map((row) => ({
-        ...row,
-        lat: null,
-        lng: null,
-        distance_km: distanceById.get(row.id) ?? null,
-      }))
+    const rows = (await fetchGroupRatingSnapshots(ids)).map(mapSnapshotToGroupRow);
+    return rows
+      .map((row) => ({ ...row, distance_km: distanceById.get(row.id) ?? null }))
       .sort((a, b) => (a.distance_km ?? Number.POSITIVE_INFINITY) - (b.distance_km ?? Number.POSITIVE_INFINITY));
   }
 

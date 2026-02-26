@@ -6,6 +6,8 @@ import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
 import { formatDistanceKm, haversineKm, type LatLng } from "@/lib/location";
 import { GAME_LIST } from "@/lib/constants";
 import { useAuth } from "@/App";
+import { GroupRatingBadge } from "@/components/GroupRatingBadge";
+import { fetchGroupRatingSnapshots } from "@/lib/groupRatings";
 
 type ActivitySort =
   | "newest_groups"
@@ -44,12 +46,10 @@ type GroupRow = {
   lat: number | null;
   lng: number | null;
   requires_verification_level: number | null;
-};
-
-type GroupMemberRow = {
-  group_id: string;
-  user_id: string;
-  status: string | null;
+  members_count: number;
+  group_members_count: number;
+  group_rating_avg: number | null;
+  group_rating_count: number;
 };
 
 type GroupEventRow = {
@@ -84,16 +84,14 @@ type GroupCard = {
   upcomingMeetups: number;
   createdTs: number;
   activeScore: number;
+  groupMembersCount: number;
+  groupRatingAvg: number | null;
+  groupRatingCount: number;
 };
 
 const MAX_GROUPS = 7;
 const LOCATION_MODE_KEY = "circles.browse.location_mode.v1";
 const DEFAULT_SORT: ActivitySort = "most_active";
-const GROUP_SELECT_FULL =
-  "id,title,city,capacity,created_at,game,game_slug,category,lat,lng,requires_verification_level";
-const GROUP_SELECT_NO_GAME_SLUG =
-  "id,title,city,capacity,created_at,game,category,lat,lng,requires_verification_level";
-const GROUP_SELECT_MINIMAL = "id,title,city,capacity,created_at,game,category,requires_verification_level";
 
 const SORT_OPTIONS: Array<{ key: ActivitySort; label: string }> = [
   { key: "newest_groups", label: "Newest groups" },
@@ -532,43 +530,24 @@ export default function GroupsByGame() {
     setError(null);
 
     try {
-      let groupsData: GroupRow[] = [];
-
-      const full = await supabase.from("groups").select(GROUP_SELECT_FULL).order("created_at", { ascending: false }).limit(520);
-      if (!full.error) {
-        groupsData = (full.data || []) as GroupRow[];
-      } else if (hasColumnError(full.error)) {
-        const withoutGameSlug = await supabase
-          .from("groups")
-          .select(GROUP_SELECT_NO_GAME_SLUG)
-          .order("created_at", { ascending: false })
-          .limit(520);
-
-        if (!withoutGameSlug.error) {
-          groupsData = ((withoutGameSlug.data || []) as Array<Omit<GroupRow, "game_slug">>).map((group) => ({
-            ...group,
-            game_slug: null,
-          }));
-        } else if (hasColumnError(withoutGameSlug.error)) {
-          const minimal = await supabase
-            .from("groups")
-            .select(GROUP_SELECT_MINIMAL)
-            .order("created_at", { ascending: false })
-            .limit(520);
-          if (minimal.error) throw minimal.error;
-
-          groupsData = ((minimal.data || []) as Array<Omit<GroupRow, "game_slug" | "lat" | "lng">>).map((group) => ({
-            ...group,
-            game_slug: null,
-            lat: null,
-            lng: null,
-          }));
-        } else {
-          throw withoutGameSlug.error;
-        }
-      } else {
-        throw full.error;
-      }
+      const snapshots = (await fetchGroupRatingSnapshots()).slice(0, 520);
+      const groupsData: GroupRow[] = snapshots.map((row) => ({
+        id: row.groupId,
+        title: row.groupTitle,
+        city: row.groupCity,
+        capacity: row.capacity,
+        created_at: row.createdAt || new Date(0).toISOString(),
+        game: row.game,
+        game_slug: row.gameSlug,
+        category: row.category,
+        lat: row.lat,
+        lng: row.lng,
+        requires_verification_level: row.requiresVerificationLevel,
+        members_count: row.membersCount,
+        group_members_count: row.groupMembersCount,
+        group_rating_avg: row.groupRatingAvg,
+        group_rating_count: row.groupRatingCount,
+      }));
 
       const filteredGroups = groupsData.filter((group) => matchesActivity(group, activitySlug, activityMeta));
       setRows(filteredGroups);
@@ -586,8 +565,7 @@ export default function GroupsByGame() {
 
       const sinceIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-      const [membersRes, eventsRes, pollsRes, readsRes] = await Promise.all([
-        supabase.from("group_members").select("group_id,user_id,status").in("group_id", groupIds),
+      const [eventsRes, pollsRes, readsRes] = await Promise.all([
         supabase
           .from("group_events")
           .select("group_id,title,starts_at,place")
@@ -610,17 +588,15 @@ export default function GroupsByGame() {
           .limit(2000),
       ]);
 
-      if (membersRes.error) throw membersRes.error;
       if (eventsRes.error) throw eventsRes.error;
       if (pollsRes.error) throw pollsRes.error;
       if (readsRes.error) throw readsRes.error;
 
       const membersMap: Record<string, number> = {};
-      ((membersRes.data || []) as GroupMemberRow[]).forEach((row) => {
-        if (!isActiveMemberStatus(row.status)) return;
-        const gid = String(row.group_id || "");
+      filteredGroups.forEach((row) => {
+        const gid = String(row.id || "");
         if (!gid) return;
-        membersMap[gid] = (membersMap[gid] || 0) + 1;
+        membersMap[gid] = Math.max(0, Number(row.members_count || 0));
       });
 
       const nextEventMap: Record<string, GroupEventRow> = {};
@@ -779,6 +755,12 @@ export default function GroupsByGame() {
         upcomingMeetups,
         createdTs: Number.isFinite(createdTs) ? createdTs : 0,
         activeScore,
+        groupMembersCount: Math.max(0, Number(group.group_members_count || memberCount)),
+        groupRatingAvg:
+          typeof group.group_rating_avg === "number" && Number.isFinite(group.group_rating_avg)
+            ? group.group_rating_avg
+            : null,
+        groupRatingCount: Math.max(0, Number(group.group_rating_count || 0)),
       };
     });
 
@@ -933,7 +915,15 @@ export default function GroupsByGame() {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <h2 className="truncate text-base font-bold text-neutral-900">{card.title}</h2>
+                        <div className="flex items-start justify-between gap-2">
+                          <h2 className="truncate text-base font-bold text-neutral-900">{card.title}</h2>
+                          <GroupRatingBadge
+                            groupMembersCount={card.groupMembersCount}
+                            groupRatingAvg={card.groupRatingAvg}
+                            groupRatingCount={card.groupRatingCount}
+                            className="shrink-0"
+                          />
+                        </div>
 
                         <p className="mt-1 flex items-center gap-1 text-xs text-neutral-600">
                           <MapPin className="h-3.5 w-3.5" />

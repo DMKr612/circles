@@ -21,6 +21,8 @@ import { useAuth } from "@/App";
 import { useProfile } from "@/hooks/useProfile";
 import { useProfileStats } from "@/hooks/useProfileStats";
 import { getAvatarUrl } from "@/lib/avatar";
+import { GroupRatingBadge } from "@/components/GroupRatingBadge";
+import { buildGroupRatingMap, fetchGroupRatingSnapshots } from "@/lib/groupRatings";
 
 type CircleCard = {
   id: string;
@@ -36,6 +38,9 @@ type CircleCard = {
   canVoteNow: boolean;
   hasVoted: boolean;
   statusLabel: string | null;
+  groupMembersCount: number;
+  groupRatingAvg: number | null;
+  groupRatingCount: number;
 };
 
 type MeetupCard = {
@@ -420,7 +425,7 @@ export default function Profile() {
       const now = new Date();
       const nowTs = now.getTime();
       const nowIso = now.toISOString();
-      const [eventsRes, memberRes, messagesRes, pollsRes, ratingsRes] = await Promise.all([
+      const [eventsRes, memberRes, messagesRes, pollsRes, ratingsRes, groupRatingSnapshots] = await Promise.all([
         supabase
           .from("group_events")
           .select("id, group_id, poll_id, option_id, title, starts_at, place, created_at")
@@ -446,6 +451,10 @@ export default function Profile() {
           .limit(160),
         supabase
           .rpc("get_my_group_event_ratings", { p_group_ids: groupIds }),
+        fetchGroupRatingSnapshots(groupIds).catch((ratingError) => {
+          console.warn("[profile] group rating fetch failed", ratingError);
+          return [];
+        }),
       ]);
 
       if (cancelled) return;
@@ -549,6 +558,7 @@ export default function Profile() {
       (publicProfiles || []).forEach((row: any) => {
         profileMap.set(row.user_id, row as PublicProfile);
       });
+      const groupRatingById = buildGroupRatingMap(groupRatingSnapshots);
 
       const builtCircles: CircleCard[] = myGroups
         .map((group) => {
@@ -621,6 +631,7 @@ export default function Profile() {
           const startsAtTs = startsAt ? new Date(startsAt).getTime() : NaN;
           const isOngoing = Number.isFinite(startsAtTs) && startsAtTs <= nowTs && nowTs < startsAtTs + 2 * 60 * 60 * 1000;
           const statusLabel = latestPollOpen ? (hasVoted ? "Voting ongoing" : "Vote now") : isOngoing ? "Ongoing" : null;
+          const groupRating = groupRatingById[group.id];
 
           return {
             id: group.id,
@@ -636,6 +647,12 @@ export default function Profile() {
             canVoteNow: latestPollOpen,
             hasVoted,
             statusLabel,
+            groupMembersCount: Math.max(0, Number(groupRating?.groupMembersCount || ids.length)),
+            groupRatingAvg:
+              typeof groupRating?.groupRatingAvg === "number" && Number.isFinite(groupRating.groupRatingAvg)
+                ? groupRating.groupRatingAvg
+                : null,
+            groupRatingCount: Math.max(0, Number(groupRating?.groupRatingCount || 0)),
           };
         })
         .sort((a, b) => {
@@ -1100,7 +1117,14 @@ export default function Profile() {
                   to={`/group/${circle.id}`}
                   className="w-[82%] shrink-0 snap-start rounded-2xl border border-neutral-200 bg-neutral-50 p-3 shadow-[0_6px_18px_rgba(15,23,42,0.06)] transition-all duration-200 hover:-translate-y-0.5 hover:bg-white hover:shadow-[0_10px_24px_rgba(15,23,42,0.10)] sm:w-[220px]"
                 >
-                  <div className="truncate text-base font-bold text-neutral-900">{circle.title}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1 truncate text-base font-bold text-neutral-900">{circle.title}</div>
+                    <GroupRatingBadge
+                      groupMembersCount={circle.groupMembersCount}
+                      groupRatingAvg={circle.groupRatingAvg}
+                      groupRatingCount={circle.groupRatingCount}
+                    />
+                  </div>
                   <div className="mt-2 flex -space-x-2">
                     {circle.avatars.map((avatar, idx) => (
                       <img

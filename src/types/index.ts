@@ -161,6 +161,9 @@ export type MyGroupRow = {
   code?: string | null;
   lat?: number | null;
   lng?: number | null;
+  group_rating_avg?: number | null;
+  group_rating_count?: number;
+  group_members_count?: number;
 };
 
 export type GroupEvent = {

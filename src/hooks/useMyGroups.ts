@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/App";
 import { supabase } from "@/lib/supabase";
+import { buildGroupRatingMap, fetchGroupRatingSnapshots } from "@/lib/groupRatings";
 import type { MyGroupRow } from "@/types";
 
 type Args = {
@@ -274,6 +275,32 @@ export function useMyGroups({ category, search }: Args) {
           const { data, error } = await applyCommonFilters(q);
           if (error) throw error;
           rows = (data ?? []) as MyGroupRow[];
+
+          if (rows.length > 0) {
+            try {
+              const snapshots = await fetchGroupRatingSnapshots(rows.map((row) => row.id));
+              const ratingMap = buildGroupRatingMap(snapshots);
+              rows = rows.map((row) => {
+                const rating = ratingMap[row.id];
+                if (!rating) {
+                  return {
+                    ...row,
+                    group_rating_avg: null,
+                    group_rating_count: 0,
+                    group_members_count: 0,
+                  };
+                }
+                return {
+                  ...row,
+                  group_rating_avg: rating.groupRatingAvg,
+                  group_rating_count: rating.groupRatingCount,
+                  group_members_count: rating.groupMembersCount,
+                };
+              });
+            } catch (ratingError) {
+              console.warn("[useMyGroups] rating fetch failed", ratingError);
+            }
+          }
         } else {
           rows = [];
         }

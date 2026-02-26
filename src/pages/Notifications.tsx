@@ -57,6 +57,8 @@ type ActivityDraft = {
   place?: string | null;
   text?: string | null;
   eventId?: string | null;
+  pollClosesAt?: string | null;
+  pollStatus?: string | null;
 };
 
 const UUID_REGEX =
@@ -137,13 +139,18 @@ function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
   }
 
   if (draft.type === "poll_created") {
+    const closesTs = draft.pollClosesAt ? new Date(draft.pollClosesAt).getTime() : Number.NaN;
+    const stillOpenByTime = Number.isNaN(closesTs) || closesTs > Date.now();
+    const openByStatus = !draft.pollStatus || String(draft.pollStatus).toLowerCase() === "open";
+    const canVoteNow = stillOpenByTime && openByStatus;
+
     return {
       id: draft.id,
       type: draft.type,
       date: safeDate,
       title: `New vote in ${groupTitle}`,
       description: cleanActivityText(draft.text || "Vote for the next meetup time.", 120) || "Vote for the next meetup time.",
-      actionLabel: "Vote",
+      actionLabel: canVoteNow ? "Vote" : "View",
       actionTo: draft.groupId ? `/group/${draft.groupId}#poll` : "/groups/mine",
     };
   }
@@ -565,7 +572,7 @@ export default function NotificationsPage() {
           const [pRes, mRes, eRes, myRRes] = await Promise.all([
             supabase
               .from("group_polls" as any)
-              .select("id, title, group_id, created_at, groups(title)")
+              .select("id, title, group_id, status, closes_at, created_at, groups(title)")
               .in("group_id", gIds)
               .eq("status", "open")
               .order("created_at", { ascending: false }),
@@ -789,6 +796,8 @@ export default function NotificationsPage() {
         groupId: p.group_id || "",
         groupTitle: p.groups?.title || "Circle",
         text: p.title || null,
+        pollClosesAt: p.closes_at || null,
+        pollStatus: p.status || null,
       });
     });
 
@@ -869,7 +878,7 @@ export default function NotificationsPage() {
     });
 
     const actionRequired = deduped.filter((e) =>
-      e.type === "poll_created" ||
+      (e.type === "poll_created" && e.actionLabel === "Vote") ||
       e.type === "rating_needed" ||
       (e.type === "meetup_scheduled" && e.actionLabel === "Confirm")
     );

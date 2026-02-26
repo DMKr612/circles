@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { ArrowLeft, MapPin, Users, Clock, Plus } from 'lucide-react';
+import { GroupRatingBadge } from '@/components/GroupRatingBadge';
+import { buildGroupRatingMap, fetchGroupRatingSnapshots } from '@/lib/groupRatings';
 
 type GroupRow = {
   id: string;
@@ -13,6 +15,9 @@ type GroupRow = {
   game?: string | null;
   created_at?: string | null;
   is_online?: boolean;
+  group_rating_avg?: number | null;
+  group_rating_count?: number;
+  group_members_count?: number;
 };
 
 function fmtDate(d?: string | null) {
@@ -75,7 +80,33 @@ export default function MyGroups() {
         if (gErr) throw gErr;
         
         if (!active) return;
-        setRows((gs as GroupRow[]) ?? []);
+        const baseRows = (gs as GroupRow[]) ?? [];
+
+        try {
+          const snapshots = await fetchGroupRatingSnapshots(baseRows.map((row) => row.id));
+          const ratingMap = buildGroupRatingMap(snapshots);
+          const enriched = baseRows.map((row) => {
+            const rating = ratingMap[row.id];
+            if (!rating) {
+              return {
+                ...row,
+                group_rating_avg: null,
+                group_rating_count: 0,
+                group_members_count: 0,
+              };
+            }
+            return {
+              ...row,
+              group_rating_avg: rating.groupRatingAvg,
+              group_rating_count: rating.groupRatingCount,
+              group_members_count: rating.groupMembersCount,
+            };
+          });
+          setRows(enriched);
+        } catch (ratingError) {
+          console.warn("[my-groups] rating fetch failed", ratingError);
+          setRows(baseRows);
+        }
       } catch (e: any) {
         if (!active) return;
         setErr(e?.message ?? 'Failed to load your groups');
@@ -153,6 +184,11 @@ export default function MyGroups() {
                           <h2 className="truncate text-base font-bold text-neutral-900">
                               {g.title || "Untitled Group"}
                           </h2>
+                          <GroupRatingBadge
+                            groupMembersCount={g.group_members_count}
+                            groupRatingAvg={g.group_rating_avg}
+                            groupRatingCount={g.group_rating_count}
+                          />
                           {g.is_online && (
                               <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-100">
                                   ONLINE

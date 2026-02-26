@@ -4,6 +4,8 @@ import { supabase } from "../lib/supabase";
 import { checkGroupJoinBlock, joinBlockMessage } from "../lib/ratings";
 import { getAvatarUrl } from "@/lib/avatar";
 import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
+import { fetchGroupRatingSnapshots } from "@/lib/groupRatings";
+import { GroupRatingBadge } from "@/components/GroupRatingBadge";
 import type { Group, Poll, PollOption, GroupMember, GroupEvent, GroupMoment } from "../types";
 import { 
   MapPin, Users, Calendar, Clock, Share2, MessageCircle, 
@@ -62,6 +64,9 @@ export default function GroupDetail() {
   const [msg, setMsg] = useState<string | null>(null);
   const [me, setMe] = useState<string | null>(null);
   const [announcements, setAnnouncements] = useState<GroupAnnouncement[]>([]);
+  const [groupRatingAvg, setGroupRatingAvg] = useState<number | null>(null);
+  const [groupRatingCount, setGroupRatingCount] = useState(0);
+  const [groupRatingMembersCount, setGroupRatingMembersCount] = useState(0);
 
   // Host check (fallback to creator_id only for legacy rows missing host_id)
   const hostUserId = group?.host_id ?? group?.creator_id ?? null;
@@ -384,7 +389,21 @@ export default function GroupDetail() {
       const { data: auth } = await supabase.auth.getUser();
       if (!ignore) setMe(auth.user?.id ?? null);
 
-      const q = await supabase.from('groups').select('*').eq('id', id).maybeSingle();
+      const [q, ratingRows] = await Promise.all([
+        supabase.from('groups').select('*').eq('id', id).maybeSingle(),
+        fetchGroupRatingSnapshots([id]).catch((error) => {
+          console.warn("[group-detail] rating fetch failed", error);
+          return [];
+        }),
+      ]);
+
+      const rating = ratingRows[0] || null;
+      if (!ignore) {
+        setGroupRatingAvg(typeof rating?.groupRatingAvg === "number" ? rating.groupRatingAvg : null);
+        setGroupRatingCount(Math.max(0, Number(rating?.groupRatingCount || 0)));
+        setGroupRatingMembersCount(Math.max(0, Number(rating?.groupMembersCount || 0)));
+      }
+
       if (!ignore) setGroup((q.data as Group) ?? null);
       
             if (q.data) setEditDescValue((q.data as any).description || "");
@@ -402,7 +421,7 @@ export default function GroupDetail() {
       setLoading(false);
     })();
     return () => { ignore = true; };
-  }, [id]);
+  }, [id, membersRefreshTick]);
 
   useEffect(() => {
     let off = false;
@@ -1227,9 +1246,16 @@ export default function GroupDetail() {
 
                 <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-6">
                     <div className="flex-1 min-w-0">
-                        <h1 className="text-3xl md:text-4xl font-extrabold text-neutral-900 tracking-tight leading-tight mb-3">
-                            {group.title}
-                        </h1>
+                        <div className="mb-3 flex flex-wrap items-center gap-2">
+                          <h1 className="text-3xl md:text-4xl font-extrabold text-neutral-900 tracking-tight leading-tight">
+                              {group.title}
+                          </h1>
+                          <GroupRatingBadge
+                            groupMembersCount={groupRatingMembersCount}
+                            groupRatingAvg={groupRatingAvg}
+                            groupRatingCount={groupRatingCount}
+                          />
+                        </div>
                         <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
                           <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
                           {activityLabel}
