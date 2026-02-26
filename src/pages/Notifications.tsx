@@ -331,7 +331,9 @@ export default function NotificationsPage() {
   const [announcements, setAnnouncements] = useState<any[]>([]);
   const [confirmingActionIds, setConfirmingActionIds] = useState<string[]>([]);
   const [dismissedActionIds, setDismissedActionIds] = useState<string[]>([]);
+  const [readUpdateIds, setReadUpdateIds] = useState<string[]>([]);
   const dismissedActionStorageKey = user ? `circles.dismissedActionRequired.${user.id}` : null;
+  const readUpdateStorageKey = user ? `circles.readActivityUpdates.${user.id}` : null;
 
   useEffect(() => {
     if (!dismissedActionStorageKey) {
@@ -356,6 +358,28 @@ export default function NotificationsPage() {
   }, [dismissedActionStorageKey]);
 
   useEffect(() => {
+    if (!readUpdateStorageKey) {
+      setReadUpdateIds([]);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(readUpdateStorageKey);
+      if (!raw) {
+        setReadUpdateIds([]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setReadUpdateIds(parsed.filter((v) => typeof v === "string"));
+      } else {
+        setReadUpdateIds([]);
+      }
+    } catch {
+      setReadUpdateIds([]);
+    }
+  }, [readUpdateStorageKey]);
+
+  useEffect(() => {
     if (!dismissedActionStorageKey) return;
     try {
       localStorage.setItem(dismissedActionStorageKey, JSON.stringify(dismissedActionIds.slice(-300)));
@@ -363,6 +387,15 @@ export default function NotificationsPage() {
       // best effort persistence; skip on storage errors
     }
   }, [dismissedActionIds, dismissedActionStorageKey]);
+
+  useEffect(() => {
+    if (!readUpdateStorageKey) return;
+    try {
+      localStorage.setItem(readUpdateStorageKey, JSON.stringify(readUpdateIds.slice(-500)));
+    } catch {
+      // best effort persistence; skip on storage errors
+    }
+  }, [readUpdateIds, readUpdateStorageKey]);
 
   const dismissAction = useCallback((id: string) => {
     setDismissedActionIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
@@ -1025,6 +1058,11 @@ export default function NotificationsPage() {
       .sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [processedActivity.updates, announcements]);
 
+  const unreadUpdateRows = useMemo(() => {
+    if (!readUpdateIds.length) return updateRows;
+    return updateRows.filter((row) => !readUpdateIds.includes(row.id));
+  }, [updateRows, readUpdateIds]);
+
   function timeUntil(startIso: string) {
     const now = Date.now();
     const t = new Date(startIso).getTime();
@@ -1174,9 +1212,10 @@ export default function NotificationsPage() {
 
   // --- Render Helpers ---
 
-  const renderEvent = (e: ActivityEntry, options?: { showAction?: boolean; dismissOnAction?: boolean }) => {
+  const renderEvent = (e: ActivityEntry, options?: { showAction?: boolean; dismissOnAction?: boolean; isRead?: boolean }) => {
     const showAction = options?.showAction ?? false;
     const dismissOnAction = options?.dismissOnAction ?? false;
+    const isRead = options?.isRead ?? false;
     const isMeetupConfirmCard = showAction && e.type === "meetup_scheduled" && e.actionLabel === "Confirm";
     const isConfirming = confirmingActionIds.includes(e.id);
     const timeLabel = formatActivityDateTime(e.date.toISOString());
@@ -1220,9 +1259,9 @@ export default function NotificationsPage() {
     return (
       <div
         key={e.id}
-        className={`notif-card ${showAction ? "action" : "update"}${isConfirming ? " is-hiding" : ""}`}
+        className={`notif-card ${showAction ? "action" : "update"}${isConfirming ? " is-hiding" : ""}${isRead ? " is-read" : ""}`}
       >
-        <span className="unread-dot" />
+        <span className={`unread-dot${isRead ? " read" : ""}`} />
         <div className={`notif-icon ${iconClass}`}>
           {e.type === "meetup_scheduled" && <Calendar size={16} />}
           {e.type === "poll_created" && <CheckSquare size={16} />}
@@ -1395,14 +1434,19 @@ export default function NotificationsPage() {
   };
 
   const renderUpdateRow = (row: any) => {
+    const isRead = readUpdateIds.includes(row.id);
     if (row.kind === "event") {
-      return renderEvent(row.event, { showAction: row.event.type === "mention", dismissOnAction: false });
+      return renderEvent(row.event, {
+        showAction: row.event.type === "mention",
+        dismissOnAction: false,
+        isRead,
+      });
     }
     const a = row.announcement;
     const detailPath = a.group_id ? `/group/${a.group_id}` : `/announcements#${a.id}`;
     return (
-      <div key={row.id} className="notif-card update">
-        <span className="unread-dot" />
+      <div key={row.id} className={`notif-card update${isRead ? " is-read" : ""}`}>
+        <span className={`unread-dot${isRead ? " read" : ""}`} />
         <div className="notif-icon ni-update">
           <Megaphone size={16} />
         </div>
@@ -1427,10 +1471,27 @@ export default function NotificationsPage() {
     friendRequestActions.length > 0 ||
     sentFriendRequestActions.length > 0 ||
     inviteActions.length > 0 ||
-    processedActivity.updates.length > 0 ||
+    updateRows.length > 0 ||
     announcements.length > 0;
 
-  const topBadgeCount = Math.min(99, actionRequiredRows.length);
+  const topBadgeCount = Math.min(99, unreadUpdateRows.length);
+
+  const markAllUpdatesRead = useCallback(async () => {
+    if (!unreadUpdateRows.length) return;
+    const idsToMark = unreadUpdateRows.map((row) => row.id);
+    setReadUpdateIds((prev) => Array.from(new Set([...prev, ...idsToMark])));
+
+    if (!user) return;
+    try {
+      await supabase
+        .from("notifications")
+        .update({ is_read: true })
+        .eq("user_id", user.id)
+        .eq("is_read", false);
+    } catch (e) {
+      console.warn("Failed to mark notifications as read", e);
+    }
+  }, [user, unreadUpdateRows]);
 
   return (
     <div className="activity-page">
@@ -1439,7 +1500,17 @@ export default function NotificationsPage() {
           <h1>
             Your <em>Activity</em>
           </h1>
-          <span className="notif-count">{topBadgeCount}</span>
+          <div className="activity-head-actions">
+            <button
+              type="button"
+              className="read-all-btn"
+              onClick={markAllUpdatesRead}
+              disabled={loading || topBadgeCount === 0}
+            >
+              Read all
+            </button>
+            <span className="notif-count">{topBadgeCount}</span>
+          </div>
         </div>
 
         <div className="activity-tabs">
