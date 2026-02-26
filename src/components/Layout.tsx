@@ -212,7 +212,7 @@ export default function Layout() {
       </div>
 
       {/* Main content wrapper with padding just enough for the nav */}
-      <div className={`relative z-10 ${isChat ? "pb-0" : "pb-[calc(100px+env(safe-area-inset-bottom))]"}`}>
+      <div className={`relative z-10 ${hideNav || isChat ? "pb-0" : "pb-[calc(100px+env(safe-area-inset-bottom))]"}`}>
         <div className="page-transition">
           <Outlet />
         </div>

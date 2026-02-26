@@ -1,11 +1,25 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Calendar, Check, CheckCircle2, ChevronLeft, ChevronRight, MessageCircle, CheckSquare, Mail, Users, Megaphone, Star, UserPlus } from "lucide-react";
+import {
+  Calendar,
+  Check,
+  CheckCircle2,
+  CheckSquare,
+  ChevronLeft,
+  ChevronRight,
+  Mail,
+  Megaphone,
+  MessageCircle,
+  Star,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import { useAuth } from "@/App";
 import { isAnnouncementVisibleForViewer } from "@/lib/announcements";
 import { getAvatarUrl } from "@/lib/avatar";
 import { routeToEventRating } from "@/constants/routes";
+import "./Notifications.css";
 
 type CalendarEntry = {
   id: string;
@@ -883,9 +897,18 @@ export default function NotificationsPage() {
     return `${weekday}, ${day} ${month}`;
   }, [selectedDate]);
 
+  const selectedDayPanelTitle = useMemo(() => {
+    if (!selectedDate || !selectedDayEvents.length) return "No events";
+    const now = Date.now();
+    const hasUpcoming = selectedDayEvents.some((entry) => new Date(entry.startsAt).getTime() >= now);
+    if (hasUpcoming) return "Upcoming";
+    const hasPast = selectedDayEvents.some((entry) => new Date(entry.startsAt).getTime() < now);
+    return hasPast ? "Past" : "No events";
+  }, [selectedDate, selectedDayEvents]);
+
   const todayKey = keyFromDate(new Date());
   const monthLabel = calendarMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" });
-  const weekdayLabels = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  const weekdayLabels = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 
   const changeMonth = (delta: number) => {
     setCalendarMonth((prev) => {
@@ -893,6 +916,11 @@ export default function NotificationsPage() {
       next.setMonth(prev.getMonth() + delta);
       next.setDate(1);
       next.setHours(0, 0, 0, 0);
+      const nextSelected =
+        delta > 0
+          ? new Date(next.getFullYear(), next.getMonth(), 1)
+          : new Date(next.getFullYear(), next.getMonth() + 1, 0);
+      setSelectedDate(keyFromDate(nextSelected));
       return next;
     });
   };
@@ -1169,34 +1197,46 @@ export default function NotificationsPage() {
       navigate(e.actionTo);
     };
 
+    const actionClass =
+      e.type === "poll_created"
+        ? "vote"
+        : e.type === "rating_needed"
+          ? "rate"
+          : e.type === "mention"
+            ? "view"
+            : e.type === "meetup_scheduled" && e.actionLabel === "Confirm"
+              ? "confirm"
+              : "view";
+
+    const iconClass =
+      e.type === "meetup_scheduled"
+        ? "ni-meetup"
+        : e.type === "poll_created"
+          ? "ni-vote"
+          : e.type === "mention"
+            ? "ni-mention"
+            : "ni-rate";
+
     return (
       <div
         key={e.id}
-        className={`flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm animate-in fade-in slide-in-from-bottom-2 transition-all duration-200 ${
-          isConfirming
-            ? "pointer-events-none -translate-y-2 opacity-0"
-            : "hover:-translate-y-0.5 hover:shadow-md"
-        }`}
+        className={`notif-card ${showAction ? "action" : "update"}${isConfirming ? " is-hiding" : ""}`}
       >
-        <div className={`h-10 w-10 shrink-0 rounded-full flex items-center justify-center ${
-          e.type === "meetup_scheduled" ? "bg-emerald-100 text-emerald-600" :
-          e.type === "poll_created" ? "bg-indigo-100 text-indigo-600" :
-          e.type === "mention" ? "bg-sky-100 text-sky-600" :
-          "bg-amber-100 text-amber-600"
-        }`}>
-          {e.type === "meetup_scheduled" && <Calendar className="h-5 w-5" />}
-          {e.type === "poll_created" && <CheckSquare className="h-5 w-5" />}
-          {e.type === "mention" && <MessageCircle className="h-5 w-5" />}
-          {e.type === "rating_needed" && <Star className="h-5 w-5" />}
+        <span className="unread-dot" />
+        <div className={`notif-icon ${iconClass}`}>
+          {e.type === "meetup_scheduled" && <Calendar size={16} />}
+          {e.type === "poll_created" && <CheckSquare size={16} />}
+          {e.type === "mention" && <MessageCircle size={16} />}
+          {e.type === "rating_needed" && <Star size={16} />}
         </div>
 
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-bold text-neutral-900">{e.title}</div>
-          <div className="mt-0.5 text-xs text-neutral-600">{e.description}</div>
+        <div className="notif-body">
+          <div className="notif-title">{e.title}</div>
+          <div className="notif-sub">{e.description}</div>
           {isMeetupConfirmCard ? (
-            <div className="mt-1 text-[10px] text-neutral-400">{startsInLabel || "Starts soon"}</div>
+            <div className="notif-time">{startsInLabel || "Starts soon"}</div>
           ) : (
-            <div className="mt-1 text-[10px] text-neutral-400">{timeLabel}</div>
+            <div className="notif-time">{timeLabel}</div>
           )}
         </div>
 
@@ -1205,19 +1245,11 @@ export default function NotificationsPage() {
             type="button"
             onClick={handleActionClick}
             disabled={isConfirming}
-            className={`shrink-0 rounded-full px-3.5 py-2 text-[11px] font-bold disabled:cursor-not-allowed disabled:opacity-70 ${
-              e.type === "poll_created"
-                ? "bg-indigo-600 text-white hover:bg-indigo-700"
-                : e.type === "rating_needed"
-                  ? "bg-amber-500 text-white hover:bg-amber-600"
-                  : e.type === "meetup_scheduled" && e.actionLabel === "Confirm"
-                    ? "self-center inline-flex items-center gap-1 bg-emerald-600 text-white hover:bg-emerald-700"
-                    : "border border-neutral-300 bg-white text-neutral-800 hover:bg-neutral-100"
-            }`}
+            className={`notif-act-btn ${actionClass}`}
           >
             {e.actionLabel === "Confirm" ? (
               <>
-                <Check className="h-3.5 w-3.5" />
+                <Check size={12} />
                 Confirm
               </>
             ) : (
@@ -1232,52 +1264,163 @@ export default function NotificationsPage() {
   const renderCalendarEntry = (entry: CalendarEntry, nowMs: number) => {
     const date = new Date(entry.startsAt);
     const isPast = date.getTime() < nowMs;
-    const colorBar = entry.phase === "confirmed" ? "bg-emerald-500" : "bg-sky-500";
-    const badgeClass =
-      entry.phase === "confirmed"
-        ? "border-emerald-100 bg-emerald-50 text-emerald-700"
-        : "border-sky-100 bg-sky-50 text-sky-700";
+    const stateClass = entry.phase === "confirmed" ? (isPast ? "past" : "confirmed") : "upcoming";
+    const statusLabel =
+      entry.phase === "confirmed" ? (isPast ? "Past" : "Confirmed") : "Poll";
 
     return (
       <div
         key={entry.id}
         onClick={() => navigate(`/group/${entry.groupId}`)}
-        className="relative overflow-hidden rounded-2xl border border-neutral-100 bg-white/95 p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-lg cursor-pointer"
+        className={`event-item ${stateClass}`}
       >
-        <div className={`absolute inset-y-0 left-0 w-1 ${colorBar}`} />
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wide text-neutral-500">{entry.groupTitle}</div>
-            <div className="text-base font-bold text-neutral-900">{entry.title}</div>
-            <div className="flex flex-wrap items-center gap-2 text-sm text-neutral-600">
-              <Calendar className="h-4 w-4" />
-              <span>{date.toLocaleDateString()} • {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
-              {isPast && (
-                <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-neutral-500">
-                  Past
-                </span>
-              )}
-            </div>
-            <div className="flex gap-4 text-[12px] text-neutral-600">
-              <span className="flex items-center gap-1">
-                <Users className="h-3.5 w-3.5" /> {entry.participants} Teilnahme{entry.participants === 1 ? "" : "n"}
-              </span>
-              <span className="flex items-center gap-1">
-                <CheckSquare className="h-3.5 w-3.5" /> {entry.votes} Stimme{entry.votes === 1 ? "" : "n"}
-              </span>
-            </div>
+        <div className="event-main">
+          <div className="event-circle">{entry.groupTitle}</div>
+          <div className="event-name">{entry.title}</div>
+          <div className="event-time">
+            {date.toLocaleDateString()} · {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
           </div>
-          <span className={`flex items-center gap-1 rounded-full border px-3 py-1 text-[11px] font-bold ${badgeClass}`}>
-            {entry.phase === "confirmed" ? "Confirmed" : "Poll open"}
-          </span>
         </div>
+        <span className={`status-pill ${stateClass}`}>{statusLabel}</span>
+        {(isPast || entry.phase === "confirmed") && (
+          <div className="ei-stats">
+            <span>{entry.participants} attending</span>
+            <span>{entry.votes} votes</span>
+          </div>
+        )}
+        {!isPast && entry.phase !== "confirmed" && (
+          <div className="ei-stats">
+            <span>{entry.participants} participants</span>
+            <span>{entry.votes} votes</span>
+          </div>
+        )}
       </div>
     );
   };
 
-  if (loading) {
-    return <div className="pt-24 text-center text-neutral-400 text-sm">Checking for updates...</div>;
-  }
+  const renderActionRow = (row: any) => {
+    if (row.kind === "event") {
+      return renderEvent(row.event, { showAction: true, dismissOnAction: true });
+    }
+    if (row.kind === "friend") {
+      return (
+        <div key={row.id} className="notif-card action">
+          <span className="unread-dot" />
+          <button
+            type="button"
+            onClick={() => openProfileView(row.friend.fromId)}
+            className="avatar-badge"
+          >
+            <img
+              src={getAvatarUrl(row.friend.fromAvatar, row.friend.fromId)}
+              alt={row.friend.fromName}
+            />
+          </button>
+          <div className="notif-body">
+            <div className="notif-title">{row.friend.fromName} sent a friend request</div>
+            <div className="notif-sub">Accept to start direct messaging and see them in chats.</div>
+            <div className="notif-time">{formatActivityDateTime(row.date.toISOString())}</div>
+          </div>
+          <div className="btn-cluster">
+            <button
+              type="button"
+              onClick={() => handleDeclineFriend(row.friend.requestId, row.friend.fromId)}
+              className="notif-act-btn view"
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAcceptFriend(row.friend.requestId, row.friend.fromId)}
+              className="notif-act-btn confirm"
+            >
+              Accept
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (row.kind === "friend_sent") {
+      return (
+        <div key={row.id} className="notif-card action">
+          <span className="unread-dot" />
+          <button
+            type="button"
+            onClick={() => openProfileView(row.friend.targetId)}
+            className="avatar-badge"
+          >
+            <img
+              src={getAvatarUrl(row.friend.targetAvatar, row.friend.targetId)}
+              alt={row.friend.targetName}
+            />
+          </button>
+          <div className="notif-body">
+            <div className="notif-title">Friend request sent to {row.friend.targetName}</div>
+            <div className="notif-sub">Waiting for response. You can cancel this request anytime.</div>
+            <div className="notif-time">{formatActivityDateTime(row.date.toISOString())}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleCancelSentFriend(row.friend.requestId, row.friend.targetId)}
+            className="notif-act-btn view"
+          >
+            Cancel
+          </button>
+        </div>
+      );
+    }
+    if (row.kind === "invite") {
+      return (
+        <div key={row.id} className="notif-card action">
+          <span className="unread-dot" />
+          <div className="notif-icon ni-update">
+            <Mail size={16} />
+          </div>
+          <div className="notif-body">
+            <div className="notif-title">Respond to invite in {row.invite.groupTitle}</div>
+            <div className="notif-sub">You were invited to join this circle.</div>
+            <div className="notif-time">{formatActivityDateTime(row.date.toISOString())}</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleJoinGroup(row.invite.groupId)}
+            className="notif-act-btn view"
+          >
+            Respond
+          </button>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  const renderUpdateRow = (row: any) => {
+    if (row.kind === "event") {
+      return renderEvent(row.event, { showAction: row.event.type === "mention", dismissOnAction: false });
+    }
+    const a = row.announcement;
+    const detailPath = a.group_id ? `/group/${a.group_id}` : `/announcements#${a.id}`;
+    return (
+      <div key={row.id} className="notif-card update">
+        <span className="unread-dot" />
+        <div className="notif-icon ni-update">
+          <Megaphone size={16} />
+        </div>
+        <div className="notif-body">
+          <div className="notif-title">Announcement posted</div>
+          <div className="notif-sub">{cleanActivityText(a.title || a.description || "Circles update", 120)}</div>
+          <div className="notif-time">{formatActivityDateTime(row.date.toISOString())}</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate(detailPath)}
+          className="notif-act-btn view"
+        >
+          View →
+        </button>
+      </div>
+    );
+  };
 
   const hasActivityItems =
     processedActivity.actionRequired.length > 0 ||
@@ -1287,363 +1430,138 @@ export default function NotificationsPage() {
     processedActivity.updates.length > 0 ||
     announcements.length > 0;
 
+  const topBadgeCount = Math.min(99, actionRequiredRows.length);
+
   return (
-    <div className="mx-auto w-full max-w-xl px-4 py-8 pb-32">
-      <div className="mb-3">
-        <h1 className="text-2xl font-extrabold text-neutral-900">Activity</h1>
-      </div>
+    <div className="activity-page">
+      <main className="activity-shell">
+        <div className="activity-head">
+          <h1>
+            Your <em>Activity</em>
+          </h1>
+          <span className="notif-count">{topBadgeCount}</span>
+        </div>
 
-      <div className="mb-8 inline-flex rounded-full border border-neutral-200 bg-neutral-100/90 p-1 shadow-inner">
-        <button
-          type="button"
-          onClick={() => setSelectedTab("activity")}
-          className={`rounded-full px-4 py-1.5 text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-1 ${
-            selectedTab === "activity"
-              ? "bg-white font-semibold text-neutral-900 shadow-sm"
-              : "font-medium text-neutral-500 hover:text-neutral-700"
-          }`}
-        >
-          Activity
-        </button>
-        <button
-          type="button"
-          onClick={() => setSelectedTab("calendar")}
-          className={`rounded-full px-4 py-1.5 text-sm transition-all duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 focus-visible:ring-offset-1 ${
-            selectedTab === "calendar"
-              ? "bg-white font-semibold text-neutral-900 shadow-sm"
-              : "font-medium text-neutral-500 hover:text-neutral-700"
-          }`}
-        >
-          Calendar
-        </button>
-      </div>
+        <div className="activity-tabs">
+          <button
+            type="button"
+            onClick={() => setSelectedTab("activity")}
+            className={selectedTab === "activity" ? "active" : ""}
+          >
+            ⚡ Activity
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedTab("calendar")}
+            className={selectedTab === "calendar" ? "active" : ""}
+          >
+            📅 Calendar
+          </button>
+        </div>
 
-      {selectedTab === "activity" && (
-        <>
-          {!hasActivityItems && (
-            <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-6 text-center text-sm text-neutral-600">
-              You’re all caught up.
-            </div>
-          )}
-
-          {hasActivityItems && (
-            <div className="space-y-10">
-              <section>
-                <h2 className="mb-4 text-sm font-semibold text-neutral-700">Action Required</h2>
-                <div className="space-y-3">
-                  {actionRequiredRows.map((row) =>
-                    row.kind === "friend" ? (
-                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-                        <button
-                          type="button"
-                          onClick={() => openProfileView(row.friend.fromId)}
-                          className="relative h-10 w-10 shrink-0 rounded-full ring-1 ring-neutral-200 overflow-hidden"
-                        >
-                          <img
-                            src={getAvatarUrl(row.friend.fromAvatar, row.friend.fromId)}
-                            alt={row.friend.fromName}
-                            className="h-full w-full object-cover"
-                          />
-                          <span className="absolute -bottom-1 -right-1 rounded-full bg-emerald-600 p-1 text-white">
-                            <UserPlus className="h-2.5 w-2.5" />
-                          </span>
-                        </button>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-bold text-neutral-900">{row.friend.fromName} sent a friend request</div>
-                          <div className="mt-0.5 text-xs text-neutral-600">Accept to start direct messaging and see them in chats.</div>
-                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleDeclineFriend(row.friend.requestId, row.friend.fromId)}
-                            className="rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-[11px] font-bold text-neutral-700 hover:bg-neutral-100"
-                          >
-                            Decline
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleAcceptFriend(row.friend.requestId, row.friend.fromId)}
-                            className="rounded-full bg-emerald-600 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-700"
-                          >
-                            Accept
-                          </button>
-                        </div>
-                      </div>
-                    ) : row.kind === "friend_sent" ? (
-                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-                        <button
-                          type="button"
-                          onClick={() => openProfileView(row.friend.targetId)}
-                          className="relative h-10 w-10 shrink-0 rounded-full ring-1 ring-neutral-200 overflow-hidden"
-                        >
-                          <img
-                            src={getAvatarUrl(row.friend.targetAvatar, row.friend.targetId)}
-                            alt={row.friend.targetName}
-                            className="h-full w-full object-cover"
-                          />
-                          <span className="absolute -bottom-1 -right-1 rounded-full bg-amber-500 p-1 text-white">
-                            <UserPlus className="h-2.5 w-2.5" />
-                          </span>
-                        </button>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-bold text-neutral-900">Friend request sent to {row.friend.targetName}</div>
-                          <div className="mt-0.5 text-xs text-neutral-600">Waiting for response. You can cancel this request anytime.</div>
-                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleCancelSentFriend(row.friend.requestId, row.friend.targetId)}
-                          className="shrink-0 rounded-full border border-red-200 bg-white px-3 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : row.kind === "invite" ? (
-                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600">
-                          <Mail className="h-5 w-5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-bold text-neutral-900">Respond to invite in {row.invite.groupTitle}</div>
-                          <div className="mt-0.5 text-xs text-neutral-600">You were invited to join this circle.</div>
-                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleJoinGroup(row.invite.groupId)}
-                          className="shrink-0 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-[11px] font-bold text-neutral-800 hover:bg-neutral-100"
-                        >
-                          Respond
-                        </button>
-                      </div>
-                    ) : (
-                      renderEvent(row.event, { showAction: true, dismissOnAction: true })
-                    )
-                  )}
-
-                  {actionRequiredRows.length === 0 && (
-                    <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-500">
-                      Nothing pending.
-                    </div>
-                  )}
+        {loading ? (
+          <section className="activity-loading">Checking for updates...</section>
+        ) : selectedTab === "activity" ? (
+          <section id="view-activity" className="activity-view">
+            {!hasActivityItems ? (
+              <div className="empty-state">You’re all caught up.</div>
+            ) : (
+              <>
+                <div className="sec-label">🔥 Action required</div>
+                <div className="notif-list">
+                  {actionRequiredRows.length ? actionRequiredRows.map((row) => renderActionRow(row)) : <div className="empty-state small">Nothing pending.</div>}
                 </div>
-              </section>
 
-              <section>
-                <h2 className="mb-4 text-sm font-semibold text-neutral-700">Updates</h2>
-                <div className="space-y-3">
-                  {updateRows.map((row) => {
-                    if (row.kind === "event") return renderEvent(row.event, { showAction: row.event.type === "mention", dismissOnAction: false });
-                    const a = row.announcement;
-                    const detailPath = a.group_id ? `/group/${a.group_id}` : `/announcements#${a.id}`;
-                    return (
-                      <div key={row.id} className="flex items-start gap-3 rounded-2xl border border-neutral-100 bg-white p-3 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600">
-                          <Megaphone className="h-5 w-5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-bold text-neutral-900">Announcement posted</div>
-                          <div className="mt-0.5 line-clamp-2 text-xs text-neutral-600">{cleanActivityText(a.title || a.description || "Circles update", 120)}</div>
-                          <div className="mt-1 text-[10px] text-neutral-400">{formatActivityDateTime(row.date.toISOString())}</div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => navigate(detailPath)}
-                          className="shrink-0 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-[11px] font-bold text-neutral-800 hover:bg-neutral-100"
-                        >
-                          View
-                        </button>
-                      </div>
-                    );
-                  })}
-
-                  {updateRows.length === 0 && (
-                    <div className="flex min-h-[120px] flex-col items-center justify-center rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-4 text-center">
-                      <CheckCircle2 className="mb-2 h-5 w-5 text-emerald-600" />
-                      <p className="text-sm font-medium text-neutral-700">You’re all caught up.</p>
-                    </div>
-                  )}
+                <div className="sec-label">📬 Updates</div>
+                <div className="notif-list">
+                  {updateRows.length ? updateRows.map((row) => renderUpdateRow(row)) : <div className="empty-state small">No new updates.</div>}
                 </div>
-              </section>
-            </div>
-          )}
-        </>
-      )}
+              </>
+            )}
+          </section>
+        ) : (
+          <section id="view-calendar" className="calendar-view">
+            {calendarError ? <div className="error-banner">{calendarError}</div> : null}
 
-      {selectedTab === "calendar" && (
-        <section className="rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-6">
-          <div className="mb-4">
-            <div className="text-lg font-bold text-neutral-900">Calendar</div>
-            <p className="text-sm text-neutral-500">Month view, upcoming plans, and past meetups.</p>
-          </div>
-
-          {calendarError && (
-            <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
-              {calendarError}
-            </div>
-          )}
-
-          {calendarLoading ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-10 text-neutral-500">
-              <div className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-neutral-700" />
-              Loading calendar...
-            </div>
-          ) : !calendarEntries.length ? (
-            <div className="rounded-2xl border border-dashed border-neutral-200 bg-neutral-50 p-6 text-center text-sm text-neutral-600">
-              No events scheduled yet.
-            </div>
-          ) : (
-            <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-                <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
-                  <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => changeMonth(-1)}
-                        className="rounded-full border border-neutral-200 bg-neutral-50 p-2 text-neutral-500 transition hover:bg-white hover:text-neutral-700"
-                      >
-                        <ChevronLeft className="h-4 w-4" />
-                      </button>
-                      <div className="text-xl font-extrabold tracking-tight text-neutral-900">{monthLabel}</div>
-                      <button
-                        onClick={() => changeMonth(1)}
-                        className="rounded-full border border-neutral-200 bg-neutral-50 p-2 text-neutral-500 transition hover:bg-white hover:text-neutral-700"
-                      >
-                        <ChevronRight className="h-4 w-4" />
-                      </button>
-                    </div>
-                    <button
-                      onClick={resetToCurrentMonth}
-                      className="rounded-full border border-neutral-200 bg-transparent px-3 py-1 text-xs font-semibold text-neutral-600 transition hover:bg-white"
-                    >
-                      Today
+            {calendarLoading ? (
+              <div className="activity-loading">Loading calendar...</div>
+            ) : (
+              <div className="cal-layout">
+                <div className="mini-cal">
+                  <div className="mini-cal-head">
+                    <button type="button" className="cal-nav-btn" onClick={() => changeMonth(-1)}>
+                      <ChevronLeft size={16} />
+                    </button>
+                    <div id="calMonth">{monthLabel}</div>
+                    <button type="button" className="cal-nav-btn" onClick={() => changeMonth(1)}>
+                      <ChevronRight size={16} />
                     </button>
                   </div>
 
-                  <div className="mb-3 grid grid-cols-7 text-center text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+                  <div className="cal-grid-head">
                     {weekdayLabels.map((w) => (
-                      <div key={w} className="py-1">{w}</div>
+                      <span key={w}>{w}</span>
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-7 gap-2">
+                  <div className="cal-grid">
                     {monthDays.map(({ date, key, inMonth }) => {
                       const dayEvents = eventsByDay[key] || [];
                       const isToday = key === todayKey;
                       const isSelected = selectedDate === key;
                       const hasPlanned = dayEvents.some((ev) => ev.phase === "planned");
                       const hasConfirmed = dayEvents.some((ev) => ev.phase === "confirmed");
-
                       return (
                         <button
                           key={key}
+                          type="button"
                           onClick={() => setSelectedDate(key)}
-                          className={`min-h-[88px] rounded-xl border bg-white p-2 text-center transition-all duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300 ${
-                            inMonth ? "border-neutral-200" : "border-neutral-100 text-neutral-400"
-                          } ${isSelected ? "scale-[1.02] border-emerald-500 bg-emerald-50/70 shadow-sm" : "hover:scale-[1.01] hover:border-neutral-300"} ${isToday ? "shadow-[inset_0_0_0_1px_rgba(16,185,129,0.18)]" : ""}`}
+                          className={`cal-day${inMonth ? "" : " other-month"}${isToday ? " today" : ""}${isSelected ? " selected" : ""}`}
                         >
-                          <div className="flex h-full flex-col items-center justify-between">
-                            <div className="flex flex-col items-center">
-                              <span className={`text-sm font-semibold ${inMonth ? "text-neutral-900" : "text-neutral-400"}`}>{date.getDate()}</span>
-                              {isToday && <span className="mt-0.5 text-[10px] font-semibold text-emerald-500">Today</span>}
+                          <span>{date.getDate()}</span>
+                          {dayEvents.length > 0 && (
+                            <div className="day-pips">
+                              {hasPlanned ? <span className="event-pip upcoming" /> : null}
+                              {hasConfirmed ? <span className="event-pip confirmed" /> : null}
                             </div>
-                            {dayEvents.length > 0 ? (
-                              <div className="mt-2 flex items-center justify-center gap-1.5">
-                                {hasPlanned && <span className="h-2 w-2 rounded-full bg-sky-500" />}
-                                {hasConfirmed && <span className="h-2 w-2 rounded-full bg-emerald-500" />}
-                              </div>
-                            ) : (
-                              <span className="h-2" />
-                            )}
-                          </div>
+                          )}
                         </button>
                       );
                     })}
                   </div>
 
-                  <div className="mt-4 flex items-center justify-center gap-4 text-[10px] font-medium text-neutral-500">
-                    <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-sky-500" /> Poll open</span>
-                    <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Confirmed</span>
+                  <div className="cal-legend">
+                    <span>
+                      <i className="event-pip upcoming" />
+                      Poll open
+                    </span>
+                    <span>
+                      <i className="event-pip confirmed" />
+                      Confirmed
+                    </span>
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-6">
-                  <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
-                    <div className="mb-3">
-                      <div className="text-base font-bold text-neutral-900">{selectedDateLabel || "Select a date"}</div>
-                      <p className="text-xs text-neutral-500">
-                        {selectedDate
-                          ? selectedDayEvents.length === 0
-                            ? "No events scheduled"
-                            : `${selectedDayEvents.length} event${selectedDayEvents.length === 1 ? "" : "s"} scheduled`
-                          : "Select a date to view events and actions."}
-                      </p>
-                    </div>
-                    <div className="space-y-3">
-                      {selectedDayEvents.length
-                        ? selectedDayEvents.map((entry) => renderCalendarEntry(entry, Date.now()))
-                        : <p className="text-sm text-neutral-500">Select a date to view events and actions.</p>}
-                    </div>
+                <aside className="event-panel" id="eventPanel">
+                  <div className="ep-head">
+                    <div id="epDate">{selectedDateLabel || "Select a day"}</div>
+                    <div id="epTitle">{selectedDayPanelTitle}</div>
                   </div>
 
-                  <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-neutral-800">Upcoming</h3>
-                    <div className="ml-4 flex items-center gap-3">
-                      <button
-                        onClick={() => setShowUpcoming((v) => !v)}
-                        className="rounded-full px-2 py-0.5 text-xs font-semibold text-neutral-500 hover:bg-white hover:text-neutral-800"
-                      >
-                        {showUpcoming ? "Hide" : "Show"}
-                      </button>
-                      <button
-                        onClick={loadCalendar}
-                        className="rounded-full px-2 py-0.5 text-xs font-semibold text-neutral-500 hover:bg-white hover:text-neutral-800"
-                      >
-                        Refresh
-                      </button>
+                  {selectedDayEvents.length ? (
+                    selectedDayEvents.map((entry) => renderCalendarEntry(entry, Date.now()))
+                  ) : (
+                    <div className="empty-state moon">
+                      <span>☾</span>
+                      <p>No events on this day.</p>
                     </div>
-                  </div>
-                    {showUpcoming && (
-                      <div className="space-y-2 max-h-[360px] overflow-auto pr-1">
-                        {visibleUpcoming.length
-                          ? visibleUpcoming.map((entry) => (
-                              <div
-                                key={`up-${entry.id}`}
-                                onClick={() => navigate(`/group/${entry.groupId}`)}
-                                className="rounded-xl border border-emerald-100 bg-emerald-50/40 px-3 py-2 text-sm text-neutral-800 transition-all duration-200 hover:-translate-y-0.5 hover:border-emerald-200 hover:shadow-sm"
-                              >
-                                <div className="flex items-start gap-2">
-                                  <Calendar className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                                  <div className="min-w-0">
-                                    <div className="truncate font-bold text-neutral-900">{titleCaseWords(entry.groupTitle)}</div>
-                                    <div className="mt-0.5 text-[11px] text-neutral-600">{formatUpcomingSlot(entry.startsAt)}</div>
-                                    <div className="mt-0.5 text-[10px] text-neutral-400">{timeUntil(entry.startsAt)}</div>
-                                  </div>
-                                </div>
-                              </div>
-                            ))
-                          : <p className="text-sm text-neutral-500">No events scheduled yet.</p>}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="rounded-2xl border border-neutral-100 bg-neutral-50/70 p-4">
-                    <div className="mb-2 flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-neutral-800">Past</h3>
-                      <span className="text-xs font-semibold text-neutral-500">{pastEntries.length}</span>
-                    </div>
-                    <div className="space-y-2 max-h-[240px] overflow-auto pr-1">
-                      {pastEntries.length
-                        ? pastEntries.slice(0, 12).map((entry) => renderCalendarEntry(entry, Date.now()))
-                        : <p className="text-sm text-neutral-500">No events scheduled yet.</p>}
-                    </div>
-                  </div>
-                </div>
+                  )}
+                </aside>
               </div>
-          )}
-        </section>
-      )}
+            )}
+          </section>
+        )}
+      </main>
     </div>
   );
 }

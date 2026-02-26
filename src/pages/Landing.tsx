@@ -1,503 +1,507 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import {
-  ArrowRight,
-  CalendarCheck2,
-  CheckCircle2,
-  Compass,
-  Vote,
-} from "lucide-react";
-import { useAuth } from "@/App";
-import LandingMeteorCanvas from "@/components/LandingMeteorCanvas";
-import { ONBOARDING_SLIDES } from "@/lib/onboardingSlides";
+import "./Landing.css";
 
-type HeroVariant = "exact" | "psych";
+const HERO_CARDS = [
+  { emoji: "👥", title: "Small groups, real energy", text: "Less noise, better plans", chip: "Social fit" },
+  { emoji: "🗳️", title: "Vote on plans together", text: "No endless where/when threads", chip: "Fast decisions" },
+  { emoji: "✅", title: "Safety tools built-in", text: "Designed for respectful meetups", chip: "Trust-minded" },
+] as const;
 
-type HeroCopy = {
-  headline: string;
-  subheadline: string;
-  cta: string;
-  micro: string;
-};
+const CATEGORIES = [
+  { emoji: "☕", title: "Coffee & Walks", text: "Casual meetups, low pressure, great for first connections." },
+  { emoji: "🎲", title: "Games", text: "Board games, party games, and regular group nights." },
+  { emoji: "🏃", title: "Fitness", text: "Run clubs, gym buddies, and outdoor workout circles." },
+  { emoji: "🎨", title: "Creative", text: "Photo walks, sketch sessions, and idea meetups." },
+  { emoji: "🍳", title: "Food", text: "Dinner circles, brunch crews, and tasting adventures." },
+  { emoji: "💬", title: "Language Exchange", text: "Small conversation groups to practice and connect." },
+] as const;
 
-const HERO_COPY: Record<HeroVariant, HeroCopy> = {
-  exact: {
-    headline: "Meet your people.\nNot just your feed.",
-    subheadline:
-      "Circles helps you join small trusted groups near you, vote on real plans, and meet this week — not someday.",
-    cta: "Get Started",
-    micro: "Takes 30 seconds. Free to try.",
+const TESTIMONIALS = [
+  {
+    quote: "I met two close friends in my city in the first week. The voting flow saved so much time.",
+    initials: "LM",
+    name: "Lina M.",
+    city: "Berlin",
   },
-  psych: {
-    headline: "Stop scrolling.\nStart meeting.",
-    subheadline:
-      "Most social apps keep you online. Circles gets you offline — into real small groups that meet this week.",
-    cta: "Find your circle",
-    micro: "No spam. No noise. Just real plans.",
+  {
+    quote: "Feels less performative than social feeds. More practical, more human.",
+    initials: "AS",
+    name: "Aria S.",
+    city: "Hamburg",
   },
-};
+  {
+    quote: "Our game night circle fills up every week. It has become part of my routine.",
+    initials: "DN",
+    name: "David N.",
+    city: "Freiburg",
+  },
+] as const;
 
-function resolveHeroVariant(): HeroVariant {
-  if (typeof window === "undefined") return "exact";
-  const params = new URLSearchParams(window.location.search);
-  const forced = params.get("hero");
-  if (forced === "exact" || forced === "psych") {
-    localStorage.setItem("circles_landing_hero_variant", forced);
-    return forced;
-  }
-  const stored = localStorage.getItem("circles_landing_hero_variant");
-  if (stored === "exact" || stored === "psych") return stored;
-  const assigned: HeroVariant = Math.random() < 0.5 ? "exact" : "psych";
-  localStorage.setItem("circles_landing_hero_variant", assigned);
-  return assigned;
-}
+const SAFETY_FEATURES = [
+  {
+    icon: "🛡️",
+    title: "Report and block controls",
+    text: "Clear options to report behavior and remove unwanted contact quickly.",
+  },
+  {
+    icon: "🧭",
+    title: "Context-first group pages",
+    text: "Group norms, location context, and event details are visible before joining.",
+  },
+  {
+    icon: "🤝",
+    title: "Small group structure",
+    text: "Smaller circles reduce chaos and make interactions easier to manage.",
+  },
+] as const;
+
+const SHOWCASE_SLIDES = [
+  {
+    image: `${import.meta.env.BASE_URL}image.png`,
+    title: "Real profiles, not random feeds",
+    text: "See people, context, and plans clearly before you join a circle.",
+  },
+  {
+    image: `${import.meta.env.BASE_URL}image2.png`,
+    title: "Group spaces that stay calm",
+    text: "Small circles keep conversations focused and easier to trust.",
+  },
+  {
+    image: `${import.meta.env.BASE_URL}image3.png`,
+    title: "Decide plans together fast",
+    text: "Voting removes planning friction so meetups actually happen.",
+  },
+  {
+    image: `${import.meta.env.BASE_URL}image4.png`,
+    title: "From online chat to real life",
+    text: "Move from messages to a real meetup with people who show up.",
+  },
+  {
+    image: `${import.meta.env.BASE_URL}image5.png`,
+    title: "Simple, human, and social",
+    text: "Built for genuine connection, not endless scrolling.",
+  },
+] as const;
 
 export default function Landing() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const [heroVariant] = useState<HeroVariant>(() => resolveHeroVariant());
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const [activeSlide, setActiveSlide] = useState(0);
-  const [slideDirection, setSlideDirection] = useState(1);
-  const hero = HERO_COPY[heroVariant];
-  const prefersReducedMotion = useReducedMotion();
+  const currentSlide = useMemo(() => SHOWCASE_SLIDES[activeSlide], [activeSlide]);
 
   useEffect(() => {
-    if (ONBOARDING_SLIDES.length < 2) return;
+    const root = rootRef.current;
+    if (!root) return;
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const cleanups: Array<() => void> = [];
+
+    const revealElements = Array.from(root.querySelectorAll<HTMLElement>(".reveal"));
+    if (reducedMotion || typeof IntersectionObserver === "undefined") {
+      revealElements.forEach((el) => el.classList.add("visible"));
+    } else {
+      const observer = new IntersectionObserver(
+        (entries, obs) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add("visible");
+              obs.unobserve(entry.target);
+            }
+          });
+        },
+        { threshold: 0.14, rootMargin: "0px 0px -8% 0px" },
+      );
+      revealElements.forEach((el) => observer.observe(el));
+      cleanups.push(() => observer.disconnect());
+    }
+
+    const anchorHandler = (event: Event) => {
+      const anchor = event.currentTarget as HTMLAnchorElement;
+      const href = anchor.getAttribute("href");
+      if (!href || href === "#") return;
+      const target = root.querySelector<HTMLElement>(href) ?? document.querySelector<HTMLElement>(href);
+      if (!target) return;
+
+      event.preventDefault();
+      target.scrollIntoView({
+        behavior: reducedMotion ? "auto" : "smooth",
+        block: "start",
+      });
+    };
+
+    const anchors = Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="#"]'));
+    anchors.forEach((anchor) => anchor.addEventListener("click", anchorHandler));
+    cleanups.push(() => anchors.forEach((anchor) => anchor.removeEventListener("click", anchorHandler)));
+
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, []);
+
+  useEffect(() => {
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduceMotion) return;
+
     const timer = window.setInterval(() => {
-      setSlideDirection(1);
-      setActiveSlide((prev) => (prev + 1) % ONBOARDING_SLIDES.length);
-    }, 15000);
+      setActiveSlide((prev) => (prev + 1) % SHOWCASE_SLIDES.length);
+    }, 5200);
+
     return () => window.clearInterval(timer);
   }, []);
 
   function goToSlide(nextIndex: number) {
-    if (nextIndex < 0 || nextIndex >= ONBOARDING_SLIDES.length || nextIndex === activeSlide) return;
-    setSlideDirection(nextIndex > activeSlide ? 1 : -1);
     setActiveSlide(nextIndex);
   }
 
-  const sectionVariant = useMemo(
-    () => ({
-      hidden: { opacity: 0, y: prefersReducedMotion ? 0 : 30 },
-      show: {
-        opacity: 1,
-        y: 0,
-        transition: { duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut" as const },
-      },
-    }),
-    [prefersReducedMotion]
-  );
+  function nextSlide() {
+    setActiveSlide((prev) => (prev + 1) % SHOWCASE_SLIDES.length);
+  }
 
-  const cardContainerVariant = useMemo(
-    () => ({
-      hidden: {},
-      show: {
-        transition: { staggerChildren: prefersReducedMotion ? 0 : 0.1 },
-      },
-    }),
-    [prefersReducedMotion]
-  );
-
-  const cardVariant = useMemo(
-    () => ({
-      hidden: { opacity: 0, y: prefersReducedMotion ? 0 : 18 },
-      show: {
-        opacity: 1,
-        y: 0,
-        transition: { duration: prefersReducedMotion ? 0 : 0.45, ease: "easeOut" as const },
-      },
-    }),
-    [prefersReducedMotion]
-  );
+  function prevSlide() {
+    setActiveSlide((prev) => (prev - 1 + SHOWCASE_SLIDES.length) % SHOWCASE_SLIDES.length);
+  }
 
   return (
-    <div className="relative min-h-dvh overflow-hidden bg-[radial-gradient(circle_at_14%_12%,rgba(115,90,255,0.18),transparent_42%),radial-gradient(circle_at_88%_20%,rgba(37,99,235,0.16),transparent_40%),#edf1f9] text-neutral-900">
-      <div className="pointer-events-none absolute inset-0 z-10">
-        <LandingMeteorCanvas className="absolute inset-0 opacity-95" />
-        <motion.div
-          className="absolute -left-20 top-16 h-72 w-72 rounded-full bg-violet-400/20 blur-3xl"
-          animate={
-            prefersReducedMotion
-              ? undefined
-              : { x: [0, 24, -12, 0], y: [0, -18, 10, 0], scale: [1, 1.06, 0.97, 1] }
-          }
-          transition={
-            prefersReducedMotion
-              ? undefined
-              : { duration: 24, repeat: Infinity, ease: "easeInOut", repeatType: "loop" }
-          }
-        />
-        <motion.div
-          className="absolute right-[-80px] top-14 h-80 w-80 rounded-full bg-blue-400/20 blur-3xl"
-          animate={
-            prefersReducedMotion
-              ? undefined
-              : { x: [0, -28, 8, 0], y: [0, 16, -14, 0], scale: [1, 0.96, 1.08, 1] }
-          }
-          transition={
-            prefersReducedMotion
-              ? undefined
-              : { duration: 28, repeat: Infinity, ease: "easeInOut", repeatType: "loop" }
-          }
-        />
+    <div className="circles-landing" ref={rootRef}>
+      <div className="noise" aria-hidden="true" />
 
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_34%,transparent_0%,rgba(238,244,255,0.11)_48%,rgba(230,238,253,0.28)_100%)]" />
-      </div>
+      <header className="nav">
+        <div className="container nav-inner">
+          <a href="#top" className="logo" aria-label="Circles home">
+            <span className="logo-rings" aria-hidden="true">
+              <span className="ring r1" />
+              <span className="ring r2" />
+              <span className="ring r3" />
+            </span>
+            Circles
+          </a>
 
-      <div className="relative z-20 mx-auto w-full max-w-6xl px-6 pb-20 pt-8">
-        <header className="mb-12 flex items-center justify-between">
-          <div className="inline-flex items-center rounded-2xl border border-white/70 bg-white/85 p-2 shadow-sm">
-            <img
-              src="/image5.png"
-              alt="Circles logo"
-              className="h-16 w-16 rounded-xl object-cover sm:h-20 sm:w-20"
-            />
+          <nav className="nav-links" aria-label="Primary">
+            <a href="#how">How it works</a>
+            <a href="#explore">Explore</a>
+            <a href="#safety">Safety</a>
+          </nav>
+
+          <div className="nav-actions">
+            <button type="button" className="btn btn-outline" onClick={() => navigate("/auth?mode=signin")}>
+              Log in
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => navigate("/auth")}>
+              Get Started <span aria-hidden="true">→</span>
+            </button>
           </div>
+        </div>
+      </header>
 
-          <div className="flex items-center gap-3">
-            <Link to="/auth" className="text-sm font-semibold text-neutral-700 underline-offset-2 hover:text-neutral-900 hover:underline">
-              Already have an account? Sign in
-            </Link>
-            {user ? (
-              <button
-                type="button"
-                onClick={() => navigate("/browse")}
-                className="rounded-full bg-neutral-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black"
-              >
-                Go to app
+      <main id="top">
+        <section className="hero">
+          <div className="container hero-inner">
+            <div className="badge reveal">
+              <span className="badge-dot" aria-hidden="true" />
+              MVP · Early Access
+            </div>
+
+            <h1 className="hero-title reveal">
+              Find your people.
+              <span className="line2">Go do things.</span>
+            </h1>
+
+            <p className="hero-sub reveal">
+              Circles helps you build small trusted groups, make plans together, and meet in real life this week.
+            </p>
+
+            <div className="hero-actions reveal">
+              <button type="button" className="btn btn-primary" onClick={() => navigate("/auth")}>
+                Join now <span aria-hidden="true">→</span>
               </button>
-            ) : null}
-          </div>
-        </header>
-
-        <main className="space-y-12">
-          <section id="hero" className="rounded-3xl border border-white/70 bg-white/72 p-8 shadow-xl shadow-black/5 backdrop-blur-[1px]">
-            <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
-              <div>
-                <motion.h1
-                  className="whitespace-pre-line text-4xl font-black leading-tight sm:text-6xl"
-                  initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut" }}
-                >
-                  {hero.headline}
-                </motion.h1>
-                <motion.p
-                  className="mt-4 max-w-xl text-lg text-neutral-700"
-                  initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut", delay: prefersReducedMotion ? 0 : 0.15 }}
-                >
-                  {hero.subheadline}
-                </motion.p>
-                <motion.div
-                  className="mt-8 flex flex-wrap items-center gap-3"
-                  initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut", delay: prefersReducedMotion ? 0 : 0.3 }}
-                >
-                  <motion.button
-                    type="button"
-                    onClick={() => navigate("/auth")}
-                    whileHover={prefersReducedMotion ? undefined : { scale: 1.045, boxShadow: "0 14px 36px rgba(5, 150, 105, 0.30)" }}
-                    whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
-                    className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-6 py-3 text-base font-bold text-white shadow-lg shadow-emerald-600/20 transition-all duration-300 ease-out hover:bg-emerald-700"
-                  >
-                    {hero.cta}
-                    <ArrowRight className="h-4 w-4" />
-                  </motion.button>
-                  <Link
-                    to="/legal"
-                    className="rounded-full border border-neutral-300 bg-white px-5 py-3 text-sm font-semibold text-neutral-700 transition-all duration-300 ease-out hover:border-neutral-400 hover:text-neutral-900"
-                  >
-                    Privacy & Terms
-                  </Link>
-                </motion.div>
-                <motion.p
-                  className="mt-3 text-sm font-medium text-neutral-600"
-                  initial={{ opacity: 0, y: prefersReducedMotion ? 0 : 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.6, ease: "easeOut", delay: prefersReducedMotion ? 0 : 0.38 }}
-                >
-                  {hero.micro}
-                </motion.p>
-              </div>
-
-              <motion.div
-                className="rounded-2xl border border-neutral-200 bg-neutral-50 p-5"
-                variants={sectionVariant}
-                initial="hidden"
-                whileInView="show"
-                viewport={{ once: true, amount: 0.2 }}
-              >
-                <h2 className="text-lg font-bold">How Circles works</h2>
-                <motion.div className="mt-4 space-y-3" variants={cardContainerVariant} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}>
-                  <motion.div variants={cardVariant} className="flex gap-3 rounded-xl border border-neutral-200 bg-white p-3">
-                    <Compass className="mt-0.5 h-5 w-5 text-emerald-600" />
-                    <div>
-                      <p className="text-sm font-semibold">Find your circle</p>
-                      <p className="text-xs text-neutral-600">Discover small groups in your city that match your interests.</p>
-                    </div>
-                  </motion.div>
-                  <motion.div variants={cardVariant} className="flex gap-3 rounded-xl border border-neutral-200 bg-white p-3">
-                    <Vote className="mt-0.5 h-5 w-5 text-sky-600" />
-                    <div>
-                      <p className="text-sm font-semibold">Vote on plans</p>
-                      <p className="text-xs text-neutral-600">Decide together when and where to meet.</p>
-                    </div>
-                  </motion.div>
-                  <motion.div variants={cardVariant} className="flex gap-3 rounded-xl border border-neutral-200 bg-white p-3">
-                    <CalendarCheck2 className="mt-0.5 h-5 w-5 text-amber-600" />
-                    <div>
-                      <p className="text-sm font-semibold">Meet this week</p>
-                      <p className="text-xs text-neutral-600">Turn online connection into real life — quickly.</p>
-                    </div>
-                  </motion.div>
-                </motion.div>
-              </motion.div>
-            </div>
-          </section>
-
-          <motion.section
-            className="rounded-2xl border border-emerald-200 bg-emerald-50/65 px-4 py-3 text-sm font-semibold text-emerald-900"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            Small groups • Member profiles • Real-world meetups
-          </motion.section>
-
-          <motion.section
-            className="rounded-3xl border border-neutral-200 bg-white p-7 shadow-sm"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <div className="flex flex-wrap items-end justify-between gap-3">
-              <div>
-                <h2 className="text-2xl font-bold">Onboarding Preview</h2>
-                <p className="mt-1 text-sm text-neutral-600">The same story slides from onboarding, now on landing.</p>
-              </div>
-              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-neutral-500">Auto-slide every 15s</p>
+              <button type="button" className="btn btn-ghost" onClick={() => navigate("/auth?mode=signin")}>
+                I already have an account
+              </button>
             </div>
 
-            <div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="relative overflow-hidden rounded-2xl border border-neutral-200 bg-neutral-100/90 aspect-[16/10] sm:aspect-[16/9]">
-                <AnimatePresence mode="wait" custom={slideDirection}>
-                  <motion.img
-                    key={ONBOARDING_SLIDES[activeSlide].image}
-                    src={ONBOARDING_SLIDES[activeSlide].image}
-                    alt={ONBOARDING_SLIDES[activeSlide].title}
-                    className="h-full w-full object-contain"
-                    custom={slideDirection}
-                    initial={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: slideDirection > 0 ? 40 : -40 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: slideDirection > 0 ? -40 : 40 }}
-                    transition={{ duration: prefersReducedMotion ? 0 : 0.5, ease: "easeOut" }}
-                  />
-                </AnimatePresence>
-              </div>
-
-              <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-5">
-                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-neutral-500">
-                  Slide {activeSlide + 1} of {ONBOARDING_SLIDES.length}
-                </p>
-                <h3 className="mt-3 text-2xl font-black text-neutral-900">{ONBOARDING_SLIDES[activeSlide].title}</h3>
-                <p className="mt-2 text-sm text-neutral-700">{ONBOARDING_SLIDES[activeSlide].text}</p>
-
-                <div className="mt-5 flex flex-wrap gap-2">
-                  {ONBOARDING_SLIDES.map((slide, index) => (
-                    <button
-                      key={slide.image}
-                      type="button"
-                      onClick={() => goToSlide(index)}
-                      aria-label={`Go to onboarding slide ${index + 1}`}
-                      className={`h-2.5 rounded-full transition-all duration-300 ${
-                        index === activeSlide
-                          ? "w-10 bg-emerald-600"
-                          : "w-2.5 bg-neutral-300 hover:bg-neutral-400"
-                      }`}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-          </motion.section>
-
-          {heroVariant === "psych" ? (
-            <motion.section
-              className="rounded-2xl border border-neutral-200 bg-white p-6 shadow-sm"
-              variants={sectionVariant}
-              initial="hidden"
-              whileInView="show"
-              viewport={{ once: true, amount: 0.2 }}
-            >
-              <p className="text-center text-base font-semibold text-neutral-800">
-                We believe real connection happens in small groups. Not in feeds. Not in likes. In real rooms.
-              </p>
-              <p className="mt-3 text-center text-sm font-medium text-neutral-600">
-                Built for meaningful meetups — not popularity.
-              </p>
-            </motion.section>
-          ) : null}
-
-          <motion.section
-            className="rounded-3xl border border-neutral-200 bg-white p-7 shadow-sm"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <h2 className="text-2xl font-bold">How Circles works</h2>
-            <motion.div className="mt-5 grid gap-3 md:grid-cols-3" variants={cardContainerVariant} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
-                <p className="text-base font-semibold">Find your circle</p>
-                <p className="mt-1 text-sm text-neutral-600">Discover small groups in your city that match your interests.</p>
-              </motion.div>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
-                <p className="text-base font-semibold">Vote on plans</p>
-                <p className="mt-1 text-sm text-neutral-600">Decide together when and where to meet.</p>
-              </motion.div>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
-                <p className="text-base font-semibold">Meet this week</p>
-                <p className="mt-1 text-sm text-neutral-600">Turn online connection into real life — quickly.</p>
-              </motion.div>
-            </motion.div>
-          </motion.section>
-
-          <motion.section
-            className="rounded-3xl border border-neutral-200 bg-white p-7 shadow-sm"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <h2 className="text-2xl font-bold">Happening near you</h2>
-            <p className="mt-1 text-sm text-neutral-600">Real meetups scheduled this week.</p>
-            <motion.div className="mt-4 space-y-2" variants={cardContainerVariant} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}>
-              {[
-                { circle: "Board Games", time: "Thu 19:00", place: "Freiburg" },
-                { circle: "Coffee Walks", time: "Fri 18:30", place: "Freiburg" },
-                { circle: "Book Lovers", time: "Sat 16:00", place: "Basel" },
-              ].map((item) => (
-                <motion.div key={`${item.circle}-${item.time}`} variants={cardVariant} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3">
-                  <div>
-                    <p className="text-sm font-semibold text-neutral-900">{item.circle}</p>
-                    <p className="text-xs text-neutral-600">{item.time} · {item.place}</p>
+            <div className="floating-cards reveal" aria-label="Highlights">
+              {HERO_CARDS.map((card) => (
+                <article key={card.title} className="float-card">
+                  <div className="float-icon" aria-hidden="true">
+                    {card.emoji}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => navigate("/auth")}
-                    className="rounded-full border border-neutral-300 bg-white px-4 py-1.5 text-xs font-semibold text-neutral-700 transition-all duration-300 ease-out hover:border-neutral-400 hover:text-neutral-900"
-                  >
-                    Join
-                  </button>
-                </motion.div>
+                  <div>
+                    <p className="float-title">{card.title}</p>
+                    <p className="float-text">{card.text}</p>
+                    <span className="chip">{card.chip}</span>
+                  </div>
+                </article>
               ))}
-            </motion.div>
-          </motion.section>
-
-          <motion.section
-            className="rounded-3xl border border-neutral-200 bg-white p-7 shadow-sm"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <h2 className="text-2xl font-bold">Built for real life</h2>
-            <motion.div className="mt-5 grid gap-3 md:grid-cols-3" variants={cardContainerVariant} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
-                <p className="text-base font-semibold">No noisy feeds</p>
-                <p className="mt-1 text-sm text-neutral-600">No endless scrolling. Just clear plans.</p>
-              </motion.div>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
-                <p className="text-base font-semibold">Small by design</p>
-                <p className="mt-1 text-sm text-neutral-600">Groups are capped to build real trust.</p>
-              </motion.div>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
-                <p className="text-base font-semibold">Safety first</p>
-                <p className="mt-1 text-sm text-neutral-600">Private circles. Controlled invites. Verified profiles.</p>
-              </motion.div>
-            </motion.div>
-          </motion.section>
-
-          <motion.section
-            className="rounded-3xl border border-neutral-900 bg-neutral-900 p-7 text-white shadow-sm"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <h2 className="text-2xl font-bold">Problem → Solution → Differentiation</h2>
-            <p className="mt-2 text-sm text-neutral-200">
-              Circles is a real-world social coordination platform. We turn online intent into offline action.
-            </p>
-            <p className="mt-1 text-sm text-neutral-300">
-              Small trusted groups coordinate, vote, and meet — in days, not months.
-            </p>
-            <motion.div className="mt-5 grid gap-3 md:grid-cols-3" variants={cardContainerVariant} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-white/20 bg-white/5 p-4">
-                <p className="text-sm font-semibold">Problem</p>
-                <p className="mt-1 text-sm text-neutral-200">Social platforms optimize for attention, not real-life connection.</p>
-              </motion.div>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-white/20 bg-white/5 p-4">
-                <p className="text-sm font-semibold">Solution</p>
-                <p className="mt-1 text-sm text-neutral-200">Circles limits group size, structures decisions, and drives real meetups.</p>
-              </motion.div>
-              <motion.div variants={cardVariant} className="rounded-2xl border border-white/20 bg-white/5 p-4">
-                <p className="text-sm font-semibold">Differentiation</p>
-                <p className="mt-1 text-sm text-neutral-200">
-                  No public feed. No followers. No algorithmic addiction. Small group cap. Real meetup verification.
-                </p>
-              </motion.div>
-            </motion.div>
-            <p className="mt-4 text-xs text-neutral-300">Active groups forming weekly. Real meetups scheduled in local cities.</p>
-          </motion.section>
-
-          <motion.section
-            className="rounded-3xl border border-emerald-200 bg-emerald-50 p-8 text-center shadow-sm"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <h2 className="text-3xl font-black text-neutral-900">
-              {heroVariant === "psych" ? "Your next circle is closer than you think." : "Ready to meet your people?"}
-            </h2>
-            <div className="mt-5">
-              <motion.button
-                type="button"
-                onClick={() => navigate("/auth")}
-                whileHover={prefersReducedMotion ? undefined : { scale: 1.045, boxShadow: "0 14px 36px rgba(5, 150, 105, 0.30)" }}
-                whileTap={prefersReducedMotion ? undefined : { scale: 0.98 }}
-                className="inline-flex items-center gap-2 rounded-full bg-emerald-600 px-7 py-3 text-base font-bold text-white shadow-lg shadow-emerald-600/20 transition-all duration-300 ease-out hover:bg-emerald-700"
-              >
-                {heroVariant === "psych" ? "Join your first circle" : "Get Started"}
-                <ArrowRight className="h-4 w-4" />
-              </motion.button>
             </div>
-            <p className="mt-3 text-sm font-medium text-emerald-900/80">
-              {heroVariant === "psych" ? "No spam. No noise. Just real plans." : "Start with one circle today."}
-            </p>
-          </motion.section>
+          </div>
+        </section>
 
-          <motion.footer
-            className="flex justify-center"
-            variants={sectionVariant}
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true, amount: 0.2 }}
-          >
-            <Link to="/legal" className="inline-flex items-center gap-2 text-sm font-semibold text-neutral-600 hover:text-neutral-900">
-              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-              Privacy & Terms
-            </Link>
-          </motion.footer>
-        </main>
-      </div>
+        <section className="proof">
+          <div className="container proof-inner reveal">
+            <div>
+              <strong>2,000+</strong> early members
+            </div>
+            <span className="proof-divider" aria-hidden="true" />
+            <div>
+              <strong>120+</strong> weekly meetups
+            </div>
+            <span className="proof-divider" aria-hidden="true" />
+            <div>
+              <strong>Safety tools built-in</strong>
+            </div>
+            <span className="proof-divider" aria-hidden="true" />
+            <div>
+              <strong>Small groups by default</strong>
+            </div>
+          </div>
+        </section>
+
+        <section id="how" className="section">
+          <div className="container how-grid">
+            <div className="reveal">
+              <div className="phone" aria-label="Circles app preview">
+                <div className="phone-notch" aria-hidden="true" />
+                <div className="phone-head">
+                  <strong>Circles</strong>
+                  <span className="live-dot" aria-hidden="true" />
+                </div>
+
+                <article className="phone-card">
+                  <div className="phone-row">
+                    <div>
+                      <p className="phone-title">Sunday Brunch Run</p>
+                      <p className="phone-sub">Food • Freiburg</p>
+                    </div>
+                    <span className="tag green">Open</span>
+                  </div>
+                  <div className="phone-meta">
+                    <span>8 members</span>
+                    <button className="mini-btn" type="button">
+                      Join
+                    </button>
+                  </div>
+                </article>
+
+                <article className="phone-card">
+                  <div className="phone-row">
+                    <div>
+                      <p className="phone-title">Board Game Night</p>
+                      <p className="phone-sub">Games • Tonight</p>
+                    </div>
+                    <span className="tag">Voting</span>
+                  </div>
+                  <div className="phone-meta">
+                    <span>5 members</span>
+                    <button className="mini-btn" type="button">
+                      Join
+                    </button>
+                  </div>
+                </article>
+
+                <article className="phone-card">
+                  <div className="phone-row">
+                    <div>
+                      <p className="phone-title">Morning Walk Group</p>
+                      <p className="phone-sub">Wellness • Daily</p>
+                    </div>
+                    <span className="tag green">Active</span>
+                  </div>
+                  <div className="phone-meta">
+                    <span>12 members</span>
+                    <button className="mini-btn" type="button">
+                      Join
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div>
+              <div className="eyebrow reveal">How it works</div>
+              <h2 className="section-title reveal">Simple flow, real-life outcomes</h2>
+              <p className="section-desc reveal">
+                Start with shared interests, decide fast, and show up. Circles is built to move people from chat to
+                plans.
+              </p>
+
+              <div className="how-steps">
+                <article className="step reveal">
+                  <div className="step-num" aria-hidden="true">
+                    1
+                  </div>
+                  <div>
+                    <h3 className="step-title">Discover circles near you</h3>
+                    <p className="step-desc">Find small groups around your city based on activities you actually enjoy.</p>
+                  </div>
+                </article>
+                <article className="step reveal">
+                  <div className="step-num" aria-hidden="true">
+                    2
+                  </div>
+                  <div>
+                    <h3 className="step-title">Vote on place and time</h3>
+                    <p className="step-desc">Members pick options together so planning takes minutes, not days.</p>
+                  </div>
+                </article>
+                <article className="step reveal">
+                  <div className="step-num" aria-hidden="true">
+                    3
+                  </div>
+                  <div>
+                    <h3 className="step-title">Meet this week</h3>
+                    <p className="step-desc">Turn online coordination into real meetups with people who show up.</p>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="preview" className="section">
+          <div className="container showcase-grid reveal">
+            <div className="showcase-frame">
+              <img
+                key={currentSlide.image}
+                src={currentSlide.image}
+                alt={`Circles preview slide ${activeSlide + 1}`}
+                className="showcase-image"
+              />
+              <span className="showcase-chip">Live app preview</span>
+            </div>
+
+            <div className="showcase-panel">
+              <div className="eyebrow">Preview</div>
+              <h2 className="section-title showcase-title">{currentSlide.title}</h2>
+              <p className="section-desc">{currentSlide.text}</p>
+
+              <div className="showcase-actions">
+                <button type="button" className="btn btn-outline" onClick={prevSlide}>
+                  Previous
+                </button>
+                <button type="button" className="btn btn-primary" onClick={nextSlide}>
+                  Next
+                </button>
+              </div>
+
+              <div className="showcase-dots" role="tablist" aria-label="Preview slides">
+                {SHOWCASE_SLIDES.map((slide, index) => (
+                  <button
+                    key={slide.title}
+                    type="button"
+                    className={`showcase-dot ${index === activeSlide ? "active" : ""}`}
+                    onClick={() => goToSlide(index)}
+                    aria-label={`Go to preview slide ${index + 1}`}
+                    aria-selected={index === activeSlide}
+                  />
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="explore" className="section">
+          <div className="container">
+            <div className="eyebrow reveal">Explore</div>
+            <h2 className="section-title reveal">Categories people actually use</h2>
+            <p className="section-desc reveal">
+              Choose a vibe and join groups where the atmosphere feels right for you.
+            </p>
+
+            <div className="explore-grid">
+              {CATEGORIES.map((item) => (
+                <article key={item.title} className="cat-card reveal">
+                  <div className="cat-emoji" aria-hidden="true">
+                    {item.emoji}
+                  </div>
+                  <h3 className="cat-title">{item.title}</h3>
+                  <p className="cat-text">{item.text}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section id="safety" className="section safety">
+          <div className="container safety-grid">
+            <div className="reveal">
+              <div className="eyebrow">Safety</div>
+              <h2 className="section-title">Built for respectful, real-world meetups</h2>
+              <p className="section-desc">
+                Circles includes practical safety tools and moderation patterns to help members feel comfortable
+                meeting.
+              </p>
+            </div>
+
+            <div className="safety-features">
+              {SAFETY_FEATURES.map((feature) => (
+                <article key={feature.title} className="feature reveal">
+                  <div className="feature-icon" aria-hidden="true">
+                    {feature.icon}
+                  </div>
+                  <div>
+                    <h4>{feature.title}</h4>
+                    <p>{feature.text}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="section">
+          <div className="container">
+            <div className="eyebrow reveal">Testimonials</div>
+            <h2 className="section-title reveal">People are actually meeting up</h2>
+            <p className="section-desc reveal">Early members use Circles to turn chats into regular plans.</p>
+
+            <div className="test-grid">
+              {TESTIMONIALS.map((item) => (
+                <article key={item.name} className="test-card reveal">
+                  <div className="stars" aria-label="5 stars">
+                    <span>★</span>
+                    <span>★</span>
+                    <span>★</span>
+                    <span>★</span>
+                    <span>★</span>
+                  </div>
+                  <p className="test-quote">"{item.quote}"</p>
+                  <div className="test-user">
+                    <div className="avatar" aria-hidden="true">
+                      {item.initials}
+                    </div>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <span>{item.city}</span>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="section">
+          <div className="container">
+            <div className="final-cta reveal">
+              <h2>Ready to find your people?</h2>
+              <p>Join Circles and start building small groups that actually meet offline.</p>
+              <button type="button" className="btn btn-green" onClick={() => navigate("/auth")}>
+                Get Started →
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <div className="container footer-inner">
+          <div>© {new Date().getFullYear()} Circles</div>
+          <nav className="footer-links" aria-label="Footer">
+            <Link to="/legal">Privacy</Link>
+            <Link to="/legal">Terms</Link>
+            <a href="#safety">Safety</a>
+          </nav>
+        </div>
+      </footer>
     </div>
   );
 }

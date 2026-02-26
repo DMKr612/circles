@@ -165,10 +165,6 @@ function GroupRedirect() {
    App
    ========================= */
 export default function App() {
-  useEffect(() => {
-    window.scrollTo(0, 0);
-  }, []);
-
   // Disable browser scroll restoration
   useEffect(() => {
     try {
@@ -178,13 +174,27 @@ export default function App() {
     } catch {}
   }, []);
 
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        window.scrollTo(0, 0);
+      }
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
+
   const loc = useLocation();
   const hideSupportButton =
     loc.pathname.startsWith("/chats") ||
-    loc.pathname.startsWith("/auth");
+    loc.pathname.startsWith("/auth") ||
+    loc.pathname.startsWith("/settings");
   useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [loc.pathname, loc.search]);
+    const scrollToTop = () => window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    scrollToTop();
+    const raf = window.requestAnimationFrame(scrollToTop);
+    return () => window.cancelAnimationFrame(raf);
+  }, [loc.pathname, loc.search, loc.hash]);
 
   return (
     // Added 'pb-20' to ensure content clears the bottom nav

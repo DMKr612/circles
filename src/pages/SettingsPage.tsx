@@ -1,17 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
-  Bell,
+  CalendarDays,
   Check,
-  ChevronRight,
   Copy,
   Lock,
+  Link2,
   LogOut,
   Mail,
+  Search,
   Shield,
   Sparkles,
   Trash2,
@@ -24,6 +25,8 @@ import { supabase } from "@/lib/supabase";
 import { getAvatarUrl } from "@/lib/avatar";
 import { isValidPublicId, normalizePublicId } from "@/lib/mentions";
 import { useAppLanguage } from "@/state/language";
+import { useProfileStats } from "@/hooks/useProfileStats";
+import "./SettingsPage.css";
 
 type ToastKind = "success" | "error" | "info";
 type ToastMessage = { kind: ToastKind; text: string } | null;
@@ -48,14 +51,16 @@ type NotificationSettings = {
 type PrivacySettings = {
   profileVisibility: ProfileVisibilityValue;
   whoCanMessage: MessageAccessValue;
-  showOnlineStatus: boolean;
 };
 
 type PersistedSettings = {
   notifications: NotificationSettings;
   privacy: PrivacySettings;
   language: LanguageValue;
+  visualMode?: VisualModeValue;
 };
+
+type VisualModeValue = "light" | "system" | "contrast";
 
 type ProfileSnapshot = {
   name: string;
@@ -88,10 +93,10 @@ const DEFAULT_NOTIFICATIONS: NotificationSettings = {
 const DEFAULT_PRIVACY: PrivacySettings = {
   profileVisibility: "my_circles",
   whoCanMessage: "shared_circles",
-  showOnlineStatus: true,
 };
 
 const DEFAULT_LANGUAGE: LanguageValue = "en";
+const DEFAULT_VISUAL_MODE: VisualModeValue = "light";
 const DEFAULT_AVAILABILITY: AvailabilityValue = "flexible";
 const MAX_BIO_LENGTH = 180;
 const MAX_AVATAR_MB = 5;
@@ -108,6 +113,17 @@ const SETTINGS_PROFILE_FIELDS = [
   "avatar_url",
   "personality_traits",
 ].join(",");
+
+type PanelId =
+  | "profile"
+  | "identity"
+  | "trust"
+  | "notifications"
+  | "appearance"
+  | "privacy"
+  | "connected"
+  | "account"
+  | "danger";
 
 function parseJson<T>(raw: string | null): T | null {
   if (!raw) return null;
@@ -155,6 +171,71 @@ function socialStyleLabel(input: any): string {
   return "Not set yet";
 }
 
+function toTitleCase(input: string): string {
+  return String(input || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function groupSizeBucket(value: number | null): "1-3" | "4-6" | "7-10" | "10+" | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (value <= 24) return "1-3";
+  if (value <= 49) return "4-6";
+  if (value <= 74) return "7-10";
+  return "10+";
+}
+
+function parsePersistedSettings(raw: unknown): PersistedSettings {
+  const source = raw && typeof raw === "object" ? (raw as Partial<PersistedSettings>) : {};
+  const sourceNotifications =
+    source.notifications && typeof source.notifications === "object"
+      ? (source.notifications as Partial<NotificationSettings>)
+      : {};
+  const sourcePrivacy =
+    source.privacy && typeof source.privacy === "object"
+      ? (source.privacy as Partial<PrivacySettings>)
+      : {};
+
+  const language: LanguageValue =
+    source.language === "de" || source.language === "fa" || source.language === "en"
+      ? source.language
+      : DEFAULT_LANGUAGE;
+
+  const visualMode: VisualModeValue =
+    source.visualMode === "light" || source.visualMode === "system" || source.visualMode === "contrast"
+      ? source.visualMode
+      : DEFAULT_VISUAL_MODE;
+
+  const profileVisibility: ProfileVisibilityValue =
+    sourcePrivacy.profileVisibility === "my_circles" ||
+    sourcePrivacy.profileVisibility === "chat_contacts" ||
+    sourcePrivacy.profileVisibility === "city"
+      ? sourcePrivacy.profileVisibility
+      : DEFAULT_PRIVACY.profileVisibility;
+
+  const whoCanMessage: MessageAccessValue =
+    sourcePrivacy.whoCanMessage === "my_circles" ||
+    sourcePrivacy.whoCanMessage === "shared_circles" ||
+    sourcePrivacy.whoCanMessage === "anyone"
+      ? sourcePrivacy.whoCanMessage
+      : DEFAULT_PRIVACY.whoCanMessage;
+
+  return {
+    notifications: {
+      ...DEFAULT_NOTIFICATIONS,
+      ...sourceNotifications,
+    },
+    privacy: {
+      profileVisibility,
+      whoCanMessage,
+    },
+    language,
+    visualMode,
+  };
+}
+
 function Toggle({
   checked,
   disabled,
@@ -173,15 +254,9 @@ function Toggle({
       aria-label={ariaLabel}
       aria-pressed={checked}
       disabled={disabled}
-      className={`relative h-7 w-12 rounded-full transition ${
-        disabled ? "cursor-not-allowed bg-neutral-200" : checked ? "bg-emerald-500" : "bg-neutral-300"
-      }`}
+      className={`settings-toggle${checked ? " on" : ""}${disabled ? " is-disabled" : ""}`}
     >
-      <span
-        className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow-sm transition ${
-          checked ? "right-0.5" : "left-0.5"
-        }`}
-      />
+      <span className="settings-toggle-knob" />
     </button>
   );
 }
@@ -192,6 +267,7 @@ export default function SettingsPage() {
   const { user } = useAuth();
   const { lang: appLang, setLang: setAppLang } = useAppLanguage();
   const uid = user?.id ?? null;
+  const { stats, loading: statsLoading } = useProfileStats(uid);
 
   const [isLoading, setIsLoading] = useState(true);
   const [toast, setToast] = useState<ToastMessage>(null);
@@ -204,6 +280,7 @@ export default function SettingsPage() {
   const [availability, setAvailability] = useState<AvailabilityValue>(DEFAULT_AVAILABILITY);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [socialStyle, setSocialStyle] = useState("Not set yet");
+  const [personalityTraits, setPersonalityTraits] = useState<any | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [profileInitial, setProfileInitial] = useState<ProfileSnapshot | null>(null);
@@ -223,14 +300,19 @@ export default function SettingsPage() {
   const [passwordBusy, setPasswordBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [leaveAllBusy, setLeaveAllBusy] = useState(false);
   const [unblockBusyId, setUnblockBusyId] = useState<string | null>(null);
+  const [activePanel, setActivePanel] = useState<PanelId>("profile");
+  const [settingsSearch, setSettingsSearch] = useState("");
+  const [saveFxActive, setSaveFxActive] = useState(false);
+  const [visualMode, setVisualMode] = useState<VisualModeValue>(DEFAULT_VISUAL_MODE);
+  const [prefersDark, setPrefersDark] = useState(false);
+
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const saveFxTimerRef = useRef<number | null>(null);
 
   const profileExtrasKey = useMemo(
     () => (uid ? `circles_profile_extras_${uid}` : null),
-    [uid]
-  );
-  const settingsKey = useMemo(
-    () => (uid ? `circles_user_settings_${uid}` : null),
     [uid]
   );
 
@@ -281,6 +363,111 @@ export default function SettingsPage() {
     [language]
   );
 
+  const navItems = useMemo(
+    () =>
+      [
+        { id: "profile" as PanelId, section: "account", label: tx("Profile", "Profil", "پروفایل"), icon: "🪪" },
+        { id: "identity" as PanelId, section: "account", label: tx("Identity", "هویت", "هویت"), icon: "✨" },
+        { id: "trust" as PanelId, section: "account", label: tx("Trust Score", "Trust-Score", "امتیاز اعتماد"), icon: "⭐", tag: "BETA" },
+        {
+          id: "notifications" as PanelId,
+          section: "prefs",
+          label: tx("Notifications", "Benachrichtigungen", "اعلان‌ها"),
+          icon: "🔔",
+        },
+        { id: "appearance" as PanelId, section: "prefs", label: tx("Appearance", "Darstellung", "ظاهر"), icon: "🎨" },
+        { id: "privacy" as PanelId, section: "safety", label: tx("Privacy", "Datenschutz", "حریم خصوصی"), icon: "🛡️" },
+        { id: "connected" as PanelId, section: "safety", label: tx("Connected Apps", "Verbundene Apps", "برنامه‌های متصل"), icon: "🔗" },
+        { id: "account" as PanelId, section: "safety", label: tx("Account", "Konto", "حساب"), icon: "🔑" },
+        { id: "danger" as PanelId, section: "safety", label: tx("Danger Zone", "Gefahrenbereich", "بخش خطر"), icon: "⚠️", danger: true },
+      ] as const,
+    [tx]
+  );
+
+  const filteredNavItems = useMemo(() => {
+    const q = settingsSearch.trim().toLowerCase();
+    if (!q) return navItems;
+    return navItems.filter((item) => item.label.toLowerCase().includes(q));
+  }, [navItems, settingsSearch]);
+
+  useEffect(() => {
+    if (!filteredNavItems.some((item) => item.id === activePanel)) {
+      const fallback = filteredNavItems[0]?.id || "profile";
+      setActivePanel(fallback);
+    }
+  }, [activePanel, filteredNavItems]);
+
+  const profileCompletionPct = useMemo(() => {
+    const checks = [
+      Boolean(profileSnapshot.name),
+      Boolean(profileSnapshot.publicId),
+      Boolean(profileSnapshot.bio),
+      Boolean(profileSnapshot.city),
+      profileSnapshot.age !== null,
+    ];
+    const done = checks.filter(Boolean).length;
+    return Math.round((done / checks.length) * 100);
+  }, [profileSnapshot]);
+
+  const circlesCount = stats.circlesCount;
+  const meetupsCount = stats.meetupsCount;
+  const trustScore = stats.trustScore;
+  const ratingCount = stats.ratingCount;
+
+  const trustFramework = useMemo(() => {
+    if (trustScore == null || ratingCount == null || circlesCount == null || meetupsCount == null) {
+      return null;
+    }
+
+    const safeScore = Number.isFinite(trustScore) ? Math.max(0, Math.min(10, trustScore)) : 0;
+    const ratingSignal = Math.min(100, ratingCount * 20);
+    const meetupSignal = circlesCount > 0 ? Math.min(100, Math.round((meetupsCount / (circlesCount * 2)) * 100)) : 0;
+    const consistencySignal = Math.min(100, Math.round((safeScore / 10) * 100));
+
+    return {
+      safeScore,
+      ratingSignal,
+      meetupSignal,
+      consistencySignal,
+    };
+  }, [circlesCount, meetupsCount, ratingCount, trustScore]);
+
+  const identityModel = useMemo(() => {
+    const traits = personalityTraits && typeof personalityTraits === "object" ? personalityTraits : {};
+    const summary = traits.summary && typeof traits.summary === "object" ? traits.summary : {};
+    const labels = traits.labels && typeof traits.labels === "object" ? traits.labels : {};
+    const dimensions = traits.dimensions && typeof traits.dimensions === "object" ? traits.dimensions : {};
+
+    const tagCandidates = [
+      typeof traits.style === "string" ? traits.style : "",
+      typeof summary.energy === "string" ? summary.energy : "",
+      typeof summary.group_size === "string" ? summary.group_size : "",
+      typeof summary.planning === "string" ? summary.planning : "",
+      typeof summary.conversation === "string" ? summary.conversation : "",
+      typeof summary.meetup_length === "string" ? summary.meetup_length : "",
+      typeof labels.stim === "string" ? labels.stim : "",
+      typeof labels.connection === "string" ? labels.connection : "",
+    ]
+      .map((v) => toTitleCase(String(v || "")))
+      .filter(Boolean);
+
+    const uniqueTags = Array.from(new Set(tagCandidates)).slice(0, 10);
+    const stim = Number(dimensions.stim);
+    const energyValue = Number.isFinite(stim) ? Math.max(0, Math.min(100, Math.round(stim))) : null;
+    const groupSize = Number(dimensions.group_size);
+    const groupSizeValue = Number.isFinite(groupSize) ? Math.max(0, Math.min(100, Math.round(groupSize))) : null;
+
+    return {
+      tags: uniqueTags,
+      energyValue,
+      energyLabel: toTitleCase(String(summary.energy || labels.stim || "")),
+      groupSizeBucket: groupSizeBucket(groupSizeValue),
+      groupSizeLabel: toTitleCase(String(summary.group_size || labels.group_size || "")),
+    };
+  }, [personalityTraits]);
+
+  const resolvedVisualMode = visualMode === "system" ? (prefersDark ? "contrast" : "light") : visualMode;
+
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 3200);
@@ -296,6 +483,41 @@ export default function SettingsPage() {
     const timer = window.setTimeout(() => setCopiedPublicId(false), 1800);
     return () => window.clearTimeout(timer);
   }, [copiedPublicId]);
+
+  useEffect(() => {
+    if (!window.matchMedia) return;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = (next: boolean) => setPrefersDark(next);
+    apply(media.matches);
+    const handler = (event: MediaQueryListEvent) => apply(event.matches);
+    if (media.addEventListener) {
+      media.addEventListener("change", handler);
+      return () => media.removeEventListener("change", handler);
+    }
+    media.addListener(handler);
+    return () => media.removeListener(handler);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = String(event.key || "").toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (saveFxTimerRef.current) {
+        window.clearTimeout(saveFxTimerRef.current);
+        saveFxTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!uid) {
@@ -352,11 +574,15 @@ export default function SettingsPage() {
 
   const persistSettings = useCallback(
     async (next: PersistedSettings) => {
-      if (settingsKey) {
-        localStorage.setItem(settingsKey, JSON.stringify(next));
-      }
+      const normalized = parsePersistedSettings(next);
+      const { error } = await supabase.auth.updateUser({
+        data: {
+          settings: normalized,
+        },
+      });
+      if (error) throw error;
     },
-    [settingsKey]
+    []
   );
 
   const loadBlockedUsers = useCallback(async () => {
@@ -422,22 +648,10 @@ export default function SettingsPage() {
       setIsLoading(true);
       await loadCities();
 
-      const localSettings = parseJson<Partial<PersistedSettings>>(settingsKey ? localStorage.getItem(settingsKey) : null);
+      const authSettings = parsePersistedSettings((user?.user_metadata as any)?.settings);
       const localExtras = parseJson<{ bio?: string; availability?: AvailabilityValue; age?: number | string }>(
         profileExtrasKey ? localStorage.getItem(profileExtrasKey) : null
       );
-
-      const mergedNotifications: NotificationSettings = {
-        ...DEFAULT_NOTIFICATIONS,
-        ...((localSettings?.notifications as Partial<NotificationSettings>) || {}),
-      };
-
-      const mergedPrivacy: PrivacySettings = {
-        ...DEFAULT_PRIVACY,
-        ...((localSettings?.privacy as Partial<PrivacySettings>) || {}),
-      };
-
-      const mergedLanguage = (localSettings?.language || DEFAULT_LANGUAGE) as LanguageValue;
 
       const { data: profileRow, error: profileErr } = await supabase
         .from("profiles")
@@ -466,10 +680,12 @@ export default function SettingsPage() {
       setAvatarUrl(p.avatar_url || null);
       setAvailability(loadedAvailability);
       setSocialStyle(socialStyleLabel(p.personality_traits));
-      setNotifications(mergedNotifications);
-      setPrivacy(mergedPrivacy);
-      setLanguage(mergedLanguage);
-      setAppLang(mergedLanguage);
+      setPersonalityTraits(p.personality_traits ?? null);
+      setNotifications(authSettings.notifications);
+      setPrivacy(authSettings.privacy);
+      setLanguage(authSettings.language);
+      setVisualMode(authSettings.visualMode || DEFAULT_VISUAL_MODE);
+      setAppLang(authSettings.language);
 
       setProfileInitial({
         name: String(p.name || "").trim(),
@@ -488,7 +704,7 @@ export default function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [uid, settingsKey, profileExtrasKey, loadCities, loadBlockedUsers, setAppLang]);
+  }, [uid, profileExtrasKey, loadCities, loadBlockedUsers, setAppLang]);
 
   async function copyPublicIdToClipboard() {
     const normalized = profileSnapshot.publicId;
@@ -515,15 +731,15 @@ export default function SettingsPage() {
     }
   }
 
-  async function saveProfile() {
-    if (!uid) return;
+  async function saveProfile(): Promise<boolean> {
+    if (!uid) return false;
     if (profileErrors.length) {
       setToast({ kind: "error", text: profileErrors[0] });
-      return;
+      return false;
     }
     if (!isValidPublicId(profileSnapshot.publicId)) {
       setToast({ kind: "error", text: "Public ID format is invalid." });
-      return;
+      return false;
     }
 
     setProfileSaving(true);
@@ -598,8 +814,10 @@ export default function SettingsPage() {
       await queryClient.invalidateQueries({ queryKey: ["profile", uid] });
       setProfileInitial(profileSnapshot);
       setToast({ kind: "success", text: "Saved." });
+      return true;
     } catch (err: any) {
       setToast({ kind: "error", text: err?.message || "Could not save profile." });
+      return false;
     } finally {
       setProfileSaving(false);
     }
@@ -638,31 +856,50 @@ export default function SettingsPage() {
   }
 
   async function updateNotifications(next: NotificationSettings) {
+    const prev = notifications;
     setNotifications(next);
-    await persistSettings({ notifications: next, privacy, language });
-    setToast({
-      kind: "success",
-      text: tx("Notifications updated.", "Benachrichtigungen aktualisiert.", "اعلان‌ها به‌روزرسانی شد."),
-    });
+    try {
+      await persistSettings({ notifications: next, privacy, language, visualMode });
+      setToast({
+        kind: "success",
+        text: tx("Notifications updated.", "Benachrichtigungen aktualisiert.", "اعلان‌ها به‌روزرسانی شد."),
+      });
+    } catch (err: any) {
+      setNotifications(prev);
+      setToast({ kind: "error", text: err?.message || "Could not update notifications." });
+    }
   }
 
   async function updatePrivacy(next: PrivacySettings) {
+    const prev = privacy;
     setPrivacy(next);
-    await persistSettings({ notifications, privacy: next, language });
-    setToast({
-      kind: "success",
-      text: tx("Privacy settings updated.", "Datenschutz aktualisiert.", "تنظیمات حریم خصوصی به‌روزرسانی شد."),
-    });
+    try {
+      await persistSettings({ notifications, privacy: next, language, visualMode });
+      setToast({
+        kind: "success",
+        text: tx("Privacy settings updated.", "Datenschutz aktualisiert.", "تنظیمات حریم خصوصی به‌روزرسانی شد."),
+      });
+    } catch (err: any) {
+      setPrivacy(prev);
+      setToast({ kind: "error", text: err?.message || "Could not update privacy settings." });
+    }
   }
 
   async function updateLanguage(next: LanguageValue) {
+    const prev = language;
     setLanguage(next);
     setAppLang(next);
-    await persistSettings({ notifications, privacy, language: next });
-    setToast({
-      kind: "success",
-      text: next === "de" ? "Sprache aktualisiert." : next === "fa" ? "زبان به‌روزرسانی شد." : "Language updated.",
-    });
+    try {
+      await persistSettings({ notifications, privacy, language: next, visualMode });
+      setToast({
+        kind: "success",
+        text: next === "de" ? "Sprache aktualisiert." : next === "fa" ? "زبان به‌روزرسانی شد." : "Language updated.",
+      });
+    } catch (err: any) {
+      setLanguage(prev);
+      setAppLang(prev);
+      setToast({ kind: "error", text: err?.message || "Could not update language." });
+    }
   }
 
   async function sendPasswordReset() {
@@ -762,19 +999,126 @@ export default function SettingsPage() {
     }
   }
 
-  function showFirstStepsAgain() {
-    if (!uid) return;
-    const seenKey = `circles_first_steps_${uid}`;
-    const stateKey = `circles_first_steps_state_${uid}`;
-    const collapseKey = `circles_first_steps_collapsed_${uid}`;
+  async function triggerSave() {
+    if (saveFxActive) return;
+    const ok = await saveProfile();
+    if (!ok) return;
+    setSaveFxActive(true);
+    if (saveFxTimerRef.current) window.clearTimeout(saveFxTimerRef.current);
+    saveFxTimerRef.current = window.setTimeout(() => {
+      setSaveFxActive(false);
+      saveFxTimerRef.current = null;
+    }, 2200);
+  }
+
+  async function updateVisualMode(next: VisualModeValue) {
+    const prev = visualMode;
+    setVisualMode(next);
     try {
-      localStorage.removeItem(seenKey);
-      localStorage.removeItem(collapseKey);
-      localStorage.setItem(stateKey, JSON.stringify([false, false, false, false]));
-      window.dispatchEvent(new Event("circles:show-checklist"));
-      setToast({ kind: "success", text: "First steps are visible again." });
-    } catch {
-      setToast({ kind: "error", text: "Could not update first steps visibility." });
+      await persistSettings({ notifications, privacy, language, visualMode: next });
+      setToast({
+        kind: "success",
+        text: tx("Visual mode updated.", "Ansicht aktualisiert.", "حالت نمایش به‌روزرسانی شد."),
+      });
+    } catch (err: any) {
+      setVisualMode(prev);
+      setToast({ kind: "error", text: err?.message || "Could not update visual mode." });
+    }
+  }
+
+  async function leaveAllCircles() {
+    if (!uid) return;
+    const ok = window.confirm(
+      tx(
+        "Leave all circles you joined? Circles you host will be kept.",
+        "Alle beigetretenen Circles verlassen? Circles, die du hostest, bleiben erhalten.",
+        "از همه حلقه‌هایی که عضو هستید خارج شوید؟ حلقه‌هایی که میزبانشان هستید حفظ می‌شوند."
+      )
+    );
+    if (!ok) return;
+
+    setLeaveAllBusy(true);
+    try {
+      const { data: memberships, error: memberErr } = await supabase
+        .from("group_members")
+        .select("group_id")
+        .eq("user_id", uid)
+        .in("status", ["active", "accepted"]);
+      if (memberErr) throw memberErr;
+
+      const groupIds = Array.from(new Set((memberships || []).map((row: any) => String(row.group_id || "")).filter(Boolean)));
+      if (!groupIds.length) {
+        setToast({ kind: "info", text: tx("No joined circles found.", "Keine beigetretenen Circles gefunden.", "حلقه عضو شده‌ای پیدا نشد.") });
+        return;
+      }
+
+      const { data: hostedGroups, error: hostedErr } = await supabase
+        .from("groups")
+        .select("id")
+        .eq("host_user_id", uid)
+        .in("id", groupIds);
+      if (hostedErr) throw hostedErr;
+
+      const hostedSet = new Set((hostedGroups || []).map((row: any) => String(row.id || "")));
+      const removableIds = groupIds.filter((id) => !hostedSet.has(id));
+      if (!removableIds.length) {
+        setToast({
+          kind: "info",
+          text: tx(
+            "You only host circles right now, so there is nothing to leave.",
+            "Du hostest aktuell nur Circles, daher gibt es nichts zu verlassen.",
+            "در حال حاضر فقط میزبان حلقه‌ها هستید، بنابراین چیزی برای خروج وجود ندارد."
+          ),
+        });
+        return;
+      }
+      let success = 0;
+      let failed = 0;
+
+      for (const gid of removableIds) {
+        const { error } = await supabase.from("group_members").delete().match({ group_id: gid, user_id: uid });
+        if (error) {
+          failed += 1;
+        } else {
+          success += 1;
+        }
+      }
+
+      if (success > 0) {
+        await queryClient.invalidateQueries({ queryKey: ["profile", uid] });
+      }
+
+      if (failed > 0) {
+        setToast({
+          kind: "info",
+          text: tx(
+            `Left ${success} circle(s). ${failed} could not be left yet (cooldown or permissions).`,
+            `${success} Circle(s) verlassen. ${failed} konnten noch nicht verlassen werden (Cooldown oder Rechte).`,
+            `از ${success} حلقه خارج شدید. خروج از ${failed} حلقه هنوز ممکن نیست (محدودیت زمانی یا دسترسی).`
+          ),
+        });
+      } else {
+        const hostedCount = hostedSet.size;
+        setToast({
+          kind: "success",
+          text:
+            hostedCount > 0
+              ? tx(
+                  `Left ${success} circle(s). ${hostedCount} hosted circle(s) were kept.`,
+                  `${success} Circle(s) verlassen. ${hostedCount} gehostete Circle(s) wurden behalten.`,
+                  `از ${success} حلقه خارج شدید. ${hostedCount} حلقه‌ای که میزبانش بودید حفظ شد.`
+                )
+              : tx(
+                  `Left ${success} circle(s).`,
+                  `${success} Circle(s) verlassen.`,
+                  `از ${success} حلقه خارج شدید.`
+                ),
+        });
+      }
+    } catch (err: any) {
+      setToast({ kind: "error", text: err?.message || "Could not leave all circles." });
+    } finally {
+      setLeaveAllBusy(false);
     }
   }
 
@@ -792,576 +1136,899 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 pb-24 pt-12 md:px-6 md:pt-14">
-      <header className="mb-5 rounded-3xl border border-neutral-200 bg-white px-4 py-3 shadow-sm">
-        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-          <button
-            type="button"
-            onClick={goBack}
-            className="inline-flex w-fit items-center gap-1 rounded-xl px-2 py-1 text-sm font-semibold text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
-          >
-            <ArrowLeft className="h-4 w-4" />
-            {tx("Back", "Zuruck", "بازگشت")}
-          </button>
-          <h1 className="text-center text-2xl font-bold tracking-tight text-neutral-900">
-            {tx("Settings", "Einstellungen", "تنظیمات")}
-          </h1>
-          <div />
-        </div>
-      </header>
+    <div className={`settings-page mode-${resolvedVisualMode}`}>
+      <div className="settings-app">
+        <header className="settings-topbar">
+          <div className="settings-topbar-left">
+            <button type="button" onClick={goBack} className="back-pill">
+              <ArrowLeft size={14} />
+              {tx("Profile", "Profil", "پروفایل")}
+            </button>
+            <h1 className="settings-topbar-title">{tx("Settings", "Einstellungen", "تنظیمات")}</h1>
+          </div>
 
-      {toast && (
-        <div
-          className={`mb-4 rounded-2xl border px-4 py-2.5 text-sm ${
-            toast.kind === "success"
-              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-              : toast.kind === "error"
-              ? "border-red-200 bg-red-50 text-red-700"
-              : "border-neutral-200 bg-neutral-100 text-neutral-700"
-          }`}
-        >
-          {toast.text}
-        </div>
-      )}
-
-      <section className="mb-4 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
-        <div className="mb-4 inline-flex items-center gap-2">
-          <User className="h-4 w-4 text-emerald-600" />
-          <h2 className="text-xl font-bold text-neutral-900">{tx("Profile", "Profil", "پروفایل")}</h2>
-        </div>
-
-        <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="h-16 w-16 overflow-hidden rounded-full border border-white bg-neutral-300 shadow-sm">
-              <img
-                src={getAvatarUrl(avatarUrl, uid || user?.email || "circles-user")}
-                alt="Profile avatar"
-                className="h-full w-full object-cover"
+          <div className="settings-topbar-right">
+            <label className="settings-search-bar" htmlFor="settings-search-input">
+              <Search size={14} />
+              <input
+                id="settings-search-input"
+                ref={searchInputRef}
+                type="text"
+                value={settingsSearch}
+                onChange={(e) => setSettingsSearch(e.target.value)}
+                placeholder={tx("Search settings...", "Einstellungen suchen...", "جستجوی تنظیمات...")}
               />
+            </label>
+            <button
+              type="button"
+              onClick={() => void triggerSave()}
+              disabled={profileSaving || saveFxActive || !profileDirty}
+              className={`settings-save-btn${saveFxActive ? " saved" : ""}`}
+            >
+              {profileSaving ? tx("Saving...", "Wird gespeichert...", "در حال ذخیره...") : tx("Save changes", "Änderungen speichern", "ذخیره تغییرات")}
+            </button>
+          </div>
+        </header>
+
+        <aside className="settings-sidebar">
+          {(["account", "prefs", "safety"] as const).map((section) => {
+            const items = filteredNavItems.filter((item) => item.section === section);
+            if (!items.length) return null;
+
+            const sectionLabel =
+              section === "account"
+                ? tx("Profile", "Profil", "پروفایل")
+                : section === "prefs"
+                ? tx("Preferences", "Präferenzen", "ترجیحات")
+                : tx("Safety", "Sicherheit", "ایمنی");
+
+            return (
+              <div key={section}>
+                <div className="sidebar-section-label">{sectionLabel}</div>
+                {items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActivePanel(item.id)}
+                    className={`settings-nav-item${activePanel === item.id ? " is-active" : ""}${item.danger ? " is-danger" : ""}`}
+                  >
+                    <span className="settings-nav-icon">{item.icon}</span>
+                    <span className="settings-nav-label">{item.label}</span>
+                    {item.badge ? (
+                      <span className={`settings-nav-badge${item.mutedBadge ? " muted" : ""}`}>{item.badge}</span>
+                    ) : null}
+                    {item.tag ? <span className="settings-tag new">{item.tag}</span> : null}
+                  </button>
+                ))}
+              </div>
+            );
+          })}
+        </aside>
+
+        <main className="settings-main">
+          {toast && (
+            <div className={`settings-toast ${toast.kind}`}>
+              {toast.text}
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xl font-bold text-neutral-900">{name || "Circle Member"}</div>
-              <div className="truncate text-sm text-neutral-600">{city || "Set your city"}</div>
-              <div className="mt-1 inline-flex items-center gap-2">
-                <span className="rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-xs font-semibold text-neutral-700">
-                  @{profileSnapshot.publicId || "set-public-id"}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void copyPublicIdToClipboard()}
-                  className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
-                >
-                  {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                  {copiedPublicId ? "Copied" : "Copy"}
-                </button>
+          )}
+
+          <section className={`settings-panel${activePanel === "profile" ? " is-active" : ""}`} id="panel-profile">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Your Profile", "Dein Profil", "پروفایل شما")}</h2>
+                <p className="panel-sub">{tx("How others see you in circles", "Wie andere dich sehen", "دیگران شما را چگونه می‌بینند")}</p>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <label className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-700 hover:border-neutral-300">
-                <Upload className="h-4 w-4" />
-                {tx("Upload", "Hochladen", "آپلود")}
-                <input
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={onAvatarFileChange}
-                  className="hidden"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => setAvatarUrl(null)}
-                className="rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm font-semibold text-neutral-700 hover:border-neutral-300"
-              >
-                {tx("Remove", "Entfernen", "حذف")}
-              </button>
+
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <User size={14} />
+                {tx("Identity Card", "Profilkarte", "کارت هویت")}
+              </div>
+              <div className="settings-avatar-editor">
+                <label className="settings-ava-wrap">
+                  <div className="settings-ava">
+                    <img
+                      src={getAvatarUrl(avatarUrl, uid || user?.email || "circles-user")}
+                      alt="Profile avatar"
+                      className="settings-ava-img"
+                    />
+                  </div>
+                  <div className="settings-ava-overlay">📷</div>
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={onAvatarFileChange}
+                    className="hidden-input"
+                  />
+                </label>
+
+                <div className="settings-ava-info">
+                  <div className="settings-ava-name">{name || "Circle Member"}</div>
+                  <div className="settings-ava-sub">
+                    @{profileSnapshot.publicId || "set-public-id"} · {city || tx("Set your city", "Stadt setzen", "شهر را تنظیم کنید")}
+                  </div>
+                  <div className="settings-progress-wrap">
+                    <div className="settings-progress-label">
+                      {tx("Profile completion", "Profilstatus", "تکمیل پروفایل")} {profileCompletionPct}%
+                    </div>
+                    <div className="settings-progress-bar">
+                      <span style={{ width: `${profileCompletionPct}%` }} />
+                    </div>
+                  </div>
+                  <div className="settings-inline-actions">
+                    <label className="settings-soft-btn">
+                      <Upload size={13} />
+                      {tx("Upload", "Hochladen", "آپلود")}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={onAvatarFileChange}
+                        className="hidden-input"
+                      />
+                    </label>
+                    <button type="button" className="settings-soft-btn" onClick={() => setAvatarUrl(null)}>
+                      {tx("Remove", "Entfernen", "حذف")}
+                    </button>
+                    <button type="button" className="settings-soft-btn" onClick={() => void copyPublicIdToClipboard()}>
+                      <Copy size={13} />
+                      {copiedPublicId ? "Copied" : "Copy ID"}
+                    </button>
+                  </div>
+                  <p className="settings-help-line">
+                    {tx(
+                      `JPG, PNG, or WEBP. Max ${MAX_AVATAR_MB}MB.`,
+                      `JPG, PNG oder WEBP. Maximal ${MAX_AVATAR_MB}MB.`,
+                      `فرمت JPG، PNG یا WEBP. حداکثر ${MAX_AVATAR_MB} مگابایت.`
+                    )}
+                    {avatarUploading ? ` ${tx("Uploading...", "Wird hochgeladen...", "در حال آپلود...")}` : ""}
+                  </p>
+                </div>
+              </div>
             </div>
-          </div>
-          <p className="mt-2 text-xs text-neutral-500">
-            {tx(
-              `JPG, PNG, or WEBP. Max ${MAX_AVATAR_MB}MB.`,
-              `JPG, PNG oder WEBP. Maximal ${MAX_AVATAR_MB}MB.`,
-              `فرمت JPG، PNG یا WEBP. حداکثر ${MAX_AVATAR_MB} مگابایت.`
-            )}
-            {avatarUploading ? " Uploading..." : ""}
-          </p>
-        </div>
 
-        <div className="mt-4 grid gap-3">
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Name", "Name", "نام")}
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              maxLength={60}
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 outline-none transition focus:border-emerald-400"
-              placeholder="Your name"
-            />
-          </label>
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <Sparkles size={14} />
+                {tx("Profile Fields", "Profilfelder", "فیلدهای پروفایل")}
+              </div>
+              <div className="settings-fields-grid two">
+                <label className="settings-field-wrap">
+                  <span className="settings-field-label">{tx("Name", "Name", "نام")}</span>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    maxLength={60}
+                    className="settings-input"
+                    placeholder={tx("Your name", "Dein Name", "نام شما")}
+                  />
+                </label>
 
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            Public ID
-            <input
-              value={publicId}
-              onChange={(e) => setPublicId(normalizePublicId(e.target.value))}
-              maxLength={PUBLIC_ID_MAX_LENGTH}
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 outline-none transition focus:border-emerald-400"
-              placeholder="dara4821"
-            />
-            <div className="flex items-center justify-between text-xs">
-              <span
-                className={
-                  publicIdChecking
-                    ? "text-neutral-500"
-                    : publicIdAvailable === false
-                    ? "text-red-600"
-                    : publicIdAvailable === true
-                    ? "text-emerald-700"
-                    : "text-neutral-500"
-                }
-              >
-                {publicIdChecking
-                  ? "Checking availability..."
-                  : publicIdAvailable === false
-                  ? "Public ID is already taken."
-                  : publicIdAvailable === true
-                  ? "Public ID is available."
-                  : "Format: name + 4 numbers (example: dara4821)."}
-              </span>
-              <button
-                type="button"
-                onClick={() => void copyPublicIdToClipboard()}
-                className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
-              >
-                {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                {copiedPublicId ? "Copied" : "Copy"}
-              </button>
+                <label className="settings-field-wrap">
+                  <span className="settings-field-label">Public ID</span>
+                  <input
+                    value={publicId}
+                    onChange={(e) => setPublicId(normalizePublicId(e.target.value))}
+                    maxLength={PUBLIC_ID_MAX_LENGTH}
+                    className="settings-input"
+                    placeholder="dara4821"
+                  />
+                  <div className="settings-inline-help">
+                    <span
+                      className={`settings-hint ${
+                        publicIdChecking
+                          ? ""
+                          : publicIdAvailable === false
+                          ? "error"
+                          : publicIdAvailable === true
+                          ? "ok"
+                          : ""
+                      }`}
+                    >
+                      {publicIdChecking
+                        ? "Checking availability..."
+                        : publicIdAvailable === false
+                        ? "Public ID is already taken."
+                        : publicIdAvailable === true
+                        ? "Public ID is available."
+                        : "Format: name + 4 numbers (example: dara4821)."}
+                    </span>
+                    <button type="button" className="settings-copy-pill" onClick={() => void copyPublicIdToClipboard()}>
+                      {copiedPublicId ? <Check size={13} /> : <Copy size={13} />}
+                      {copiedPublicId ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                </label>
+
+                <label className="settings-field-wrap">
+                  <span className="settings-field-label">{tx("City", "Stadt", "شهر")}</span>
+                  <input
+                    value={city}
+                    onChange={(e) => setCity(e.target.value)}
+                    onFocus={loadCities}
+                    list="settings-cities-de"
+                    className="settings-input"
+                    placeholder="Freiburg"
+                  />
+                  <datalist id="settings-cities-de">
+                    {deCities.map((option) => (
+                      <option key={option} value={option} />
+                    ))}
+                  </datalist>
+                </label>
+
+                <label className="settings-field-wrap">
+                  <span className="settings-field-label">{tx("Age", "Alter", "سن")}</span>
+                  <input
+                    value={age}
+                    onChange={(e) => setAge(e.target.value.replace(/[^\d]/g, ""))}
+                    inputMode="numeric"
+                    maxLength={3}
+                    className="settings-input"
+                    placeholder="18"
+                  />
+                </label>
+
+                <label className="settings-field-wrap full">
+                  <span className="settings-field-label">
+                    {tx("Bio", "Bio", "بیو")}
+                    <span className={`settings-counter ${bio.length > 160 ? "warn" : ""}`}>{bio.length}/{MAX_BIO_LENGTH}</span>
+                  </span>
+                  <textarea
+                    value={bio}
+                    onChange={(e) => setBio(e.target.value)}
+                    maxLength={MAX_BIO_LENGTH}
+                    rows={4}
+                    className="settings-textarea"
+                    placeholder={tx("Tell your circles who you are...", "Erzähl etwas über dich...", "کمی درباره خودت بنویس...")}
+                  />
+                </label>
+              </div>
             </div>
-          </label>
 
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Bio", "Bio", "بیو")}
-            <textarea
-              value={bio}
-              onChange={(e) => setBio(e.target.value)}
-              maxLength={MAX_BIO_LENGTH}
-              rows={3}
-              className="w-full resize-none rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-emerald-400"
-              placeholder="Tell others a bit about you."
-            />
-            <span className="text-right text-xs text-neutral-500">
-              {bio.length}/{MAX_BIO_LENGTH}
-            </span>
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Age", "Alter", "سن")}
-            <input
-              value={age}
-              onChange={(e) => setAge(e.target.value.replace(/[^\d]/g, ""))}
-              inputMode="numeric"
-              maxLength={3}
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-emerald-400"
-              placeholder={tx("Age (optional)", "Alter (optional)", "سن (اختیاری)")}
-            />
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("City", "Stadt", "شهر")}
-            <input
-              value={city}
-              onChange={(e) => setCity(e.target.value)}
-              onFocus={loadCities}
-              list="settings-cities-de"
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-900 outline-none transition focus:border-emerald-400"
-              placeholder="City"
-            />
-            <datalist id="settings-cities-de">
-              {deCities.map((option) => (
-                <option key={option} value={option} />
-              ))}
-            </datalist>
-          </label>
-
-          <div className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Availability", "Verfugbarkeit", "زمان‌های در دسترس")}
-            <div className="flex flex-wrap gap-2">
-              {[
-                {
-                  value: "weekday_evenings" as AvailabilityValue,
-                  label: tx("Weekday evenings", "Wochentage abends", "عصرهای روزهای هفته"),
-                },
-                { value: "weekends" as AvailabilityValue, label: tx("Weekends", "Wochenenden", "آخر هفته‌ها") },
-                { value: "flexible" as AvailabilityValue, label: tx("Flexible", "Flexibel", "منعطف") },
-              ].map((opt) => {
-                const active = availability === opt.value;
-                return (
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <CalendarDays size={14} />
+                {tx("Availability", "Verfügbarkeit", "زمان‌های در دسترس")}
+              </div>
+              <div className="settings-chip-row">
+                {[
+                  { value: "weekday_evenings" as AvailabilityValue, label: tx("Weekday evenings", "Wochentage abends", "عصرهای هفته") },
+                  { value: "weekends" as AvailabilityValue, label: tx("Weekends", "آخر هفته", "آخر هفته‌ها") },
+                  { value: "flexible" as AvailabilityValue, label: tx("Flexible", "Flexibel", "منعطف") },
+                ].map((opt) => (
                   <button
                     key={opt.value}
                     type="button"
                     onClick={() => setAvailability(opt.value)}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                      active
-                        ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                        : "border-neutral-200 bg-white text-neutral-700 hover:border-neutral-300"
-                    }`}
+                    className={`settings-chip${availability === opt.value ? " active" : ""}`}
                   >
                     {opt.label}
                   </button>
+                ))}
+              </div>
+
+              <div className="settings-row no-hover">
+                <div className="row-left">
+                  <div className="row-label">{tx("Social style", "Sozialstil", "سبک اجتماعی")}</div>
+                  <div className="row-desc">{socialStyle}</div>
+                </div>
+                <div className="row-right">
+                  <button type="button" className="settings-soft-btn" onClick={() => navigate("/quiz")}>
+                    {tx("Take / retake quiz", "Quiz starten / erneut machen", "انجام / تکرار آزمون")}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {profileErrors.length > 0 ? <div className="settings-inline-error">{profileErrors[0]}</div> : null}
+          </section>
+
+          <section className={`settings-panel${activePanel === "identity" ? " is-active" : ""}`} id="panel-identity">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Identity", "Identität", "هویت")}</h2>
+                <p className="panel-sub">
+                  {tx(
+                    "Only profile fields backed by your current account data.",
+                    "Nur Felder mit echter Kontodaten-Anbindung.",
+                    "فقط فیلدهایی که به داده واقعی حساب شما وصل هستند."
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <Sparkles size={14} />
+                {tx("Quiz Identity", "Quiz-Identität", "هویت آزمون")}
+              </div>
+              <div className="settings-row no-hover">
+                <div className="row-left">
+                  <div className="row-label">{tx("Social style", "Sozialstil", "سبک اجتماعی")}</div>
+                  <div className="row-desc">{socialStyle}</div>
+                </div>
+                <div className="row-right">
+                  <button type="button" className="settings-soft-btn" onClick={() => navigate("/quiz")}>
+                    {tx("Take / retake quiz", "Quiz starten / erneut machen", "انجام / تکرار آزمون")}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-block identity-enhanced">
+              <div className="settings-block-title">
+                <Sparkles size={14} />
+                {tx("Identity Signals", "Identitäts-Signale", "نشانه‌های هویتی")}
+              </div>
+
+              <div className="identity-section">
+                <div className="identity-section-head">
+                  {tx("Interests & vibe", "Interessen & Vibe", "علایق و حال‌و‌هوا")}
+                </div>
+                {identityModel.tags.length > 0 ? (
+                  <div className="identity-chip-cloud">
+                    {identityModel.tags.map((tag) => (
+                      <span key={tag} className="identity-chip">
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="identity-empty">
+                    {tx(
+                      "No quiz signals yet. Take the quiz to generate identity tags.",
+                      "Noch keine Quiz-Signale. Starte das Quiz, um Identitäts-Tags zu erzeugen.",
+                      "هنوز سیگنال آزمون ندارید. برای ساخت تگ‌های هویتی آزمون را انجام دهید."
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="identity-section">
+                <div className="identity-section-head">{tx("Energy level", "Energielevel", "سطح انرژی")}</div>
+                <div className="identity-energy-row">
+                  <span>{tx("Calm", "Ruhig", "آرام")}</span>
+                  <span>{identityModel.energyValue != null ? `${identityModel.energyValue}%` : "—"}</span>
+                  <span>{tx("High energy", "Hohe Energie", "انرژی بالا")}</span>
+                </div>
+                <div className="identity-energy-track">
+                  <span
+                    className="identity-energy-fill"
+                    style={{ width: `${identityModel.energyValue ?? 0}%` }}
+                  />
+                  <span
+                    className="identity-energy-knob"
+                    style={{ left: `${identityModel.energyValue ?? 0}%` }}
+                  />
+                </div>
+                {identityModel.energyLabel ? <div className="identity-caption">{identityModel.energyLabel}</div> : null}
+              </div>
+
+              <div className="identity-section">
+                <div className="identity-section-head">
+                  {tx("Group size preference", "Gruppengröße-Präferenz", "ترجیح اندازه گروه")}
+                </div>
+                <div className="identity-size-row">
+                  {(["1-3", "4-6", "7-10", "10+"] as const).map((range) => (
+                    <span
+                      key={range}
+                      className={`identity-size-chip${identityModel.groupSizeBucket === range ? " active" : ""}`}
+                    >
+                      {range}
+                    </span>
+                  ))}
+                </div>
+                {identityModel.groupSizeLabel ? <div className="identity-caption">{identityModel.groupSizeLabel}</div> : null}
+              </div>
+            </div>
+          </section>
+
+          <section className={`settings-panel${activePanel === "trust" ? " is-active" : ""}`} id="panel-trust">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Trust Score", "Trust-Score", "امتیاز اعتماد")}</h2>
+                <p className="panel-sub">
+                  {tx(
+                    "Real metrics from your account data. Framework is still in beta.",
+                    "Echte Metriken aus deinen Kontodaten. Das Framework ist noch in Beta.",
+                    "معیارهای واقعی از داده حساب شما. این چارچوب هنوز در نسخه بتا است."
+                  )}
+                </p>
+              </div>
+              <span className="settings-tag beta">BETA</span>
+            </div>
+
+            <div className="settings-block trust-highlight">
+              <div className="trust-score-main">
+                <div className="trust-score-value">
+                  {statsLoading ? "…" : trustFramework ? trustFramework.safeScore.toFixed(1) : "—"}
+                </div>
+                <div className="trust-score-meta">
+                  {statsLoading
+                    ? tx("Loading live trust stats...", "Lade Live-Trust-Statistiken...", "در حال بارگذاری آمار زنده اعتماد...")
+                    : trustFramework
+                    ? tx(
+                        `${ratingCount} rating(s) · ${circlesCount} circle(s) · ${meetupsCount} meetup(s)`,
+                        `${ratingCount} Bewertung(en) · ${circlesCount} Circle(s) · ${meetupsCount} Treffen`,
+                        `${ratingCount} امتیاز · ${circlesCount} حلقه · ${meetupsCount} دورهمی`
+                      )
+                    : tx(
+                        "Live trust stats are temporarily unavailable.",
+                        "Live-Trust-Statistiken sind vorübergehend nicht verfügbar.",
+                        "آمار زنده اعتماد موقتاً در دسترس نیست."
+                      )}
+                </div>
+              </div>
+              <div className="trust-stats-strip">
+                <div className="trust-stat-item">
+                  <span>{tx("Circles", "Circles", "حلقه‌ها")}</span>
+                  <strong>{statsLoading ? "…" : circlesCount ?? "—"}</strong>
+                </div>
+                <div className="trust-stat-item">
+                  <span>{tx("Meetups", "Meetups", "دورهمی‌ها")}</span>
+                  <strong>{statsLoading ? "…" : meetupsCount ?? "—"}</strong>
+                </div>
+                <div className="trust-stat-item">
+                  <span>{tx("Ratings", "Bewertungen", "امتیازها")}</span>
+                  <strong>{statsLoading ? "…" : ratingCount ?? "—"}</strong>
+                </div>
+              </div>
+              <div className="trust-meter-list">
+                {[
+                  {
+                    label: tx("Meetup participation", "Meetup-Teilnahme", "مشارکت در دورهمی"),
+                    value: trustFramework?.meetupSignal ?? 0,
+                    tone: "teal",
+                  },
+                  {
+                    label: tx("Feedback volume", "Feedback-Volumen", "حجم بازخورد"),
+                    value: trustFramework?.ratingSignal ?? 0,
+                    tone: "blue",
+                  },
+                  {
+                    label: tx("Consistency score", "Konsistenz-Score", "امتیاز ثبات"),
+                    value: trustFramework?.consistencySignal ?? 0,
+                    tone: "amber",
+                  },
+                ].map((item) => (
+                  <div key={item.label} className="trust-meter-row">
+                    <div className="trust-meter-head">
+                      <span>{item.label}</span>
+                      <span>{item.value}%</span>
+                    </div>
+                    <div className="trust-meter">
+                      <span className={`tone-${item.tone}`} style={{ width: `${item.value}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className={`settings-panel${activePanel === "notifications" ? " is-active" : ""}`} id="panel-notifications">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Notifications", "Benachrichtigungen", "اعلان‌ها")}</h2>
+                <p className="panel-sub">{tx("Stay in the loop, your way", "Bleib informiert, auf deine Art", "به روش خودت در جریان بمان")}</p>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">{tx("Channels", "Kanäle", "کانال‌ها")}</div>
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Push notifications", "Push-Benachrichtigungen", "اعلان‌های پوش")}</div>
+                  <div className="row-desc">
+                    {tx("Saved to your account preferences", "In deinen Kontoeinstellungen gespeichert", "در تنظیمات حساب شما ذخیره می‌شود")}
+                  </div>
+                </div>
+                <div className="row-right">
+                  <Toggle
+                    checked={notifications.pushEnabled}
+                    onClick={() =>
+                      void updateNotifications({
+                        ...notifications,
+                        pushEnabled: !notifications.pushEnabled,
+                      })
+                    }
+                    ariaLabel="Toggle push notifications"
+                  />
+                </div>
+              </div>
+
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Email notifications", "E-Mail-Benachrichtigungen", "اعلان‌های ایمیلی")}</div>
+                  <div className="row-desc">{tx("Weekly digest & reminders", "Wöchentliche Zusammenfassung", "خلاصه هفتگی و یادآورها")}</div>
+                </div>
+                <div className="row-right">
+                  <Toggle
+                    checked={notifications.emailEnabled}
+                    onClick={() =>
+                      void updateNotifications({
+                        ...notifications,
+                        emailEnabled: !notifications.emailEnabled,
+                      })
+                    }
+                    ariaLabel="Toggle email notifications"
+                  />
+                </div>
+              </div>
+
+              <div className="settings-row is-disabled">
+                <div className="row-left">
+                  <div className="row-label">
+                    {tx("SMS reminders", "SMS-Erinnerungen", "یادآور پیامکی")} <span className="settings-tag beta">BETA</span>
+                  </div>
+                  <div className="row-desc">
+                    {tx("Coming soon. This option is locked for now.", "Kommt bald. Diese Option ist vorerst gesperrt.", "به‌زودی. این گزینه فعلاً قفل است.")}
+                  </div>
+                </div>
+                <div className="row-right">
+                  <button type="button" className="settings-lock-pill" disabled>
+                    <Lock size={13} />
+                    {tx("Locked", "Gesperrt", "قفل")}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">{tx("Events", "Ereignisse", "رویدادها")}</div>
+              {[
+                { key: "meetupScheduled", label: tx("Meetup scheduled", "Treffen geplant", "ملاقات برنامه‌ریزی شد") },
+                { key: "pollCreated", label: tx("Poll created / vote needed", "Umfrage erstellt / Abstimmung nötig", "نظرسنجی ایجاد شد / رای لازم است") },
+                { key: "attendanceConfirmations", label: tx("Attendance confirmations", "Teilnahme-Bestätigungen", "تایید حضور") },
+                { key: "mentions", label: tx("Mentions", "Erwähnungen", "منشن‌ها") },
+                { key: "announcements", label: tx("Circle announcements", "Circle-Ankündigungen", "اعلامیه‌های حلقه") },
+                { key: "ratingReminders", label: tx("Rating reminders", "Bewertungs-Erinnerungen", "یادآور امتیازدهی") },
+                { key: "directMessages", label: tx("Direct messages", "Direktnachrichten", "پیام‌های مستقیم") },
+              ].map((item) => {
+                const key = item.key as keyof NotificationSettings;
+                const disabled = !notifications.pushEnabled;
+                const checked = Boolean(notifications[key]);
+                return (
+                  <div key={item.key} className={`settings-row${disabled ? " is-disabled" : ""}`}>
+                    <div className="row-left">
+                      <div className="row-label">{item.label}</div>
+                    </div>
+                    <div className="row-right">
+                      <Toggle
+                        checked={checked}
+                        disabled={disabled}
+                        onClick={() =>
+                          void updateNotifications({
+                            ...notifications,
+                            [key]: !checked,
+                          })
+                        }
+                        ariaLabel={`Toggle ${item.label}`}
+                      />
+                    </div>
+                  </div>
                 );
               })}
             </div>
-          </div>
 
-          <div className="flex items-center justify-between rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5">
-            <div>
-              <div className="text-sm font-semibold text-neutral-900">{tx("Social style", "Sozialstil", "سبک اجتماعی")}</div>
-              <div className="text-xs text-neutral-600">{socialStyle}</div>
+          </section>
+
+          <section className={`settings-panel${activePanel === "appearance" ? " is-active" : ""}`} id="panel-appearance">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Appearance", "Darstellung", "ظاهر")}</h2>
+                <p className="panel-sub">
+                  {tx(
+                    "Visual mode is live and applied immediately.",
+                    "Ansichtsmodus ist live und wird sofort angewendet.",
+                    "حالت نمایش فعال است و بلافاصله اعمال می‌شود."
+                  )}
+                </p>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={() => navigate("/quiz")}
-              className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-700 hover:border-neutral-300"
-            >
-              {tx("Take / retake quiz", "Quiz starten / erneut machen", "انجام / تکرار آزمون")}
-            </button>
-          </div>
-        </div>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/50 px-3 py-2.5">
-          <div>
-            <div className="text-sm font-semibold text-emerald-900">First steps reminder</div>
-            <div className="text-xs text-emerald-800/80">
-              {tx(
-                "Bring back the setup banner on your profile page.",
-                "Setup-Hinweis im Profil wieder anzeigen.",
-                "بنر راه‌اندازی را دوباره در صفحه پروفایل نشان بده."
+            <div className="settings-block">
+              <div className="settings-block-title">{tx("Visual Mode", "Ansicht", "حالت نمایش")}</div>
+              <div className="vis-grid">
+                {([
+                  { id: "light", title: tx("Light", "Hell", "روشن"), sub: tx("Clean default look", "Klarer Standard", "نمای پیش‌فرض روشن") },
+                  { id: "system", title: tx("System", "System", "سیستمی"), sub: tx("Follow device", "Gerät folgen", "پیروی از دستگاه") },
+                  { id: "contrast", title: tx("High contrast", "Hoher Kontrast", "کنتراست بالا"), sub: tx("Sharper readability", "Bessere Lesbarkeit", "خوانایی بهتر") },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    className={`vis-opt${visualMode === opt.id ? " active" : ""}`}
+                    onClick={() => void updateVisualMode(opt.id)}
+                  >
+                    <div className="vis-title">{opt.title}</div>
+                    <div className="vis-sub">{opt.sub}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className={`settings-panel${activePanel === "privacy" ? " is-active" : ""}`} id="panel-privacy">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Privacy", "Datenschutz", "حریم خصوصی")}</h2>
+                <p className="panel-sub">{tx("Control who sees what", "Steuere, wer was sieht", "کنترل کنید چه کسی چه چیزی ببیند")}</p>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <Shield size={14} />
+                {tx("Visibility", "Sichtbarkeit", "نمایش")}
+              </div>
+              <div className="vis-grid">
+                {([
+                  { value: "my_circles", title: tx("My circles", "Meine Circles", "حلقه‌های من"), sub: tx("Only your circle members", "Nur Mitglieder deiner Circles", "فقط اعضای حلقه‌های شما") },
+                  { value: "chat_contacts", title: tx("Everyone", "Alle", "همه"), sub: tx("People you chat with", "Personen aus deinen Chats", "افرادی که با آن‌ها چت می‌کنید") },
+                  { value: "city", title: tx("No one", "Niemand", "هیچکس"), sub: tx("Only city-level discovery", "Nur auf Stadtebene", "فقط کشف در سطح شهر") },
+                ] as const).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className={`vis-opt${privacy.profileVisibility === opt.value ? " active" : ""}`}
+                    onClick={() =>
+                      void updatePrivacy({
+                        ...privacy,
+                        profileVisibility: opt.value,
+                      })
+                    }
+                  >
+                    <div className="vis-title">{opt.title}</div>
+                    <div className="vis-sub">{opt.sub}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">{tx("Messaging", "Nachrichten", "پیام‌ها")}</div>
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Who can message me", "Wer kann mir schreiben", "چه کسی می‌تواند پیام بدهد")}</div>
+                </div>
+                <div className="row-right">
+                  <select
+                    className="settings-select"
+                    value={privacy.whoCanMessage}
+                    onChange={(e) =>
+                      void updatePrivacy({
+                        ...privacy,
+                        whoCanMessage: e.target.value as MessageAccessValue,
+                      })
+                    }
+                  >
+                    <option value="my_circles">{tx("Only my circles", "Nur meine Circles", "فقط حلقه‌های من")}</option>
+                    <option value="shared_circles">{tx("Shared circles", "Gemeinsame Circles", "حلقه‌های مشترک")}</option>
+                    <option value="anyone">{tx("Anyone", "Jeder", "همه")}</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <Users size={14} />
+                {tx("Blocked users", "Blockierte Nutzer", "کاربران مسدود شده")}
+              </div>
+              {blockedLoading ? (
+                <div className="settings-empty">{tx("Loading blocked users...", "Blockierte Nutzer werden geladen...", "در حال بارگذاری کاربران مسدود شده...")}</div>
+              ) : blockedUsers.length === 0 ? (
+                <div className="settings-empty">{tx("No blocked users.", "Keine blockierten Nutzer.", "کاربر مسدودشده‌ای وجود ندارد.")}</div>
+              ) : (
+                <div className="settings-list">
+                  {blockedUsers.map((item) => (
+                    <div key={item.userId} className="settings-list-item">
+                      <div className="settings-list-user">
+                        <img src={getAvatarUrl(item.avatarUrl, item.userId)} alt={item.name} className="settings-mini-avatar" />
+                        <span>{item.name}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="settings-soft-btn"
+                        onClick={() => void unblockUser(item.userId)}
+                        disabled={unblockBusyId === item.userId}
+                      >
+                        {unblockBusyId === item.userId ? tx("Unblocking...", "Wird entsperrt...", "در حال رفع مسدودیت...") : tx("Unblock", "Entsperren", "رفع مسدودیت")}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-          </div>
-          <button
-            type="button"
-            onClick={showFirstStepsAgain}
-            className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50"
-          >
-            {tx("Show first steps again", "Erste Schritte erneut zeigen", "نمایش دوباره مراحل اول")}
-          </button>
-        </div>
 
-        {profileErrors.length > 0 && (
-          <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-            {profileErrors[0]}
-          </div>
-        )}
+            <div className="settings-inline-actions">
+              <a href="mailto:support@meincircles.com?subject=Report%20a%20problem" className="settings-soft-btn">
+                {tx("Report a problem", "Problem melden", "گزارش مشکل")}
+              </a>
+              <button type="button" className="settings-soft-btn" onClick={() => navigate("/legal")}>
+                {tx("Community guidelines", "Community-Richtlinien", "قوانین جامعه")}
+              </button>
+            </div>
+          </section>
 
-        {profileDirty && (
-          <div className="mt-4 flex justify-center">
-            <button
-              type="button"
-              onClick={saveProfile}
-              disabled={profileSaving || profileErrors.length > 0 || publicIdChecking || publicIdAvailable === false}
-              className={`rounded-full px-6 py-2.5 text-sm font-bold text-white transition ${
-                profileSaving || profileErrors.length > 0 || publicIdChecking || publicIdAvailable === false
-                  ? "cursor-not-allowed bg-neutral-400"
-                  : "bg-emerald-600 hover:bg-emerald-700"
-              }`}
-            >
-              {profileSaving
-                ? tx("Saving...", "Wird gespeichert...", "در حال ذخیره...")
-                : tx("Save", "Speichern", "ذخیره")}
-            </button>
-          </div>
-        )}
-      </section>
-
-      <section className="mb-4 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
-          <div className="mb-1 inline-flex items-center gap-2">
-            <Bell className="h-4 w-4 text-emerald-600" />
-            <h2 className="text-xl font-bold text-neutral-900">{tx("Notifications", "Benachrichtigungen", "اعلان‌ها")}</h2>
-          </div>
-          <p className="mb-3 text-xs text-neutral-500">
-            {tx(
-              "These are local preferences on this device and do not currently block server notifications.",
-              "Das sind lokale Einstellungen auf diesem Gerat und blockieren derzeit keine Server-Benachrichtigungen.",
-              "این‌ها تنظیمات محلی روی همین دستگاه هستند و فعلاً اعلان‌های سمت سرور را مسدود نمی‌کنند."
-            )}
-          </p>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2.5">
-            <span className="text-sm font-semibold text-neutral-800">{tx("Push notifications", "Push-Benachrichtigungen", "اعلان‌های پوش")}</span>
-            <Toggle
-              checked={notifications.pushEnabled}
-              onClick={() =>
-                updateNotifications({
-                  ...notifications,
-                  pushEnabled: !notifications.pushEnabled,
-                })
-              }
-              ariaLabel="Toggle push notifications"
-            />
-          </div>
-
-          <div className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2.5">
-            <span className="text-sm font-semibold text-neutral-800">{tx("Email notifications", "E-Mail-Benachrichtigungen", "اعلان‌های ایمیلی")}</span>
-            <Toggle
-              checked={notifications.emailEnabled}
-              onClick={() =>
-                updateNotifications({
-                  ...notifications,
-                  emailEnabled: !notifications.emailEnabled,
-                })
-              }
-              ariaLabel="Toggle email notifications"
-            />
-          </div>
-        </div>
-
-        <div className="mt-3 space-y-2">
-          {[
-            { key: "meetupScheduled", label: tx("Meetup scheduled", "Treffen geplant", "ملاقات برنامه‌ریزی شد") },
-            { key: "pollCreated", label: tx("Poll created / vote needed", "Umfrage erstellt / Abstimmung erforderlich", "نظرسنجی ایجاد شد / رای لازم است") },
-            { key: "attendanceConfirmations", label: tx("Attendance confirmations", "Teilnahme-Bestatigungen", "تایید حضور") },
-            { key: "mentions", label: tx("Mentions", "Erwahnungen", "منشن‌ها") },
-            { key: "announcements", label: tx("Circle announcements", "Circle-Ankundigungen", "اعلامیه‌های حلقه") },
-            { key: "ratingReminders", label: tx("Rating reminders", "Bewertungs-Erinnerungen", "یادآور امتیازدهی") },
-            { key: "directMessages", label: tx("Direct messages", "Direktnachrichten", "پیام‌های مستقیم") },
-          ].map((item) => {
-            const key = item.key as keyof NotificationSettings;
-            const disabled = !notifications.pushEnabled;
-            const checked = Boolean(notifications[key]);
-            return (
-              <div
-                key={item.key}
-                className={`flex items-center justify-between rounded-xl border px-3 py-2.5 ${
-                  disabled ? "border-neutral-200 bg-neutral-50 text-neutral-400" : "border-neutral-200 bg-white"
-                }`}
-              >
-                <span className="text-sm font-medium">{item.label}</span>
-                <Toggle
-                  checked={checked}
-                  disabled={disabled}
-                  onClick={() =>
-                    updateNotifications({
-                      ...notifications,
-                      [key]: !checked,
-                    })
-                  }
-                  ariaLabel={`Toggle ${item.label}`}
-                />
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="mb-4 rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
-        <div className="mb-3 inline-flex items-center gap-2">
-          <Shield className="h-4 w-4 text-emerald-600" />
-          <h2 className="text-xl font-bold text-neutral-900">{tx("Privacy & Safety", "Datenschutz & Sicherheit", "حریم خصوصی و امنیت")}</h2>
-        </div>
-        <p className="mb-3 text-xs text-neutral-500">
-          {tx(
-            "These privacy controls are saved as preferences and are not yet enforced by backend access rules.",
-            "Diese Datenschutz-Optionen werden als Einstellungen gespeichert und noch nicht durch Backend-Zugriffsregeln erzwungen.",
-            "این گزینه‌های حریم خصوصی به‌صورت ترجیح ذخیره می‌شوند و هنوز با قوانین دسترسی بک‌اند enforce نشده‌اند."
-          )}
-        </p>
-
-        <div className="space-y-3">
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Profile visibility preference", "Profil-Sichtbarkeits-Einstellung", "ترجیح نمایش پروفایل")}
-            <select
-              value={privacy.profileVisibility}
-              onChange={(e) =>
-                updatePrivacy({
-                  ...privacy,
-                  profileVisibility: e.target.value as ProfileVisibilityValue,
-                })
-              }
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-800 outline-none focus:border-emerald-400"
-            >
-              <option value="my_circles">{tx("Only my circles", "Nur meine Circles", "فقط حلقه‌های من")}</option>
-              <option value="chat_contacts">{tx("People I chat with", "Personen, mit denen ich chatte", "کسانی که با آن‌ها چت می‌کنم")}</option>
-              <option value="city">{tx("Everyone in my city", "Alle in meiner Stadt", "همه در شهر من")}</option>
-            </select>
-          </label>
-
-          <label className="grid gap-1.5 text-sm font-semibold text-neutral-800">
-            {tx("Message access preference", "Nachrichten-Zugriffs-Einstellung", "ترجیح دسترسی پیام")}
-            <select
-              value={privacy.whoCanMessage}
-              onChange={(e) =>
-                updatePrivacy({
-                  ...privacy,
-                  whoCanMessage: e.target.value as MessageAccessValue,
-                })
-              }
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2.5 text-sm text-neutral-800 outline-none focus:border-emerald-400"
-            >
-              <option value="my_circles">{tx("Only my circles", "Nur meine Circles", "فقط حلقه‌های من")}</option>
-              <option value="shared_circles">{tx("Anyone in shared circles", "Jeder in gemeinsamen Circles", "افراد در حلقه‌های مشترک")}</option>
-              <option value="anyone">{tx("Anyone", "Jeder", "همه")}</option>
-            </select>
-          </label>
-
-          <div className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2.5">
-            <div>
-                <div className="text-sm font-semibold text-neutral-900">{tx("Online status preference", "Online-Status-Einstellung", "ترجیح وضعیت آنلاین")}</div>
-                <div className="text-xs text-neutral-500">
+          <section className={`settings-panel${activePanel === "connected" ? " is-active" : ""}`} id="panel-connected">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Connected Apps", "Verbundene Apps", "برنامه‌های متصل")}</h2>
+                <p className="panel-sub">
                   {tx(
-                    "Saved on this device. Presence visibility is not fully controlled by this toggle yet.",
-                    "Wird auf diesem Gerat gespeichert. Die Sichtbarkeit der Anwesenheit wird noch nicht vollstandig von diesem Schalter gesteuert.",
-                    "روی همین دستگاه ذخیره می‌شود. نمایش حضور هنوز به‌طور کامل توسط این سوییچ کنترل نمی‌شود."
+                    "All providers are locked until backend OAuth linking is released.",
+                    "Alle Anbieter bleiben gesperrt, bis OAuth-Backend-Linking live ist.",
+                    "همه ارائه‌دهنده‌ها تا زمان آماده شدن اتصال OAuth در بک‌اند قفل هستند."
                   )}
+                </p>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <Link2 size={14} />
+                OAuth
+              </div>
+              {([
+                { key: "google", label: "Google", desc: "Sign in" },
+                { key: "linkedin", label: "LinkedIn", desc: "Professional profile" },
+                { key: "discord", label: "Discord", desc: "Community identity" },
+                { key: "apple", label: "Apple", desc: "Private relay sign in" },
+              ] as const).map((app) => {
+                return (
+                  <div key={app.key} className="settings-row">
+                    <div className="row-left">
+                      <div className="row-label">{app.label}</div>
+                      <div className="row-desc">{app.desc}</div>
+                    </div>
+                    <div className="row-right">
+                      <button type="button" className="settings-soft-btn locked" disabled>
+                        <Lock size={13} />
+                        {tx("Locked", "Gesperrt", "قفل")}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className={`settings-panel${activePanel === "account" ? " is-active" : ""}`} id="panel-account">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Account", "Konto", "حساب")}</h2>
+                <p className="panel-sub">{tx("Email, password, and security", "E-Mail, Passwort und Sicherheit", "ایمیل، رمز عبور و امنیت")}</p>
+              </div>
+            </div>
+
+            <div className="settings-block">
+              <div className="settings-block-title">
+                <Lock size={14} />
+                {tx("Status", "Status", "وضعیت")}
+              </div>
+              <div className="status-indicator">
+                <span className="status-dot" />
+                {tx("Account active and protected", "Konto aktiv und geschützt", "حساب فعال و محافظت‌شده")}
+              </div>
+
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Email", "E-Mail", "ایمیل")}</div>
+                  <div className="row-desc">{user?.email || "No email"}</div>
+                </div>
+                <div className="row-right">
+                  <Mail size={16} />
                 </div>
               </div>
-            <Toggle
-              checked={privacy.showOnlineStatus}
-              onClick={() =>
-                updatePrivacy({
-                  ...privacy,
-                  showOnlineStatus: !privacy.showOnlineStatus,
-                })
-              }
-              ariaLabel="Toggle online status"
-            />
-          </div>
-        </div>
 
-        <div className="mt-4 rounded-2xl border border-neutral-200 p-3">
-            <div className="mb-2 inline-flex items-center gap-1.5 text-sm font-semibold text-neutral-900">
-              <Users className="h-4 w-4 text-neutral-500" />
-              {tx("Blocked users", "Blockierte Nutzer", "کاربران مسدود شده")}
-            </div>
-          {blockedLoading ? (
-              <div className="text-xs text-neutral-500">{tx("Loading blocked users...", "Blockierte Nutzer werden geladen...", "در حال بارگذاری کاربران مسدود شده...")}</div>
-            ) : blockedUsers.length === 0 ? (
-              <div className="text-sm text-neutral-500">{tx("No blocked users.", "Keine blockierten Nutzer.", "کاربر مسدود شده‌ای وجود ندارد.")}</div>
-          ) : (
-            <div className="space-y-2">
-              {blockedUsers.map((item) => (
-                <div key={item.userId} className="flex items-center justify-between rounded-xl border border-neutral-200 px-2.5 py-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <div className="h-9 w-9 overflow-hidden rounded-full bg-neutral-200">
-                      <img
-                        src={getAvatarUrl(item.avatarUrl, item.userId)}
-                        alt={item.name}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                    <span className="truncate text-sm font-semibold text-neutral-800">{item.name}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => unblockUser(item.userId)}
-                    disabled={unblockBusyId === item.userId}
-                    className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-semibold text-neutral-700 hover:border-neutral-300 disabled:opacity-60"
-                  >
-                    {unblockBusyId === item.userId
-                      ? tx("Unblocking...", "Wird entsperrt...", "در حال رفع مسدودیت...")
-                      : tx("Unblock", "Entsperren", "رفع مسدودیت")}
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Password", "Passwort", "رمز عبور")}</div>
+                  <div className="row-desc">{tx("Send a reset link by email", "Reset-Link per E-Mail senden", "ارسال لینک بازنشانی با ایمیل")}</div>
+                </div>
+                <div className="row-right">
+                  <button type="button" className="settings-soft-btn" onClick={() => void sendPasswordReset()} disabled={passwordBusy}>
+                    {passwordBusy ? tx("Sending...", "Senden...", "در حال ارسال...") : tx("Send reset link", "Reset-Link senden", "ارسال لینک بازنشانی")}
                   </button>
                 </div>
-              ))}
+              </div>
+
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Language", "Sprache", "زبان")}</div>
+                </div>
+                <div className="row-right">
+                  <select className="settings-select" value={language} onChange={(e) => void updateLanguage(e.target.value as LanguageValue)}>
+                    <option value="en">{tx("English", "Englisch", "انگلیسی")}</option>
+                    <option value="de">{tx("German", "Deutsch", "آلمانی")}</option>
+                    <option value="fa">{tx("Persian", "Persisch", "فارسی")}</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="settings-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Log out", "Abmelden", "خروج از حساب")}</div>
+                </div>
+                <div className="row-right">
+                  <button type="button" className="settings-soft-btn" onClick={() => void logout()} disabled={logoutBusy}>
+                    <LogOut size={14} />
+                    {logoutBusy ? tx("Logging out...", "Abmelden...", "در حال خروج...") : tx("Log out", "Abmelden", "خروج")}
+                  </button>
+                </div>
+              </div>
             </div>
-          )}
-        </div>
+          </section>
 
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <a
-            href="mailto:support@meincircles.com?subject=Report%20a%20problem"
-            className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
-          >
-            {tx("Report a problem", "Problem melden", "گزارش مشکل")}
-            <ChevronRight className="h-4 w-4 text-neutral-400" />
-          </a>
-          <button
-            type="button"
-            onClick={() => navigate("/legal")}
-            className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
-          >
-            {tx("Community guidelines", "Community-Richtlinien", "قوانین جامعه")}
-            <ChevronRight className="h-4 w-4 text-neutral-400" />
-          </button>
-        </div>
-      </section>
-
-      <section className="rounded-3xl border border-neutral-200 bg-white p-4 shadow-sm md:p-5">
-        <div className="mb-3 inline-flex items-center gap-2">
-          <Lock className="h-4 w-4 text-emerald-600" />
-          <h2 className="text-xl font-bold text-neutral-900">{tx("Account", "Konto", "حساب")}</h2>
-        </div>
-
-        <div className="space-y-2">
-          <div className="flex items-center justify-between rounded-xl border border-neutral-200 px-3 py-2.5">
-            <div className="inline-flex items-center gap-2 text-sm font-semibold text-neutral-800">
-              <Mail className="h-4 w-4 text-neutral-500" />
-              {tx("Email", "E-Mail", "ایمیل")}
+          <section className={`settings-panel${activePanel === "danger" ? " is-active" : ""}`} id="panel-danger">
+            <div className="panel-hero">
+              <div>
+                <h2 className="panel-heading">{tx("Danger Zone", "Gefahrenbereich", "بخش خطر")}</h2>
+                <p className="panel-sub">{tx("Irreversible actions — proceed with care", "Unumkehrbare Aktionen", "اقدامات غیرقابل بازگشت")}</p>
+              </div>
             </div>
-            <span className="max-w-[65%] truncate text-sm text-neutral-600">{user?.email || "No email"}</span>
-          </div>
 
-          <button
-            type="button"
-            onClick={sendPasswordReset}
-            disabled={passwordBusy}
-            className="flex w-full items-center justify-between rounded-xl border border-neutral-200 px-3 py-2.5 text-sm font-semibold text-neutral-800 hover:bg-neutral-50 disabled:opacity-60"
-          >
-            {tx("Change password", "Passwort andern", "تغییر رمز عبور")}
-            <span className="text-xs text-neutral-500">
-              {passwordBusy ? tx("Sending...", "Wird gesendet...", "در حال ارسال...") : tx("Send reset link", "Reset-Link senden", "ارسال لینک بازنشانی")}
-            </span>
-          </button>
+            <div className="settings-block danger-block">
+              <div className="settings-block-title">
+                <AlertTriangle size={14} />
+                {tx("Permanent actions", "Permanente Aktionen", "اقدامات دائمی")}
+              </div>
 
-          <label className="grid gap-1.5 rounded-xl border border-neutral-200 px-3 py-2.5 text-sm font-semibold text-neutral-800">
-            {tx("Language", "Sprache", "زبان")}
-            <select
-              value={language}
-              onChange={(e) => updateLanguage(e.target.value as LanguageValue)}
-              className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-800 outline-none focus:border-emerald-400"
-            >
-              <option value="en">{tx("English", "Englisch", "انگلیسی")}</option>
-              <option value="de">{tx("German", "Deutsch", "آلمانی")}</option>
-              <option value="fa">{tx("Persian", "Persisch", "فارسی")}</option>
-            </select>
-          </label>
-        </div>
+              <div className="danger-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Leave all circles", "Alle Circles verlassen", "خروج از همه حلقه‌ها")}</div>
+                  <div className="row-desc">
+                    {tx(
+                      "Leaves every joined circle. Circles you host are kept.",
+                      "Verlässt alle beigetretenen Circles. Gehostete Circles bleiben bestehen.",
+                      "از همه حلقه‌هایی که عضو هستید خارج می‌شود. حلقه‌هایی که میزبانشان هستید حفظ می‌شوند."
+                    )}
+                  </div>
+                </div>
+                <div className="row-right">
+                  <button type="button" onClick={() => void leaveAllCircles()} disabled={leaveAllBusy} className="settings-danger-btn soft">
+                    {leaveAllBusy ? tx("Leaving...", "Verlassen...", "در حال خروج...") : tx("Leave all", "Alle verlassen", "خروج از همه")}
+                  </button>
+                </div>
+              </div>
 
-        <div className="mt-4 rounded-2xl border border-red-200 bg-red-50/80 p-3">
-          <div className="mb-3 inline-flex items-center gap-2 text-sm font-bold text-red-700">
-            <AlertTriangle className="h-4 w-4" />
-            {tx("Danger zone", "Gefahrenbereich", "بخش خطرناک")}
-          </div>
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={logout}
-              disabled={logoutBusy}
-              className="flex w-full items-center justify-between rounded-xl border border-red-200 bg-white px-3 py-2.5 text-sm font-semibold text-red-700 hover:bg-red-50 disabled:opacity-60"
-            >
-              <span className="inline-flex items-center gap-2">
-                <LogOut className="h-4 w-4" />
-                {tx("Log out", "Abmelden", "خروج از حساب")}
-              </span>
-              <ChevronRight className="h-4 w-4" />
-            </button>
+              <div className="danger-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Log out", "Abmelden", "خروج از حساب")}</div>
+                  <div className="row-desc">{tx("Sign out from this device.", "Von diesem Gerät abmelden.", "از این دستگاه خارج شوید.")}</div>
+                </div>
+                <div className="row-right">
+                  <button type="button" onClick={() => void logout()} disabled={logoutBusy} className="settings-danger-btn soft">
+                    <LogOut size={14} />
+                    {logoutBusy ? tx("Logging out...", "Abmelden...", "در حال خروج...") : tx("Log out", "Abmelden", "خروج")}
+                  </button>
+                </div>
+              </div>
 
-            <button
-              type="button"
-              onClick={deleteAccount}
-              disabled={deleteBusy}
-              className="flex w-full items-center justify-between rounded-xl border border-red-300 bg-red-600 px-3 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60"
-            >
-              <span className="inline-flex items-center gap-2">
-                <Trash2 className="h-4 w-4" />
-                {deleteBusy ? tx("Deleting...", "Wird geloscht...", "در حال حذف...") : tx("Delete account", "Konto loschen", "حذف حساب")}
-              </span>
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-      </section>
-
+              <div className="danger-row">
+                <div className="row-left">
+                  <div className="row-label">{tx("Delete account", "Konto löschen", "حذف حساب")}</div>
+                  <div className="row-desc">
+                    {tx(
+                      "Permanently removes your account, chats, and groups you created.",
+                      "Löscht dein Konto, Chats und erstellte Gruppen dauerhaft.",
+                      "حساب، چت‌ها و گروه‌های ساخته‌شده توسط شما را برای همیشه حذف می‌کند."
+                    )}
+                  </div>
+                </div>
+                <div className="row-right">
+                  <button type="button" onClick={() => void deleteAccount()} disabled={deleteBusy} className="settings-danger-btn">
+                    <Trash2 size={14} />
+                    {deleteBusy ? tx("Deleting...", "Wird gelöscht...", "در حال حذف...") : tx("Delete account", "Konto löschen", "حذف حساب")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }

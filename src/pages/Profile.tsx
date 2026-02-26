@@ -10,7 +10,7 @@ import {
   Ellipsis,
   MapPin,
   MessageCircle,
-  Pencil,
+  Settings,
   Star,
   Users,
   UserPlus,
@@ -19,6 +19,7 @@ import {
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/App";
 import { useProfile } from "@/hooks/useProfile";
+import { useProfileStats } from "@/hooks/useProfileStats";
 import { getAvatarUrl } from "@/lib/avatar";
 
 type CircleCard = {
@@ -209,6 +210,13 @@ function buildMentionRegex(name: string | null | undefined): RegExp | null {
   return new RegExp(`@\\s*(?:${pattern})\\b`, "i");
 }
 
+function cleanProfileValue(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function splitVenueDetails(place: string | null | undefined, fallbackVenue: string | null | undefined): { venue: string; address: string } {
   const raw = (place || "").trim();
   const fallback = (fallbackVenue || "").trim();
@@ -247,13 +255,17 @@ export default function Profile() {
   const { user } = useAuth();
   const uid = user?.id ?? null;
   const { data: profile, isLoading, error } = useProfile(uid);
+  const {
+    stats,
+    loading: statsLoading,
+    error: statsError,
+  } = useProfileStats(uid);
 
   const [memberSince, setMemberSince] = useState("2024");
   const [circles, setCircles] = useState<CircleCard[]>([]);
   const [nextMeetup, setNextMeetup] = useState<MeetupCard | null>(null);
   const [recentMeetups, setRecentMeetups] = useState<RecentMeetup[]>([]);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
-  const [meetupsCount, setMeetupsCount] = useState(0);
   const [loadingPage, setLoadingPage] = useState(true);
   const [firstStepsState, setFirstStepsState] = useState<boolean[]>([false, false, false, false]);
   const [showFirstStepsBanner, setShowFirstStepsBanner] = useState(false);
@@ -377,7 +389,6 @@ export default function Profile() {
         setNextMeetup(null);
         setRecentMeetups([]);
         setActivity([]);
-        setMeetupsCount(0);
         setLoadingPage(false);
         return;
       }
@@ -402,7 +413,6 @@ export default function Profile() {
         setNextMeetup(null);
         setRecentMeetups([]);
         setActivity([]);
-        setMeetupsCount(0);
         setLoadingPage(false);
         return;
       }
@@ -776,7 +786,6 @@ export default function Profile() {
       setCircles(builtCircles);
       setNextMeetup(meetupData);
       setRecentMeetups(pastMeetups);
-      setMeetupsCount(sortedEvents.filter((evt: any) => !!evt.starts_at).length);
       setLoadingPage(false);
     };
 
@@ -787,7 +796,6 @@ export default function Profile() {
         setNextMeetup(null);
         setRecentMeetups([]);
         setActivity([]);
-        setMeetupsCount(0);
         setLoadingPage(false);
       }
     });
@@ -797,9 +805,6 @@ export default function Profile() {
     };
   }, [uid]);
 
-  const ratingValue = useMemo(() => Number(profile?.rating_avg ?? 0), [profile?.rating_avg]);
-  const ratingCount = useMemo(() => Number(profile?.rating_count ?? 0), [profile?.rating_count]);
-
   useEffect(() => {
     if (!copiedPublicId) return;
     const timer = window.setTimeout(() => setCopiedPublicId(false), 1800);
@@ -807,7 +812,7 @@ export default function Profile() {
   }, [copiedPublicId]);
 
   const copyPublicId = async () => {
-    const value = String(profile?.public_id || "").trim();
+    const value = cleanProfileValue(profile?.public_id);
     if (!value) return;
     const text = `@${value}`;
     try {
@@ -831,7 +836,26 @@ export default function Profile() {
   };
 
   if (isLoading || loadingPage) {
-    return <div className="mx-auto w-full max-w-6xl px-4 pt-24 text-sm text-neutral-500">Loading profile…</div>;
+    return (
+      <div className="mx-auto w-full max-w-6xl px-4 pb-24 pt-16 md:px-6 md:pb-28 md:pt-20">
+        <div className="space-y-6 animate-pulse">
+          <div className="h-14 rounded-2xl border border-slate-200 bg-white" />
+          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+            <div className="h-32 bg-slate-100" />
+            <div className="-mt-10 px-5 pb-5">
+              <div className="h-20 w-20 rounded-full border-4 border-white bg-slate-200" />
+              <div className="mt-4 h-6 w-52 rounded bg-slate-200" />
+              <div className="mt-2 h-4 w-28 rounded bg-slate-200" />
+              <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="h-20 rounded-2xl bg-slate-100" />
+                <div className="h-20 rounded-2xl bg-slate-100" />
+                <div className="h-20 rounded-2xl bg-slate-100" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (error || !profile) {
@@ -839,66 +863,119 @@ export default function Profile() {
   }
 
   const upcomingCircles = circles.filter((circle) => !!circle.startsAt || circle.canVoteNow);
+  const circlesCount = stats.circlesCount;
+  const meetupsCount = stats.meetupsCount;
+  const trustScore = stats.trustScore;
+  const ratingCount = stats.ratingCount;
+  const displayPublicId = cleanProfileValue(profile.public_id).replace(/^@+/, "");
+  const displayName = cleanProfileValue(profile.name) || (displayPublicId ? `@${displayPublicId}` : "Circle Member");
+  const displayCity = cleanProfileValue(profile.city) || "Set your city";
+  const trustLabel =
+    trustScore != null && ratingCount != null
+      ? `★ ${trustScore.toFixed(1)} (${ratingCount} rating${ratingCount === 1 ? "" : "s"})`
+      : "—";
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 pb-24 pt-16 md:px-6 md:pb-28 md:pt-20">
       <div className="space-y-6">
-        <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
-          <div className="flex items-center gap-3">
-            <div className="h-16 w-16 shrink-0 overflow-hidden rounded-full border border-white bg-neutral-300 shadow-sm">
-              <img
-                src={getAvatarUrl(profile.avatar_url, uid || user?.email || "circles-user")}
-                alt="Profile"
-                className="h-full w-full object-cover"
-              />
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-2xl font-bold tracking-tight text-neutral-900">{profile.name || "Circle Member"}</div>
-              <div className="text-sm text-neutral-600">{profile.city || "Set your city"}</div>
-              {profile.public_id ? (
-                <div className="mt-1 inline-flex items-center gap-2">
-                  <span className="rounded-full border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-xs font-semibold text-neutral-700">
-                    @{profile.public_id}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void copyPublicId()}
-                    className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-neutral-700 hover:border-neutral-300"
-                  >
-                    {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                    {copiedPublicId ? "Copied" : "Copy ID"}
-                  </button>
-                </div>
-              ) : null}
-              <div className="mt-1 text-xs text-neutral-500">Member since {memberSince}</div>
-            </div>
+        <section className="sticky top-3 z-20 rounded-2xl border border-slate-200/80 bg-white/85 px-4 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.08)] backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-3">
+            <Link to="/" className="inline-flex items-center gap-3">
+              <span className="relative grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-blue-50 to-emerald-50">
+                <span className="absolute inset-[6px] rounded-full border border-emerald-500/80" />
+                <span className="absolute inset-[3px] rounded-full border border-blue-600/70" />
+                <span className="absolute inset-0 rounded-full border border-emerald-500/40" />
+              </span>
+              <span className="font-['Fraunces'] text-2xl font-bold tracking-tight text-slate-900">Circles</span>
+            </Link>
 
             <button
+              type="button"
               onClick={() => navigate("/settings")}
-              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-xl border border-neutral-300 bg-white px-3 text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-blue-200 bg-white text-blue-700 hover:bg-blue-50"
+              aria-label="Open settings"
+              title="Settings"
             >
-              <Pencil className="h-4 w-4" />
-              Settings
+              <Settings className="h-5 w-5" />
             </button>
           </div>
+        </section>
 
-          <div className="mt-5 grid grid-cols-3 border-t border-neutral-200 pt-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-neutral-900">{circles.length}</div>
-              <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">Circles</div>
-            </div>
-            <div className="border-x border-neutral-200 text-center">
-              <div className="text-2xl font-bold text-neutral-900">{meetupsCount}</div>
-              <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">Meetups</div>
-            </div>
-            <div className="text-center">
-              <div className="inline-flex items-center gap-1 text-2xl font-bold text-neutral-900">
-                <Star className="h-4 w-4 fill-emerald-500 text-emerald-500" />
-                {ratingValue.toFixed(1)}
+        <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,23,42,0.10)]">
+          <div className="relative h-36 overflow-hidden border-b border-slate-200">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_20%,rgba(29,78,216,0.24),transparent_45%),radial-gradient(circle_at_82%_18%,rgba(34,197,94,0.18),transparent_42%),linear-gradient(120deg,#eef4ff,#f8fbff)]" />
+            <div className="absolute -bottom-8 left-[28%] h-28 w-28 rounded-full bg-blue-300/35 blur-2xl" />
+            <div className="absolute right-[12%] top-2 h-24 w-24 rounded-full bg-emerald-300/35 blur-2xl" />
+          </div>
+
+          <div className="relative z-10 px-5 pb-5 md:px-6">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="relative -mt-12 z-20 h-20 w-20 shrink-0 overflow-hidden rounded-full border-4 border-white bg-slate-200 shadow-[0_10px_24px_rgba(15,23,42,0.18)]">
+                  <img
+                    src={getAvatarUrl(profile.avatar_url, uid || user?.email || "circles-user")}
+                    alt="Profile"
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+
+                <div className="min-w-0 pt-3">
+                  <div className="flex max-w-full items-center gap-2">
+                    <div className="truncate text-2xl font-bold tracking-tight text-slate-900">{displayName}</div>
+                    <span className="inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500" aria-label="Verified trust signal" />
+                  </div>
+                  <div className="text-sm text-slate-600">{displayCity}</div>
+                  {displayPublicId ? (
+                    <div className="mt-1 inline-flex items-center gap-2">
+                      <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">
+                        @{displayPublicId}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void copyPublicId()}
+                        className="inline-flex items-center gap-1 rounded-full border border-blue-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-blue-700 hover:bg-blue-50"
+                      >
+                        {copiedPublicId ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                        {copiedPublicId ? "Copied" : "Copy ID"}
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="mt-1 text-xs text-slate-500">Member since {memberSince}</div>
+                </div>
               </div>
-              <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">Trust Score</div>
+
             </div>
+
+            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Circles</div>
+                <div className="mt-2 text-2xl font-bold text-slate-900">
+                  {statsLoading ? <span className="inline-block h-7 w-14 animate-pulse rounded bg-slate-200" /> : circlesCount ?? "—"}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Meetups</div>
+                <div className="mt-2 text-2xl font-bold text-slate-900">
+                  {statsLoading ? <span className="inline-block h-7 w-14 animate-pulse rounded bg-slate-200" /> : meetupsCount ?? "—"}
+                </div>
+              </div>
+              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/70 px-4 py-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Trust Score</div>
+                <div className="mt-2 text-lg font-bold text-emerald-700">
+                  {statsLoading ? (
+                    <span className="inline-block h-6 w-28 animate-pulse rounded bg-emerald-200/70" />
+                  ) : (
+                    trustLabel
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {statsError ? (
+              <p className="mt-3 text-xs font-medium text-slate-500">
+                Live stats are refreshing. Some values may appear as “—” temporarily.
+              </p>
+            ) : null}
           </div>
         </section>
 
@@ -929,10 +1006,10 @@ export default function Profile() {
           </section>
         )}
 
-        <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-bold tracking-tight text-neutral-900">Next Meetup</h2>
-            <Ellipsis className="h-5 w-5 text-neutral-500" />
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">Next Meetups</h2>
+            <Ellipsis className="h-5 w-5 text-slate-500" />
           </div>
 
           {upcomingCircles.length ? (
@@ -943,24 +1020,30 @@ export default function Profile() {
                   <Link
                     key={`meetup-${circle.id}`}
                     to={circle.canVoteNow ? `/group/${circle.id}#poll` : `/group/${circle.id}`}
-                    className="w-[88%] shrink-0 snap-start rounded-2xl border border-neutral-200 bg-neutral-50 p-4 shadow-[0_6px_18px_rgba(15,23,42,0.06)] hover:bg-white sm:w-[340px]"
+                    className="w-[88%] shrink-0 snap-start rounded-2xl border border-slate-200 bg-slate-50 p-4 shadow-[0_6px_18px_rgba(15,23,42,0.06)] hover:bg-white sm:w-[340px]"
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <div className="text-lg font-semibold text-neutral-900">{fmtWeekdayTime(circle.startsAt)}</div>
+                      <div className="text-lg font-semibold text-slate-900">{fmtWeekdayTime(circle.startsAt)}</div>
                       {circle.statusLabel && (
-                        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${circle.canVoteNow ? "bg-amber-50 text-amber-700 border border-amber-200" : "bg-emerald-50 text-emerald-700 border border-emerald-200"}`}>
+                        <span
+                          className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+                            circle.canVoteNow
+                              ? "border-blue-200 bg-blue-50 text-blue-700"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          }`}
+                        >
                           {circle.statusLabel}
                         </span>
                       )}
                     </div>
-                    <div className="mt-2 text-base font-semibold text-neutral-900">{venue.venue}</div>
-                    <div className="mt-1 flex items-center gap-2 text-sm text-neutral-700">
-                      <MapPin className="h-4 w-4 text-neutral-500" />
+                    <div className="mt-2 text-base font-semibold text-slate-900">{venue.venue}</div>
+                    <div className="mt-1 flex items-center gap-2 text-sm text-slate-700">
+                      <MapPin className="h-4 w-4 text-slate-500" />
                       <span className="truncate">{venue.address}</span>
                     </div>
 
                     <div className="mt-4 flex items-center justify-between gap-3">
-                      <span className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white">
+                      <span className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white">
                         View Circle
                       </span>
 
@@ -972,12 +1055,12 @@ export default function Profile() {
                                 key={`${circle.id}-${avatar}-${idx}`}
                                 src={avatar}
                                 alt="Member"
-                                className="h-8 w-8 rounded-full border-2 border-neutral-100 object-cover"
+                                className="h-8 w-8 rounded-full border-2 border-white object-cover"
                               />
                             ))}
                           </div>
                         )}
-                        <div className="rounded-full border border-neutral-200 bg-white px-2.5 py-1 text-xs font-semibold text-neutral-700">
+                        <div className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700">
                           {Math.max(0, circle.goingCount || 0)}/{Math.max(0, circle.members || 0)} are going
                         </div>
                       </div>
@@ -991,7 +1074,7 @@ export default function Profile() {
               <p className="text-sm text-neutral-600">You don't have a meetup yet.</p>
               <Link
                 to="/browse"
-                className="inline-flex items-center justify-center rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700"
+                className="inline-flex items-center justify-center rounded-xl bg-blue-600 px-4 py-2 text-sm font-bold text-white hover:bg-blue-700"
               >
                 <Users className="mr-2 h-4 w-4" />
                 Join a circle near you
@@ -1000,10 +1083,10 @@ export default function Profile() {
           )}
         </section>
 
-        <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-bold tracking-tight text-neutral-900">My Circles</h2>
-            <Link to="/groups/mine" className="inline-flex items-center gap-1 text-sm font-semibold text-emerald-700 hover:text-emerald-900">
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">My Circles</h2>
+            <Link to="/groups/mine" className="inline-flex items-center gap-1 text-sm font-semibold text-blue-700 hover:text-blue-900">
               View All
               <ChevronRight className="h-4 w-4" />
             </Link>
@@ -1044,9 +1127,9 @@ export default function Profile() {
           )}
         </section>
 
-        <section className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
           <div className="mb-4">
-            <h2 className="text-xl font-bold tracking-tight text-neutral-900">Recent Meetups</h2>
+            <h2 className="text-xl font-bold tracking-tight text-slate-900">Recent Meetups</h2>
           </div>
 
           {recentMeetups.length ? (
@@ -1075,8 +1158,8 @@ export default function Profile() {
                   <div className="shrink-0 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
                     <span className="inline-flex items-center gap-1">
                       <Star className="h-3.5 w-3.5 fill-emerald-600 text-emerald-600" />
-                      {ratingValue.toFixed(1)}
-                      {ratingCount > 0 ? ` (${ratingCount})` : ""}
+                      {trustScore != null ? trustScore.toFixed(1) : "—"}
+                      {ratingCount != null ? ` (${ratingCount})` : ""}
                     </span>
                   </div>
                 </Link>
