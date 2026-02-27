@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDown, Filter, Loader2, LocateFixed, MapPin } from "lucide-react";
+import { Bell, ChevronDown, Filter, Loader2, LocateFixed, MapPin, RefreshCw, Search } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { geocodePlace, reverseGeocodeCity } from "@/lib/geocode";
 import { formatDistanceKm, haversineKm, isLocationStale, movedMoreThanMeters, type LatLng } from "@/lib/location";
 import { GAME_LIST } from "@/lib/constants";
 import { fetchGroupRatingSnapshots, type GroupRatingSnapshot } from "@/lib/groupRatings";
+import "./Browse.css";
 
 type LocationMode = "gps" | "profile_city";
 
@@ -72,20 +73,6 @@ type GroupPollRow = {
   status: string | null;
   closes_at: string | null;
 };
-
-type GameStatsRow = {
-  game: string | null;
-  group_count: number | null;
-  member_count: number | null;
-};
-
-type GameStatsMap = Record<
-  string,
-  {
-    groupCount: number;
-    memberTotal: number;
-  }
->;
 
 type ActivityBadge = "New" | "Hot" | "Planning" | null;
 
@@ -322,30 +309,6 @@ async function queryGroupsByGps(coords: LatLng, radiusKm: number): Promise<Group
     .filter(Boolean) as GroupRow[];
 }
 
-async function fetchGameStatsMap(): Promise<GameStatsMap> {
-  const response = await supabase.rpc("get_game_stats");
-  if (response.error) {
-    const code = String(response.error.code || "");
-    // Silently ignore when RPC does not exist on older DBs.
-    if (code !== "42883") {
-      console.warn("[browse] get_game_stats rpc failed", response.error.message);
-    }
-    return {};
-  }
-
-  const rows = (response.data || []) as GameStatsRow[];
-  const map: GameStatsMap = {};
-  rows.forEach((row) => {
-    const key = normalizeLoose(row.game);
-    if (!key) return;
-    map[key] = {
-      groupCount: Math.max(0, Number(row.group_count || 0)),
-      memberTotal: Math.max(0, Number(row.member_count || 0)),
-    };
-  });
-  return map;
-}
-
 function deriveBadge(card: Pick<ActivityCard, "newGroups" | "meetupWeekCount" | "planningGroups" | "activeScore">): ActivityBadge {
   if (card.newGroups >= 2) return "New";
   if (card.meetupWeekCount >= 2 || card.activeScore >= 20) return "Hot";
@@ -381,9 +344,8 @@ function buildActivityCards(args: {
   catalog: ActivityCatalogItem[];
   activeCoords: LatLng | null;
   effectiveCity: string | null;
-  statsByGame: GameStatsMap;
 }): ActivityCard[] {
-  const { groups, members, events, polls, catalog, activeCoords, effectiveCity, statsByGame } = args;
+  const { groups, members, events, polls, catalog, activeCoords, effectiveCity } = args;
   const nowTs = Date.now();
   const weekCutoff = nowTs + SEVEN_DAYS_MS;
 
@@ -521,25 +483,10 @@ function buildActivityCards(args: {
     });
   });
 
-  return Array.from(activityBySlug.values()).map((card) => {
-    const stats =
-      statsByGame[normalizeLoose(card.key)] ||
-      statsByGame[normalizeLoose(card.slug)] ||
-      null;
-
-    const withCounts = stats
-      ? {
-          ...card,
-          groupCount: stats.groupCount,
-          memberTotal: stats.memberTotal,
-        }
-      : card;
-
-    return {
-      ...withCounts,
-      badge: deriveBadge(withCounts),
-    };
-  });
+  return Array.from(activityBySlug.values()).map((card) => ({
+    ...card,
+    badge: deriveBadge(card),
+  }));
 }
 
 function sortActivities(input: ActivityCard[], sortBy: SortOption): ActivityCard[] {
@@ -586,6 +533,28 @@ function sortActivities(input: ActivityCard[], sortBy: SortOption): ActivityCard
   return rows;
 }
 
+function toneClassForCategory(category: string | null | undefined): string {
+  const value = normalizeLoose(category);
+  if (value.includes("game") || value.includes("board") || value.includes("card")) return "tile-games";
+  if (value.includes("sport") || value.includes("run") || value.includes("hike") || value.includes("outdoor")) {
+    return "tile-outdoors";
+  }
+  if (value.includes("food") || value.includes("coffee") || value.includes("drink")) return "tile-food";
+  if (value.includes("creative") || value.includes("art") || value.includes("music")) return "tile-creative";
+  if (value.includes("language") || value.includes("study") || value.includes("book")) return "tile-learning";
+  return "tile-social";
+}
+
+function iconForCategory(label: string): string {
+  const value = normalizeLoose(label);
+  if (value.includes("game")) return "🎲";
+  if (value.includes("sport") || value.includes("outdoor")) return "🏃";
+  if (value.includes("food")) return "🍜";
+  if (value.includes("creative") || value.includes("art")) return "🎨";
+  if (value.includes("language") || value.includes("learning")) return "🗣️";
+  return "✨";
+}
+
 export default function BrowsePage() {
   const isMobile = useIsMobile();
 
@@ -619,6 +588,8 @@ export default function BrowsePage() {
   const [rawActivities, setRawActivities] = useState<ActivityCard[]>([]);
 
   const [sortBy, setSortBy] = useState<SortOption>(DEFAULT_SORT);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeCategory, setActiveCategory] = useState("all");
   const [filterOpen, setFilterOpen] = useState(false);
   const [locationOpen, setLocationOpen] = useState(false);
   const [manualCityInput, setManualCityInput] = useState("");
@@ -628,6 +599,7 @@ export default function BrowsePage() {
 
   const locationPanelRef = useRef<HTMLDivElement | null>(null);
   const filterPanelRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const profileCoords = useMemo<LatLng | null>(() => {
     if (typeof profileLocation.lat === "number" && typeof profileLocation.lng === "number") {
@@ -659,6 +631,71 @@ export default function BrowsePage() {
     () => sortedActivities.filter((item) => item.badge === "Hot" || item.badge === "New").slice(0, 3),
     [sortedActivities]
   );
+
+  const categoryTabs = useMemo(() => {
+    const counts = new Map<string, { label: string; count: number }>();
+    sortedActivities.forEach((item) => {
+      const raw = String(item.category || "Social");
+      const key = slugify(raw) || "social";
+      const entry = counts.get(key) || { label: raw, count: 0 };
+      entry.count += 1;
+      counts.set(key, entry);
+    });
+
+    const tabs = Array.from(counts.entries())
+      .map(([key, value]) => ({ key, label: value.label, count: value.count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    return [{ key: "all", label: "All", count: sortedActivities.length }, ...tabs];
+  }, [sortedActivities]);
+
+  const visibleActivities = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return sortedActivities.filter((item) => {
+      const categoryKey = slugify(item.category || "Social") || "social";
+      const categoryMatch = activeCategory === "all" || categoryKey === activeCategory;
+      const searchMatch =
+        q.length === 0 ||
+        String(item.name || "").toLowerCase().includes(q) ||
+        String(item.category || "").toLowerCase().includes(q);
+      return categoryMatch && searchMatch;
+    });
+  }, [activeCategory, searchQuery, sortedActivities]);
+
+  const featuredActivities = useMemo(() => {
+    const picks: ActivityCard[] = [];
+    const seen = new Set<string>();
+    const push = (item: ActivityCard | undefined) => {
+      if (!item || seen.has(item.slug)) return;
+      seen.add(item.slug);
+      picks.push(item);
+    };
+    spotlightActivities.forEach((item) => push(item));
+    sortedActivities.forEach((item) => push(item));
+    return picks.slice(0, 3);
+  }, [sortedActivities, spotlightActivities]);
+
+  const heroFeature = featuredActivities[0] || null;
+  const sideFeatures = featuredActivities.slice(1, 3);
+
+  useEffect(() => {
+    if (activeCategory === "all") return;
+    if (!categoryTabs.some((tab) => tab.key === activeCategory)) {
+      setActiveCategory("all");
+    }
+  }, [activeCategory, categoryTabs]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      searchInputRef.current?.focus();
+    };
+
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     if (!locationOpen) return;
@@ -961,10 +998,7 @@ export default function BrowsePage() {
     setLoadError(null);
 
     try {
-      const [allGroups, statsByGame] = await Promise.all([
-        queryRecentGroups(),
-        fetchGameStatsMap(),
-      ]);
+      const allGroups = await queryRecentGroups();
       let groups: GroupRow[] = allGroups;
 
       // Fallbacks for edge cases where broad fetch returns no rows.
@@ -1016,7 +1050,6 @@ export default function BrowsePage() {
         catalog,
         activeCoords,
         effectiveCity,
-        statsByGame,
       });
 
       setRawActivities(nextActivities);
@@ -1042,6 +1075,9 @@ export default function BrowsePage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "group_members" }, () =>
         setRefreshTick((value) => value + 1)
       )
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, () =>
+        setRefreshTick((value) => value + 1)
+      )
       .on("postgres_changes", { event: "*", schema: "public", table: "group_events" }, () =>
         setRefreshTick((value) => value + 1)
       )
@@ -1055,253 +1091,297 @@ export default function BrowsePage() {
     };
   }, []);
 
-  const filterLabel = sortBy === DEFAULT_SORT ? "Filter" : `Filter · ${activeSortLabel}`;
+  const filterLabel = sortBy === DEFAULT_SORT ? "Sort" : activeSortLabel;
+  const locationStatus = usingGps ? "Using GPS" : "Using profile city";
 
   return (
     <>
-      <main className="mx-auto w-full max-w-6xl px-4 pb-28 pt-4">
-        <section className="sticky top-2 z-30 rounded-2xl border border-neutral-200 bg-white/95 p-3 shadow-sm backdrop-blur">
-          <div className="flex items-start gap-2">
-            <div ref={locationPanelRef} className="relative min-w-0 flex-1">
-              <button
-                type="button"
-                onClick={() => setLocationOpen((open) => !open)}
-                className="flex w-full items-start gap-2 rounded-xl border border-neutral-200 bg-white px-3 py-2 text-left transition hover:border-neutral-300"
-              >
-                <MapPin className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold text-neutral-900">{effectiveCity || DEFAULT_CITY}</span>
-                  <span className="block text-xs text-neutral-500">{usingGps ? "Using GPS" : "Using profile city"}</span>
-                </span>
-                <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-neutral-500" />
-              </button>
+      <main className="browse-page">
+        <div className="browse-grain" aria-hidden />
 
-              {!isMobile && locationOpen && (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-40 w-[min(360px,90vw)] rounded-2xl border border-neutral-200 bg-white p-3 shadow-xl">
-                  <button
-                    type="button"
-                    disabled={locationBusy}
-                    onClick={async () => {
-                      setLocationMode("gps");
-                      persistLocationMode("gps");
-                      await refreshLocation(true);
-                      setLocationOpen(false);
-                    }}
-                    className="inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 disabled:opacity-60"
-                  >
-                    <LocateFixed className="h-3.5 w-3.5" />
-                    Use GPS
-                  </button>
+        <div className="browse-shell">
+          <header className="browse-topbar reveal d1">
+            <Link to="/" className="browse-logo">
+              <span className="browse-logo-rings" aria-hidden>
+                <span className="r r1" />
+                <span className="r r2" />
+                <span className="r r3" />
+              </span>
+              <span>Circles</span>
+            </Link>
 
-                  <div className="mt-3 space-y-2">
-                    <label className="block text-xs font-semibold text-neutral-700">Choose city manually</label>
-                    <input
-                      value={manualCityInput}
-                      onChange={(event) => setManualCityInput(event.target.value)}
-                      placeholder="Type a city"
-                      className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-400"
-                    />
-                    <button
-                      type="button"
-                      disabled={locationBusy || manualCityInput.trim().length === 0}
-                      onClick={() => void applyManualCity()}
-                      className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-neutral-800 disabled:opacity-60"
-                    >
-                      Use city
-                    </button>
-                  </div>
-
-                  <div className="mt-3 text-xs text-neutral-500">{usingGps ? "Using GPS" : "Using profile city"}</div>
-                </div>
-              )}
-            </div>
-
-            <button
-              type="button"
-              disabled
-              title="Coming soon"
-              className="shrink-0 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs font-semibold text-neutral-500"
-            >
-              Matching now 🔒
-            </button>
-          </div>
-
-          <div ref={filterPanelRef} className="relative mt-3">
-            <button
-              type="button"
-              onClick={() => setFilterOpen((open) => !open)}
-              className="inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-sm font-semibold text-neutral-900 hover:bg-neutral-50"
-            >
-              <Filter className="h-4 w-4" />
-              {filterLabel}
-              <ChevronDown className="h-4 w-4" />
-            </button>
-
-            {!isMobile && filterOpen && (
-              <div className="absolute left-0 top-[calc(100%+8px)] z-40 w-64 rounded-2xl border border-neutral-200 bg-white p-2 shadow-xl">
-                {SORT_OPTIONS.map((option) => {
-                  const active = option.key === sortBy;
-                  return (
-                    <button
-                      key={option.key}
-                      type="button"
-                      onClick={() => {
-                        setSortBy(option.key);
-                        setFilterOpen(false);
-                      }}
-                      className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
-                        active
-                          ? "bg-neutral-900 text-white"
-                          : "text-neutral-700 hover:bg-neutral-100"
-                      }`}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
+            <div className="browse-top-actions">
+              <div ref={locationPanelRef} className="browse-popover">
                 <button
                   type="button"
-                  onClick={() => {
-                    setSortBy(DEFAULT_SORT);
-                    setFilterOpen(false);
-                  }}
-                  className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-left text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+                  onClick={() => setLocationOpen((open) => !open)}
+                  className="location-pill"
+                  aria-label="Open location picker"
                 >
-                  Reset to default
+                  <MapPin className="h-4 w-4" />
+                  <span className="txt">
+                    <strong>{effectiveCity || DEFAULT_CITY}</strong>
+                    <small>{locationStatus}</small>
+                  </span>
+                  <ChevronDown className="h-4 w-4 chevron" />
                 </button>
-              </div>
-            )}
-          </div>
-        </section>
 
-        {spotlightActivities.length > 0 && (
-          <section className="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-emerald-700">New & Active</div>
-            <div className="mt-1 flex flex-wrap gap-2">
-              {spotlightActivities.map((item) => (
-                <Link
-                  key={item.slug}
-                  to={`/browse/${item.slug}`}
-                  className="rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100"
+                {!isMobile && locationOpen && (
+                  <div className="browse-menu browse-menu-location">
+                    <button
+                      type="button"
+                      disabled={locationBusy}
+                      onClick={async () => {
+                        setLocationMode("gps");
+                        persistLocationMode("gps");
+                        await refreshLocation(true);
+                        setLocationOpen(false);
+                      }}
+                      className="menu-chip"
+                    >
+                      <LocateFixed className="h-3.5 w-3.5" />
+                      Use GPS
+                    </button>
+
+                    <div className="menu-fields">
+                      <label>Choose city manually</label>
+                      <input
+                        value={manualCityInput}
+                        onChange={(event) => setManualCityInput(event.target.value)}
+                        placeholder="Type a city"
+                      />
+                      <button
+                        type="button"
+                        disabled={locationBusy || manualCityInput.trim().length === 0}
+                        onClick={() => void applyManualCity()}
+                        className="menu-primary"
+                      >
+                        Use city
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div ref={filterPanelRef} className="browse-popover">
+                <button
+                  type="button"
+                  onClick={() => setFilterOpen((open) => !open)}
+                  className="nav-icon-btn"
+                  aria-label="Open sort options"
                 >
-                  {item.name}
+                  <Filter className="h-4 w-4" />
+                </button>
+
+                {!isMobile && filterOpen && (
+                  <div className="browse-menu browse-menu-filter">
+                    {SORT_OPTIONS.map((option) => {
+                      const active = option.key === sortBy;
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => {
+                            setSortBy(option.key);
+                            setFilterOpen(false);
+                          }}
+                          className={`menu-option ${active ? "active" : ""}`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSortBy(DEFAULT_SORT);
+                        setFilterOpen(false);
+                      }}
+                      className="menu-option reset"
+                    >
+                      Reset to default
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setRefreshTick((value) => value + 1)}
+                className="nav-icon-btn"
+                aria-label="Refresh"
+              >
+                <RefreshCw className={`h-4 w-4 ${loading ? "spin" : ""}`} />
+              </button>
+
+              <Link to="/notifications" className="nav-icon-btn has-pip" aria-label="Open activity">
+                <Bell className="h-4 w-4" />
+                <span className="pip" />
+              </Link>
+            </div>
+          </header>
+
+          <section className="ed-header reveal d2">
+            <div>
+              <p className="ed-kicker">Live Discovery</p>
+              <h1 className="ed-title">
+                Find your <em>circles.</em>
+              </h1>
+              <p className="ed-sub">
+                Explore active groups around {effectiveCity || DEFAULT_CITY} and jump into what feels right this week.
+              </p>
+              <div className="ed-meta">
+                <span className="live-chip">
+                  <span className="dot" />
+                  Live now
+                </span>
+                <span className="soft-chip">{sortedActivities.length} activities</span>
+              </div>
+            </div>
+
+            <button type="button" className="loc-block" onClick={() => setLocationOpen(true)}>
+              <MapPin className="h-4 w-4" />
+              <span>
+                <strong>{effectiveCity || DEFAULT_CITY}</strong>
+                <small>{locationStatus}</small>
+              </span>
+              <ChevronDown className="h-4 w-4" />
+            </button>
+          </section>
+
+          <section className="browse-controls reveal d3">
+            <label className="search-wrap">
+              <Search className="h-4 w-4" />
+              <input
+                id="searchInput"
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search circles, games, activities..."
+              />
+              <kbd className="kbd">⌘K</kbd>
+            </label>
+
+            <button type="button" onClick={() => setFilterOpen((open) => !open)} className="fpill">
+              <Filter className="h-3.5 w-3.5" />
+              {filterLabel}
+            </button>
+
+            <button type="button" disabled title="Coming soon" className="fpill ghost">
+              Matching now
+            </button>
+          </section>
+
+          <section className="cat-rail reveal d4">
+            {categoryTabs.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveCategory(tab.key)}
+                className={`ctab ${activeCategory === tab.key ? "active" : ""}`}
+              >
+                <span className="ct-icon">{iconForCategory(tab.label)}</span>
+                <span>{tab.label}</span>
+                <span className="ct-n">{tab.count}</span>
+              </button>
+            ))}
+          </section>
+
+          {loadError && <div className="state-banner error reveal d4">{loadError}</div>}
+          {geoStatus === "denied" && (
+            <div className="state-banner warn reveal d4">
+              GPS access is off. Showing activity around your profile city.
+            </div>
+          )}
+
+          {heroFeature && (
+            <section className="editorial-grid reveal d5">
+              <Link to={`/browse/${heroFeature.slug}`} className="hf">
+                <div className="hf-mesh" aria-hidden />
+                <div className="hf-grid" aria-hidden />
+                <div className="hf-diag" aria-hidden />
+                <span className="hf-pill">Feature</span>
+                <h2>{heroFeature.emoji ? `${heroFeature.emoji} ` : ""}{heroFeature.name}</h2>
+                <p>
+                  {heroFeature.groupCount} groups, {heroFeature.memberTotal} members, and {heroFeature.meetupWeekCount} meetup
+                  {heroFeature.meetupWeekCount === 1 ? "" : "s"} planned this week.
+                </p>
+                <div className="hf-meta">
+                  <span>{heroFeature.badge || "Growing"}</span>
+                  <span>{heroFeature.nearestKm != null ? formatDistanceKm(heroFeature.nearestKm) : "Near you"}</span>
+                </div>
+                <span className="hf-cta">Open activity →</span>
+              </Link>
+
+              {sideFeatures.map((item, index) => (
+                <Link key={item.slug} to={`/browse/${item.slug}`} className={`sf sf-${index + 1}`}>
+                  <span className="sf-emoji-wrap">{item.emoji || "✨"}</span>
+                  <div className="sf-kicker">{item.category || "Activity"}</div>
+                  <h3>{item.name}</h3>
+                  <p>{item.groupCount} groups · {item.memberTotal} members</p>
                 </Link>
               ))}
-            </div>
-          </section>
-        )}
+            </section>
+          )}
 
-        {loadError && (
-          <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{loadError}</div>
-        )}
-
-        <section className="mt-4">
-          {loading ? (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {Array.from({ length: 8 }).map((_, index) => (
-                <div
-                  key={index}
-                  className="h-36 animate-pulse rounded-2xl border border-neutral-200 bg-neutral-100/80"
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-              {sortedActivities.map((item, index) => {
-                const gradientByIndex = [
-                  "from-emerald-100 via-white to-teal-100",
-                  "from-sky-100 via-white to-indigo-100",
-                  "from-amber-100 via-white to-rose-100",
-                  "from-lime-100 via-white to-cyan-100",
-                ][index % 4];
-
-                return (
+          <section className="tile-grid reveal d6">
+            {loading
+              ? Array.from({ length: 8 }).map((_, index) => (
+                  <div key={`sk-${index}`} className="tile-skeleton" />
+                ))
+              : visibleActivities.map((item) => (
                   <Link
                     key={item.slug}
                     to={`/browse/${item.slug}`}
-                    className="group relative overflow-hidden rounded-2xl border border-neutral-200 bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+                    className={`tile ${toneClassForCategory(item.category)}`}
+                    data-cat={slugify(item.category || "social")}
+                    data-name={item.name}
                   >
-                    <div className={`pointer-events-none absolute inset-0 bg-gradient-to-br ${gradientByIndex} opacity-80`} />
-                    <div className="relative">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="truncate text-xs font-medium uppercase tracking-wide text-neutral-500">
-                            {item.category || "Activity"}
-                          </div>
-                          <h2 className="mt-0.5 truncate text-lg font-bold text-neutral-900">
-                            {item.emoji ? `${item.emoji} ` : ""}
-                            {item.name}
-                          </h2>
-                        </div>
-                        {item.badge && (
-                          <span className="rounded-full border border-white/70 bg-white/90 px-2 py-0.5 text-[11px] font-semibold text-neutral-700">
-                            {item.badge}
-                          </span>
-                        )}
-                      </div>
-
-                      <p className="mt-2 text-xs text-neutral-700">
-                        {item.groupCount} group{item.groupCount === 1 ? "" : "s"} · {item.memberTotal} member
-                        {item.memberTotal === 1 ? "" : "s"}
-                      </p>
-
-                      {item.meetupWeekCount > 0 ? (
-                        <p className="mt-1 text-xs font-medium text-emerald-700">
-                          {item.meetupWeekCount} meetup{item.meetupWeekCount === 1 ? "" : "s"} this week
-                        </p>
-                      ) : (
-                        <p className="mt-1 text-xs text-neutral-600">
-                          {item.planningGroups > 0
+                    <div className="tile-cat">{item.category || "Activity"}</div>
+                    <div className="tile-icon">{item.emoji || "✨"}</div>
+                    <h2 className="tile-name">{item.name}</h2>
+                    <p className="tile-meta">
+                      {item.groupCount} groups · {item.memberTotal} members
+                    </p>
+                    <div className="tile-footer">
+                      <span>
+                        {item.meetupWeekCount > 0
+                          ? `${item.meetupWeekCount} meetup${item.meetupWeekCount === 1 ? "" : "s"} this week`
+                          : item.planningGroups > 0
                             ? `${item.planningGroups} planning now`
-                            : item.newGroups > 0
-                              ? `${item.newGroups} new group${item.newGroups === 1 ? "" : "s"}`
-                              : "Growing communities"}
-                        </p>
-                      )}
-
-                      {sortBy === "nearest" && typeof item.nearestKm === "number" && (
-                        <p className="mt-1 text-xs text-neutral-500">Closest group {formatDistanceKm(item.nearestKm)} away</p>
-                      )}
+                            : "Growing communities"}
+                      </span>
+                      <span className="tile-join">Open</span>
                     </div>
                   </Link>
-                );
-              })}
-            </div>
-          )}
+                ))}
+          </section>
 
-          {!loading && sortedActivities.length === 0 && (
-            <div className="mt-4 rounded-2xl border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-600">
-              No activities available yet.
-            </div>
+          {!loading && visibleActivities.length === 0 && (
+            <div className="empty-block reveal d7">No activities match your search or selected category yet.</div>
           )}
 
           {loading && (
-            <div className="mt-4 inline-flex items-center gap-2 text-xs text-neutral-500">
+            <div className="loading-row">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               Refreshing live activity signals...
             </div>
           )}
-
-          {geoStatus === "denied" && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              GPS access is off. Showing activity around your profile city.
-            </div>
-          )}
-        </section>
+        </div>
       </main>
 
       {isMobile && locationOpen && (
-        <div className="fixed inset-0 z-[120]">
+        <div className="browse-sheet-wrap">
           <button
             type="button"
             onClick={() => setLocationOpen(false)}
-            className="absolute inset-0 bg-black/45"
+            className="browse-sheet-backdrop"
             aria-label="Close location picker"
           />
-          <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-neutral-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl">
-            <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-200" />
-            <div className="text-sm font-semibold text-neutral-900">Location</div>
-            <p className="mt-1 text-xs text-neutral-500">{usingGps ? "Using GPS" : "Using profile city"}</p>
+          <div className="browse-sheet">
+            <div className="sheet-handle" />
+            <div className="sheet-title">Location</div>
+            <p className="sheet-sub">{locationStatus}</p>
 
             <button
               type="button"
@@ -1312,25 +1392,24 @@ export default function BrowsePage() {
                 await refreshLocation(true);
                 setLocationOpen(false);
               }}
-              className="mt-3 inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-800 hover:bg-neutral-50 disabled:opacity-60"
+              className="menu-chip mt"
             >
               <LocateFixed className="h-3.5 w-3.5" />
               Use GPS
             </button>
 
-            <div className="mt-4 space-y-2">
-              <label className="block text-xs font-semibold text-neutral-700">Choose city manually</label>
+            <div className="menu-fields">
+              <label>Choose city manually</label>
               <input
                 value={manualCityInput}
                 onChange={(event) => setManualCityInput(event.target.value)}
                 placeholder="Type a city"
-                className="w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-neutral-400"
               />
               <button
                 type="button"
                 disabled={locationBusy || manualCityInput.trim().length === 0}
                 onClick={() => void applyManualCity()}
-                className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-neutral-800 disabled:opacity-60"
+                className="menu-primary"
               >
                 Use city
               </button>
@@ -1340,17 +1419,17 @@ export default function BrowsePage() {
       )}
 
       {isMobile && filterOpen && (
-        <div className="fixed inset-0 z-[120]">
+        <div className="browse-sheet-wrap">
           <button
             type="button"
             onClick={() => setFilterOpen(false)}
-            className="absolute inset-0 bg-black/45"
+            className="browse-sheet-backdrop"
             aria-label="Close filter menu"
           />
-          <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-neutral-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl">
-            <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-200" />
-            <div className="text-sm font-semibold text-neutral-900">Sort by</div>
-            <div className="mt-3 space-y-2">
+          <div className="browse-sheet">
+            <div className="sheet-handle" />
+            <div className="sheet-title">Sort by</div>
+            <div className="sheet-options">
               {SORT_OPTIONS.map((option) => {
                 const active = option.key === sortBy;
                 return (
@@ -1361,9 +1440,7 @@ export default function BrowsePage() {
                       setSortBy(option.key);
                       setFilterOpen(false);
                     }}
-                    className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
-                      active ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-700"
-                    }`}
+                    className={`menu-option ${active ? "active" : ""}`}
                   >
                     {option.label}
                   </button>
@@ -1376,7 +1453,7 @@ export default function BrowsePage() {
                 setSortBy(DEFAULT_SORT);
                 setFilterOpen(false);
               }}
-              className="mt-3 w-full rounded-xl border border-neutral-200 px-3 py-2 text-left text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+              className="menu-option reset"
             >
               Reset to default
             </button>

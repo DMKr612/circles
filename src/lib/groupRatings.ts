@@ -40,6 +40,8 @@ type RpcGroupRatingRow = {
   group_members_count: number | null;
   group_rating_avg: number | string | null;
   group_rating_count: number | null;
+  avg_member_rating?: number | string | null;
+  member_ratings_count?: number | null;
 };
 
 type FallbackGroupRow = {
@@ -60,7 +62,7 @@ type FallbackGroupRow = {
 
 export type GroupRatingDisplay =
   | { kind: "new"; label: string }
-  | { kind: "low_confidence"; scoreText: string; confidenceLabel: string }
+  | { kind: "low_confidence"; scoreText: string; ratingCount: number; label: string }
   | { kind: "rated"; scoreText: string; ratingCount: number };
 
 function toNumber(value: unknown): number | null {
@@ -90,6 +92,8 @@ function isMissingRpc(error: any): boolean {
 function mapRpcRow(row: RpcGroupRatingRow): GroupRatingSnapshot {
   const membersCount = toNonNegativeInt(row.members_count);
   const groupMembersCount = toNonNegativeInt(row.group_members_count) || membersCount;
+  const avgMemberRating = toNumber(row.avg_member_rating ?? row.group_rating_avg);
+  const memberRatingsCount = toNonNegativeInt(row.member_ratings_count ?? row.group_rating_count);
   return {
     groupId: String(row.id),
     groupTitle: row.title ?? null,
@@ -106,12 +110,17 @@ function mapRpcRow(row: RpcGroupRatingRow): GroupRatingSnapshot {
     requiresVerificationLevel: Math.max(1, toNonNegativeInt(row.requires_verification_level) || 1),
     membersCount,
     groupMembersCount,
-    groupRatingAvg: toNumber(row.group_rating_avg),
-    groupRatingCount: toNonNegativeInt(row.group_rating_count),
+    groupRatingAvg: avgMemberRating,
+    groupRatingCount: memberRatingsCount,
   };
 }
 
-function mapFallbackRow(row: FallbackGroupRow): GroupRatingSnapshot {
+function mapFallbackRow(
+  row: FallbackGroupRow,
+  rollup?: { membersCount: number; memberRatingsCount: number; avgMemberRating: number | null }
+): GroupRatingSnapshot {
+  const membersCount = Math.max(0, Number(rollup?.membersCount || 0));
+  const memberRatingsCount = Math.max(0, Number(rollup?.memberRatingsCount || 0));
   return {
     groupId: String(row.id || ""),
     groupTitle: row.title ?? null,
@@ -126,11 +135,75 @@ function mapFallbackRow(row: FallbackGroupRow): GroupRatingSnapshot {
     hostId: row.host_id ?? null,
     creatorId: row.creator_id ?? null,
     requiresVerificationLevel: Math.max(1, toNonNegativeInt(row.requires_verification_level) || 1),
-    membersCount: 0,
-    groupMembersCount: 0,
-    groupRatingAvg: null,
-    groupRatingCount: 0,
+    membersCount,
+    groupMembersCount: membersCount,
+    groupRatingAvg: rollup?.avgMemberRating ?? null,
+    groupRatingCount: memberRatingsCount,
   };
+}
+
+async function attachFallbackRatings(baseRows: FallbackGroupRow[]): Promise<GroupRatingSnapshot[]> {
+  if (baseRows.length === 0) return [];
+
+  const groupIds = baseRows.map((row) => String(row.id || "")).filter(Boolean);
+  const { data: memberRows, error: memberErr } = await supabase
+    .from("group_members")
+    .select("group_id,user_id,status")
+    .in("group_id", groupIds);
+  if (memberErr) throw memberErr;
+
+  const activeMemberships = ((memberRows || []) as Array<{ group_id: string; user_id: string; status: string | null }>)
+    .filter((row) => {
+      const status = String(row?.status ?? "active").trim().toLowerCase();
+      return status === "active" || status === "accepted";
+    })
+    .map((row) => ({ groupId: String(row.group_id || ""), userId: String(row.user_id || "") }))
+    .filter((row) => row.groupId && row.userId);
+
+  const uniqueUserIds = Array.from(new Set(activeMemberships.map((row) => row.userId)));
+  const { data: profileRows, error: profileErr } =
+    uniqueUserIds.length > 0
+      ? await supabase.from("profiles").select("user_id,rating_avg,rating_count").in("user_id", uniqueUserIds)
+      : { data: [], error: null as any };
+  if (profileErr) throw profileErr;
+
+  const profileMap = new Map(
+    ((profileRows || []) as Array<{ user_id: string; rating_avg: number | null; rating_count: number | null }>).map((row) => [
+      String(row.user_id || ""),
+      {
+        ratingAvg: toNumber(row.rating_avg),
+        ratingCount: toNonNegativeInt(row.rating_count),
+      },
+    ])
+  );
+
+  const rollupByGroup = new Map<string, { membersCount: number; memberRatingsCount: number; weightedRatingSum: number }>();
+  activeMemberships.forEach((membership) => {
+    const current = rollupByGroup.get(membership.groupId) || {
+      membersCount: 0,
+      memberRatingsCount: 0,
+      weightedRatingSum: 0,
+    };
+    current.membersCount += 1;
+    const profile = profileMap.get(membership.userId);
+    if (profile && profile.ratingCount > 0 && profile.ratingAvg != null) {
+      current.memberRatingsCount += profile.ratingCount;
+      current.weightedRatingSum += profile.ratingAvg * profile.ratingCount;
+    }
+    rollupByGroup.set(membership.groupId, current);
+  });
+
+  return baseRows.map((row) => {
+    const key = String(row.id || "");
+    const current = rollupByGroup.get(key);
+    const avgMemberRating =
+      current && current.memberRatingsCount > 0 ? current.weightedRatingSum / current.memberRatingsCount : null;
+    return mapFallbackRow(row, {
+      membersCount: current?.membersCount || 0,
+      memberRatingsCount: current?.memberRatingsCount || 0,
+      avgMemberRating,
+    });
+  });
 }
 
 async function fetchFallbackSnapshots(cleanedIds: string[]): Promise<GroupRatingSnapshot[]> {
@@ -142,7 +215,8 @@ async function fetchFallbackSnapshots(cleanedIds: string[]): Promise<GroupRating
 
   const full = await fullQuery;
   if (!full.error) {
-    return ((full.data || []) as FallbackGroupRow[]).map(mapFallbackRow);
+    const baseRows = (full.data || []) as FallbackGroupRow[];
+    return attachFallbackRatings(baseRows);
   }
 
   if (!hasColumnError(full.error)) throw full.error;
@@ -155,8 +229,8 @@ async function fetchFallbackSnapshots(cleanedIds: string[]): Promise<GroupRating
 
   const fallback = await fallbackQuery;
   if (!fallback.error) {
-    return ((fallback.data || []) as FallbackGroupRow[]).map((row) =>
-      mapFallbackRow({ ...row, game_slug: null })
+    return attachFallbackRatings(
+      ((fallback.data || []) as FallbackGroupRow[]).map((row) => ({ ...row, game_slug: null }))
     );
   }
 
@@ -171,8 +245,8 @@ async function fetchFallbackSnapshots(cleanedIds: string[]): Promise<GroupRating
   const minimal = await minimalQuery;
   if (minimal.error) throw minimal.error;
 
-  return ((minimal.data || []) as FallbackGroupRow[]).map((row) =>
-    mapFallbackRow({
+  return attachFallbackRatings(
+    ((minimal.data || []) as FallbackGroupRow[]).map((row) => ({
       ...row,
       game_slug: null,
       lat: null,
@@ -180,7 +254,7 @@ async function fetchFallbackSnapshots(cleanedIds: string[]): Promise<GroupRating
       host_id: null,
       creator_id: null,
       requires_verification_level: 1,
-    })
+    }))
   );
 }
 
@@ -222,25 +296,21 @@ export function getGroupRatingDisplay(input: {
 }): GroupRatingDisplay {
   const membersCount = toNonNegativeInt(input.groupMembersCount);
   const ratingCount = toNonNegativeInt(input.groupRatingCount);
-
-  if (membersCount < 3) {
+  const avg = toNumber(input.groupRatingAvg);
+  if (membersCount < 3 || ratingCount < 2 || avg == null) {
     return { kind: "new", label: "New" };
   }
-
-  const avg = toNumber(input.groupRatingAvg) ?? 0;
-  const scoreText = avg.toFixed(1);
-
   if (ratingCount < 10) {
     return {
       kind: "low_confidence",
-      scoreText,
-      confidenceLabel: "beta",
+      scoreText: avg.toFixed(1),
+      ratingCount,
+      label: "beta",
     };
   }
-
   return {
     kind: "rated",
-    scoreText,
+    scoreText: avg.toFixed(1),
     ratingCount,
   };
 }

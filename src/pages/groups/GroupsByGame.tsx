@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ChevronDown, Filter, Loader2, MapPin } from "lucide-react";
+import { ArrowLeft, CalendarDays, ChevronDown, Filter, Loader2, MapPin, Share2, Users } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { checkGroupJoinBlock, joinBlockMessage } from "@/lib/ratings";
 import { formatDistanceKm, haversineKm, type LatLng } from "@/lib/location";
@@ -14,6 +14,7 @@ type ActivitySort =
   | "nearest_groups"
   | "upcoming_meetups"
   | "most_members"
+  | "highest_rated"
   | "most_active";
 
 type LocationMode = "gps" | "profile_city";
@@ -82,6 +83,7 @@ type GroupCard = {
   hasOpenPoll: boolean;
   nextMeetup: GroupEventRow | null;
   upcomingMeetups: number;
+  pastMeetups: number;
   createdTs: number;
   activeScore: number;
   groupMembersCount: number;
@@ -98,6 +100,7 @@ const SORT_OPTIONS: Array<{ key: ActivitySort; label: string }> = [
   { key: "nearest_groups", label: "Nearest groups" },
   { key: "upcoming_meetups", label: "Upcoming meetups (soonest)" },
   { key: "most_members", label: "Most members" },
+  { key: "highest_rated", label: "Highest rated" },
   { key: "most_active", label: "Most active" },
 ];
 
@@ -225,16 +228,29 @@ function matchesActivity(group: GroupRow, routeSlug: string, meta: ActivityCatal
   const targetSlug = slugify(routeSlug);
   const targetLoose = normalizeLoose(routeSlug);
 
-  const tokens = [group.game, group.game_slug].filter(Boolean) as string[];
+  const tokens = [group.game, group.game_slug, group.category].filter(Boolean) as string[];
   const tokenSlugs = tokens.map((token) => slugify(token));
   const tokenLoose = tokens.map((token) => normalizeLoose(token));
 
   if (targetSlug && tokenSlugs.includes(targetSlug)) return true;
   if (targetLoose && tokenLoose.includes(targetLoose)) return true;
 
-  if (!meta) return false;
+  const titleLoose = normalizeLoose(group.title);
+  if (!meta) {
+    if (targetLoose && titleLoose && titleLoose.includes(targetLoose)) return true;
+    // Legacy "activity" bucket: include groups with no activity/category classification.
+    if (
+      targetSlug === "activity" &&
+      !normalizeLoose(group.game) &&
+      !normalizeLoose(group.game_slug) &&
+      !normalizeLoose(group.category)
+    ) {
+      return true;
+    }
+    return false;
+  }
 
-  const metaTokens = [meta.id, meta.name];
+  const metaTokens = [meta.id, meta.name, meta.category];
   const metaSlugs = metaTokens.map((token) => slugify(token));
   const metaLoose = metaTokens.map((token) => normalizeLoose(token));
 
@@ -243,11 +259,15 @@ function matchesActivity(group: GroupRow, routeSlug: string, meta: ActivityCatal
   }
 
   // Legacy fallback: older rows may miss `game` but still include activity in title.
-  const titleLoose = normalizeLoose(group.title);
   const metaNameLoose = normalizeLoose(meta.name);
   const metaIdLoose = normalizeLoose(meta.id);
+  const metaCategoryLoose = normalizeLoose(meta.category);
   if (!titleLoose) return false;
-  return (!!metaNameLoose && titleLoose.includes(metaNameLoose)) || (!!metaIdLoose && titleLoose.includes(metaIdLoose));
+  return (
+    (!!metaNameLoose && titleLoose.includes(metaNameLoose)) ||
+    (!!metaIdLoose && titleLoose.includes(metaIdLoose)) ||
+    (!!metaCategoryLoose && titleLoose.includes(metaCategoryLoose))
+  );
 }
 
 function sortGroupCards(cards: GroupCard[], sortBy: ActivitySort): GroupCard[] {
@@ -276,6 +296,20 @@ function sortGroupCards(cards: GroupCard[], sortBy: ActivitySort): GroupCard[] {
     }
 
     if (sortBy === "most_members") {
+      if (b.memberCount !== a.memberCount) return b.memberCount - a.memberCount;
+      return a.title.localeCompare(b.title);
+    }
+
+    if (sortBy === "highest_rated") {
+      const aRated = a.groupMembersCount >= 3 && a.groupRatingCount >= 2 && typeof a.groupRatingAvg === "number";
+      const bRated = b.groupMembersCount >= 3 && b.groupRatingCount >= 2 && typeof b.groupRatingAvg === "number";
+      if (aRated !== bRated) return aRated ? -1 : 1;
+      if (aRated && bRated) {
+        const aScore = Number(a.groupRatingAvg || 0);
+        const bScore = Number(b.groupRatingAvg || 0);
+        if (bScore !== aScore) return bScore - aScore;
+        if (b.groupRatingCount !== a.groupRatingCount) return b.groupRatingCount - a.groupRatingCount;
+      }
       if (b.memberCount !== a.memberCount) return b.memberCount - a.memberCount;
       return a.title.localeCompare(b.title);
     }
@@ -329,6 +363,7 @@ export default function GroupsByGame() {
   const [memberCountByGroup, setMemberCountByGroup] = useState<Record<string, number>>({});
   const [nextEventByGroup, setNextEventByGroup] = useState<Record<string, GroupEventRow>>({});
   const [upcomingCountByGroup, setUpcomingCountByGroup] = useState<Record<string, number>>({});
+  const [pastMeetupCountByGroup, setPastMeetupCountByGroup] = useState<Record<string, number>>({});
   const [openPollByGroup, setOpenPollByGroup] = useState<Record<string, boolean>>({});
   const [recentReadsByGroup, setRecentReadsByGroup] = useState<Record<string, number>>({});
 
@@ -348,7 +383,11 @@ export default function GroupsByGame() {
   const [gpsCoords, setGpsCoords] = useState<LatLng | null>(null);
 
   const [sortBy, setSortBy] = useState<ActivitySort>(DEFAULT_SORT);
+  const [nearMeOnly, setNearMeOnly] = useState(false);
+  const [hasSpaceOnly, setHasSpaceOnly] = useState(false);
+  const [thisWeekOnly, setThisWeekOnly] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
   const filterPanelRef = useRef<HTMLDivElement | null>(null);
 
   const profileCoords = useMemo<LatLng | null>(() => {
@@ -557,6 +596,7 @@ export default function GroupsByGame() {
         setMemberCountByGroup({});
         setNextEventByGroup({});
         setUpcomingCountByGroup({});
+        setPastMeetupCountByGroup({});
         setOpenPollByGroup({});
         setRecentReadsByGroup({});
         setLoading(false);
@@ -571,9 +611,8 @@ export default function GroupsByGame() {
           .select("group_id,title,starts_at,place")
           .in("group_id", groupIds)
           .not("starts_at", "is", null)
-          .gte("starts_at", new Date().toISOString())
           .order("starts_at", { ascending: true })
-          .limit(1200),
+          .limit(2200),
         supabase
           .from("group_polls")
           .select("group_id,status,closes_at")
@@ -601,14 +640,21 @@ export default function GroupsByGame() {
 
       const nextEventMap: Record<string, GroupEventRow> = {};
       const upcomingCountMap: Record<string, number> = {};
+      const pastMeetupCountMap: Record<string, number> = {};
+      const nowTs = Date.now();
       ((eventsRes.data || []) as GroupEventRow[]).forEach((row) => {
         const gid = String(row.group_id || "");
         if (!gid) return;
-        upcomingCountMap[gid] = (upcomingCountMap[gid] || 0) + 1;
-        if (!nextEventMap[gid]) nextEventMap[gid] = row;
+        const ts = new Date(row.starts_at || "").getTime();
+        if (!Number.isFinite(ts)) return;
+        if (ts >= nowTs) {
+          upcomingCountMap[gid] = (upcomingCountMap[gid] || 0) + 1;
+          if (!nextEventMap[gid]) nextEventMap[gid] = row;
+        } else {
+          pastMeetupCountMap[gid] = (pastMeetupCountMap[gid] || 0) + 1;
+        }
       });
 
-      const nowTs = Date.now();
       const pollMap: Record<string, boolean> = {};
       ((pollsRes.data || []) as GroupPollRow[]).forEach((row) => {
         const gid = String(row.group_id || "");
@@ -628,6 +674,7 @@ export default function GroupsByGame() {
       setMemberCountByGroup(membersMap);
       setNextEventByGroup(nextEventMap);
       setUpcomingCountByGroup(upcomingCountMap);
+      setPastMeetupCountByGroup(pastMeetupCountMap);
       setOpenPollByGroup(pollMap);
       setRecentReadsByGroup(readsMap);
     } catch (loadErr: any) {
@@ -637,6 +684,7 @@ export default function GroupsByGame() {
       setMemberCountByGroup({});
       setNextEventByGroup({});
       setUpcomingCountByGroup({});
+      setPastMeetupCountByGroup({});
       setOpenPollByGroup({});
       setRecentReadsByGroup({});
     } finally {
@@ -646,7 +694,47 @@ export default function GroupsByGame() {
 
   useEffect(() => {
     void loadActivityGroups();
-  }, [loadActivityGroups]);
+  }, [loadActivityGroups, refreshTick]);
+
+  useEffect(() => {
+    let timer: number | null = null;
+    const queueRefresh = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        setRefreshTick((value) => value + 1);
+      }, 350);
+    };
+
+    const channel = supabase
+      .channel(`groups-by-game-live:${activitySlug}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "group_members" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "group_events" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "group_polls" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "groups" }, queueRefresh)
+      .subscribe();
+
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [activitySlug]);
+
+  useEffect(() => {
+    const triggerRefresh = () => setRefreshTick((value) => value + 1);
+    const onFocus = () => triggerRefresh();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") triggerRefresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const timer = window.setInterval(triggerRefresh, 45_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const openGroup = useCallback(
     (groupId: string) => {
@@ -730,6 +818,7 @@ export default function GroupsByGame() {
       const memberCount = memberCountByGroup[groupId] || 0;
       const nextMeetup = nextEventByGroup[groupId] || null;
       const upcomingMeetups = upcomingCountByGroup[groupId] || 0;
+      const pastMeetups = pastMeetupCountByGroup[groupId] || 0;
       const hasOpenPoll = !!openPollByGroup[groupId];
       const recentReads = recentReadsByGroup[groupId] || 0;
       const createdTs = new Date(group.created_at || "").getTime();
@@ -753,6 +842,7 @@ export default function GroupsByGame() {
         hasOpenPoll,
         nextMeetup,
         upcomingMeetups,
+        pastMeetups,
         createdTs: Number.isFinite(createdTs) ? createdTs : 0,
         activeScore,
         groupMembersCount: Math.max(0, Number(group.group_members_count || memberCount)),
@@ -771,6 +861,7 @@ export default function GroupsByGame() {
     memberCountByGroup,
     nextEventByGroup,
     openPollByGroup,
+    pastMeetupCountByGroup,
     profileLocation.city,
     recentReadsByGroup,
     rows,
@@ -788,203 +879,356 @@ export default function GroupsByGame() {
     [cards]
   );
 
+  const visibleCards = useMemo(() => {
+    const now = Date.now();
+    const weekCutoff = now + 7 * 24 * 60 * 60 * 1000;
+    return cards.filter((card) => {
+      if (nearMeOnly) {
+        const nearByDistance = typeof card.distanceKm === "number" && card.distanceKm <= 30;
+        const nearByCity = card.cityRank === 0;
+        if (!nearByDistance && !nearByCity) return false;
+      }
+      if (hasSpaceOnly && typeof card.capacity === "number" && card.memberCount >= card.capacity) return false;
+      if (thisWeekOnly) {
+        const meetupTs = card.nextMeetup?.starts_at ? new Date(card.nextMeetup.starts_at).getTime() : Number.NaN;
+        if (!Number.isFinite(meetupTs) || meetupTs > weekCutoff || meetupTs < now) return false;
+      }
+      return true;
+    });
+  }, [cards, hasSpaceOnly, nearMeOnly, thisWeekOnly]);
+
+  const heroRating = useMemo(() => {
+    const rated = cards.filter((card) => card.groupRatingCount >= 2 && typeof card.groupRatingAvg === "number");
+    if (rated.length === 0) return null;
+    const sum = rated.reduce((acc, row) => acc + Number(row.groupRatingAvg || 0), 0);
+    return sum / rated.length;
+  }, [cards]);
+
+  const nextMeetupLabel = useMemo(() => {
+    const next = cards
+      .map((card) => card.nextMeetup?.starts_at || null)
+      .filter(Boolean)
+      .map((iso) => new Date(String(iso)).getTime())
+      .filter((ts) => Number.isFinite(ts))
+      .sort((a, b) => a - b)[0];
+    if (!next) return null;
+    return formatMeetupDate(new Date(next).toISOString());
+  }, [cards]);
+
+  const activeTonight = useMemo(() => {
+    const now = Date.now();
+    const tonight = now + 24 * 60 * 60 * 1000;
+    return cards.some((card) => {
+      const ts = card.nextMeetup?.starts_at ? new Date(card.nextMeetup.starts_at).getTime() : Number.NaN;
+      return Number.isFinite(ts) && ts >= now && ts <= tonight;
+    });
+  }, [cards]);
+
+  const [shareCopied, setShareCopied] = useState(false);
+
+  const ratingBasisTotal = useMemo(
+    () => cards.reduce((sum, card) => sum + Math.max(0, Number(card.groupRatingCount || 0)), 0),
+    [cards]
+  );
+
+  const sharePage = useCallback(async () => {
+    const shareUrl = typeof window !== "undefined" ? window.location.href : "";
+    if (!shareUrl) return;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1400);
+    } catch (error) {
+      console.warn("[groups-by-game] share copy failed", error);
+    }
+  }, []);
+
   const filterLabel = sortBy === DEFAULT_SORT ? "Filter" : `Filter · ${activeSortLabel}`;
 
   return (
     <>
-      <main className="mx-auto w-full max-w-4xl px-4 pb-28 pt-5">
-        <header className="mb-4 rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm">
-          <Link
-            to="/browse"
-            className="inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-semibold text-neutral-700 hover:bg-neutral-50"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to browse
-          </Link>
+      <main className="relative min-h-screen overflow-hidden bg-[#f7faff] px-4 pb-28 pt-5 text-slate-900">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -left-24 -top-24 h-80 w-80 rounded-full bg-blue-500/14 blur-3xl" />
+          <div className="absolute right-0 top-0 h-80 w-80 rounded-full bg-emerald-500/12 blur-3xl" />
+          <div className="absolute bottom-0 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-sky-500/12 blur-3xl" />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_10%,rgba(255,255,255,0.52),transparent_36%),radial-gradient(circle_at_80%_0%,rgba(219,234,254,0.55),transparent_34%)]" />
+        </div>
 
-          <h1 className="mt-3 text-2xl font-black tracking-tight text-neutral-900">
-            {displayEmoji ? `${displayEmoji} ` : ""}
-            {displayName}
-          </h1>
-          <p className="mt-1 text-sm text-neutral-600">
-            {cards.length} group{cards.length === 1 ? "" : "s"} · {totalMembers} member
-            {totalMembers === 1 ? "" : "s"}
-            {totalUpcomingMeetups > 0 ? ` · ${totalUpcomingMeetups} meetup${totalUpcomingMeetups === 1 ? "" : "s"} coming up` : ""}
-          </p>
-
-          {error && (
-            <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
-              {error}
-            </div>
-          )}
-
-          <div ref={filterPanelRef} className="relative mt-4">
-            <button
-              type="button"
-              onClick={() => setFilterOpen((open) => !open)}
-              className="inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-sm font-semibold text-neutral-900 hover:bg-neutral-50"
+        <div className="relative mx-auto w-full max-w-5xl">
+          <header className="mb-5">
+            <Link
+              to="/browse"
+              className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-4 py-2 text-sm font-semibold text-slate-700 backdrop-blur hover:bg-slate-50"
             >
-              <Filter className="h-4 w-4" />
-              {filterLabel}
-              <ChevronDown className="h-4 w-4" />
-            </button>
+              <ArrowLeft className="h-4 w-4" />
+              Back to browse
+            </Link>
 
-            {!isMobile && filterOpen && (
-              <div className="absolute left-0 top-[calc(100%+8px)] z-40 w-72 rounded-2xl border border-neutral-200 bg-white p-2 shadow-xl">
-                {SORT_OPTIONS.map((option) => {
-                  const active = option.key === sortBy;
-                  return (
-                    <button
-                      key={option.key}
-                      type="button"
-                      onClick={() => {
-                        setSortBy(option.key);
-                        setFilterOpen(false);
-                      }}
-                      className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
-                        active ? "bg-neutral-900 text-white" : "text-neutral-700 hover:bg-neutral-100"
-                      }`}
+            <div className="mt-4 rounded-[28px] border border-slate-200 bg-gradient-to-br from-white via-blue-50/50 to-emerald-50/45 p-5 shadow-[0_24px_60px_rgba(15,23,42,0.12)] md:p-7">
+              <div className="grid gap-6 md:grid-cols-[1fr_180px] md:items-start">
+                <div>
+                  <h1 className="text-4xl font-black tracking-tight text-slate-900 md:text-5xl">
+                    {displayEmoji ? `${displayEmoji} ` : ""}
+                    {displayName}
+                  </h1>
+                  <p className="mt-2 text-sm text-slate-600">
+                    {(cards[0]?.city || "Freiburg im Breisgau")} · {activityMeta?.category || "Social circles"}
+                  </p>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+                      {cards.length} groups
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
+                      {totalMembers} members
+                    </span>
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                      {activeTonight ? "Active tonight" : "Planning mode"}
+                    </span>
+                    {nextMeetupLabel && (
+                      <span className="rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700">
+                        Next: {nextMeetupLabel}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    <Link
+                      to="/create"
+                      className="inline-flex items-center gap-2 rounded-full bg-gradient-to-r from-blue-500 to-emerald-500 px-4 py-2 text-sm font-bold text-white shadow-lg shadow-blue-900/35 hover:brightness-110"
                     >
-                      {option.label}
+                      + Create a group
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={() => void sharePage()}
+                      className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      {shareCopied ? "Copied" : "Share"}
                     </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSortBy(DEFAULT_SORT);
-                    setFilterOpen(false);
-                  }}
-                  className="mt-1 w-full rounded-xl border border-neutral-200 px-3 py-2 text-left text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
-                >
-                  Reset to default
-                </button>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-5 text-center">
+                  <div className="text-5xl font-black text-amber-600">{heroRating == null ? "—" : heroRating.toFixed(1)}</div>
+                  <div className="mt-1 text-sm font-semibold text-amber-500">★★★★★★</div>
+                  <div className="mt-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Avg. Rating</div>
+                  <div className="mt-2 inline-flex rounded-full border border-blue-200 bg-blue-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700">
+                    basis {ratingBasisTotal}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {error && (
+              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                {error}
               </div>
             )}
-          </div>
-        </header>
 
-        <section>
-          {loading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 5 }).map((_, index) => (
-                <div key={index} className="h-28 animate-pulse rounded-2xl border border-neutral-200 bg-neutral-100" />
-              ))}
-              <div className="inline-flex items-center gap-2 text-xs text-neutral-500">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                Loading groups for this activity...
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <div ref={filterPanelRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setFilterOpen((open) => !open)}
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Filter className="h-4 w-4" />
+                  {filterLabel}
+                  <ChevronDown className="h-4 w-4" />
+                </button>
+
+                {!isMobile && filterOpen && (
+                  <div className="absolute left-0 top-[calc(100%+8px)] z-40 w-72 rounded-2xl border border-slate-200 bg-white p-2 shadow-2xl">
+                    {SORT_OPTIONS.map((option) => {
+                      const active = option.key === sortBy;
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => {
+                            setSortBy(option.key);
+                            setFilterOpen(false);
+                          }}
+                          className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${active ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"}`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSortBy(DEFAULT_SORT);
+                        setFilterOpen(false);
+                      }}
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      Reset to default
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
-          ) : cards.length === 0 ? (
-            <div className="rounded-2xl border border-neutral-200 bg-white px-4 py-6 text-sm text-neutral-600">
-              No groups in this activity yet.
-            </div>
-          ) : (
-            <ul className="space-y-3">
-              {cards.map((card) => {
-                const isFull = typeof card.capacity === "number" && card.memberCount >= card.capacity;
-                const memberLine =
-                  typeof card.capacity === "number"
-                    ? `${card.memberCount}/${card.capacity} members`
-                    : `${card.memberCount} members`;
 
-                let statusText = "No meetup yet";
-                let statusTone = "text-neutral-600";
-                if (card.nextMeetup?.starts_at) {
-                  statusText = `Meetup scheduled · ${formatMeetupDate(card.nextMeetup.starts_at)}`;
-                  statusTone = "text-emerald-700";
-                } else if (card.hasOpenPoll) {
-                  statusText = "Poll open · planning";
-                  statusTone = "text-amber-700";
-                }
+              <button
+                type="button"
+                onClick={() => setNearMeOnly((value) => !value)}
+                className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${nearMeOnly ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700"}`}
+              >
+                📍 Near me
+              </button>
+              <button
+                type="button"
+                onClick={() => setHasSpaceOnly((value) => !value)}
+                className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${hasSpaceOnly ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700"}`}
+              >
+                👥 Has space
+              </button>
+              <button
+                type="button"
+                onClick={() => setThisWeekOnly((value) => !value)}
+                className={`rounded-full border px-3 py-1.5 text-sm font-semibold transition ${thisWeekOnly ? "border-blue-300 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-700"}`}
+              >
+                📅 This week
+              </button>
+              <span className="ml-auto text-xs font-semibold text-slate-500">{visibleCards.length} groups found</span>
+            </div>
+          </header>
 
-                return (
-                  <li
-                    key={card.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openGroup(card.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        openGroup(card.id);
-                      }
-                    }}
-                    aria-label={`Open ${card.title}`}
-                    className="cursor-pointer rounded-2xl border border-neutral-200 bg-white p-4 shadow-sm transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-neutral-300"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <h2 className="truncate text-base font-bold text-neutral-900">{card.title}</h2>
-                          <GroupRatingBadge
-                            groupMembersCount={card.groupMembersCount}
-                            groupRatingAvg={card.groupRatingAvg}
-                            groupRatingCount={card.groupRatingCount}
-                            className="shrink-0"
-                          />
+          <section>
+            {loading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 5 }).map((_, index) => (
+                  <div key={index} className="h-36 animate-pulse rounded-3xl border border-slate-200 bg-slate-100" />
+                ))}
+                <div className="inline-flex items-center gap-2 text-xs text-slate-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Loading groups for this activity...
+                </div>
+              </div>
+            ) : visibleCards.length === 0 ? (
+              <div className="rounded-3xl border border-slate-200 bg-white px-4 py-6 text-sm text-slate-600">
+                No groups match these filters right now.
+              </div>
+            ) : (
+              <ul className="space-y-4">
+                {visibleCards.map((card) => {
+                  const isFull = typeof card.capacity === "number" && card.memberCount >= card.capacity;
+                  const memberLine =
+                    typeof card.capacity === "number" ? `${card.memberCount} / ${card.capacity}` : `${card.memberCount}`;
+
+                  const meetupInfo = card.nextMeetup?.starts_at ? formatMeetupDate(card.nextMeetup.starts_at) : "Not scheduled";
+                  const meetupHint = card.hasOpenPoll ? "Vote open soon" : "No meetup yet";
+
+                  return (
+                    <li
+                      key={card.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openGroup(card.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          openGroup(card.id);
+                        }
+                      }}
+                      aria-label={`Open ${card.title}`}
+                      className="cursor-pointer rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_12px_35px_rgba(15,23,42,0.10)] transition hover:border-slate-300 hover:shadow-[0_18px_50px_rgba(15,23,42,0.14)]"
+                    >
+                      <div className="flex flex-col gap-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <h2 className="truncate text-3xl font-black tracking-tight text-slate-900">{card.title}</h2>
+                            <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                              <MapPin className="h-3.5 w-3.5" />
+                              {card.city || "City TBD"}
+                              {typeof card.distanceKm === "number" ? ` · ${formatDistanceKm(card.distanceKm)} away` : ""}
+                            </div>
+                          </div>
+
+                          <div
+                            className="flex shrink-0 flex-col items-end gap-2"
+                            onClick={(event) => event.stopPropagation()}
+                            onKeyDown={(event) => event.stopPropagation()}
+                          >
+                            <GroupRatingBadge
+                              groupMembersCount={card.groupMembersCount}
+                              groupRatingAvg={card.groupRatingAvg}
+                              groupRatingCount={card.groupRatingCount}
+                              className="shrink-0"
+                            />
+                            {card.isJoined ? (
+                              <Link
+                                to={`/group/${card.id}`}
+                                onClick={(event) => event.stopPropagation()}
+                                className="rounded-full border border-emerald-300 bg-emerald-50 px-4 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
+                              >
+                                Joined
+                              </Link>
+                            ) : isFull ? (
+                              <Link
+                                to={`/group/${card.id}`}
+                                onClick={(event) => event.stopPropagation()}
+                                className="rounded-full border border-slate-300 bg-slate-50 px-4 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-100"
+                              >
+                                View
+                              </Link>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void joinGroup(card);
+                                }}
+                                disabled={joiningId === card.id || joinedCount >= MAX_GROUPS}
+                                className="rounded-full bg-gradient-to-r from-blue-500 to-emerald-500 px-4 py-1.5 text-xs font-bold text-white disabled:opacity-60"
+                              >
+                                {joiningId === card.id ? "Joining..." : joinedCount >= MAX_GROUPS ? "Limit reached" : "Join"}
+                              </button>
+                            )}
+                          </div>
                         </div>
 
-                        <p className="mt-1 flex items-center gap-1 text-xs text-neutral-600">
-                          <MapPin className="h-3.5 w-3.5" />
-                          {card.city || "City TBD"}
-                          {typeof card.distanceKm === "number" ? ` · ${formatDistanceKm(card.distanceKm)} away` : ""}
-                        </p>
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Members</div>
+                            <div className="mt-1 text-xl font-black text-slate-900">{memberLine}</div>
+                            <div className="text-xs text-slate-600">
+                              {typeof card.capacity === "number" ? `${Math.max(card.capacity - card.memberCount, 0)} spots left` : "Open capacity"}
+                            </div>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Next meetup</div>
+                            <div className="mt-1 text-sm font-semibold text-slate-900">{meetupInfo}</div>
+                            <div className="text-xs text-slate-600">{meetupHint}</div>
+                          </div>
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                            <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500">Meetups held</div>
+                            <div className="mt-1 text-xl font-black text-slate-900">{card.pastMeetups}</div>
+                            <div className="text-xs text-slate-600">All time</div>
+                          </div>
+                        </div>
 
-                        <p className="mt-1 text-xs text-neutral-600">{memberLine}</p>
-
-                        <p className={`mt-2 text-xs font-semibold ${statusTone}`}>
-                          {statusText}
-                          {card.nextMeetup?.place ? ` · ${card.nextMeetup.place}` : ""}
-                        </p>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-2 text-xs text-slate-600">
+                            <Users className="h-3.5 w-3.5 text-slate-500" />
+                            <span>{card.memberCount} members</span>
+                          </div>
+                          <div className="inline-flex items-center gap-1 text-xs font-semibold text-slate-600">
+                            <CalendarDays className="h-3.5 w-3.5" />
+                            {card.nextMeetup?.starts_at ? "Meetup scheduled" : "No meetup yet"}
+                          </div>
+                        </div>
                       </div>
-
-                      <div
-                        className="shrink-0"
-                        onClick={(event) => event.stopPropagation()}
-                        onKeyDown={(event) => event.stopPropagation()}
-                      >
-                        {card.isJoined ? (
-                          <Link
-                            to={`/group/${card.id}`}
-                            onClick={(event) => event.stopPropagation()}
-                            className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
-                          >
-                            Joined
-                          </Link>
-                        ) : isFull ? (
-                          <Link
-                            to={`/group/${card.id}`}
-                            onClick={(event) => event.stopPropagation()}
-                            className="rounded-full border border-neutral-300 bg-white px-3 py-1.5 text-xs font-bold text-neutral-700 hover:bg-neutral-50"
-                          >
-                            View
-                          </Link>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void joinGroup(card);
-                            }}
-                            disabled={joiningId === card.id || joinedCount >= MAX_GROUPS}
-                            className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-neutral-800 disabled:opacity-60"
-                          >
-                            {joiningId === card.id
-                              ? "Joining..."
-                              : joinedCount >= MAX_GROUPS
-                                ? "Limit reached"
-                                : "Join"}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </div>
       </main>
 
       {isMobile && filterOpen && (
@@ -992,12 +1236,12 @@ export default function GroupsByGame() {
           <button
             type="button"
             onClick={() => setFilterOpen(false)}
-            className="absolute inset-0 bg-black/45"
+            className="absolute inset-0 bg-black/30"
             aria-label="Close activity filter"
           />
-          <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-neutral-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl">
-            <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-neutral-200" />
-            <div className="text-sm font-semibold text-neutral-900">Sort groups by</div>
+          <div className="absolute inset-x-0 bottom-0 rounded-t-3xl border border-slate-200 bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl">
+            <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-slate-200" />
+            <div className="text-sm font-semibold text-slate-900">Sort groups by</div>
             <div className="mt-3 space-y-2">
               {SORT_OPTIONS.map((option) => {
                 const active = option.key === sortBy;
@@ -1009,9 +1253,7 @@ export default function GroupsByGame() {
                       setSortBy(option.key);
                       setFilterOpen(false);
                     }}
-                    className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${
-                      active ? "bg-neutral-900 text-white" : "bg-neutral-100 text-neutral-700"
-                    }`}
+                    className={`w-full rounded-xl px-3 py-2 text-left text-sm transition ${active ? "bg-blue-50 text-blue-700" : "bg-slate-100 text-slate-700"}`}
                   >
                     {option.label}
                   </button>
@@ -1024,7 +1266,7 @@ export default function GroupsByGame() {
                 setSortBy(DEFAULT_SORT);
                 setFilterOpen(false);
               }}
-              className="mt-3 w-full rounded-xl border border-neutral-200 px-3 py-2 text-left text-sm font-semibold text-neutral-700 hover:bg-neutral-50"
+              className="mt-3 w-full rounded-xl border border-slate-200 px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100"
             >
               Reset to default
             </button>

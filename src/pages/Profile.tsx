@@ -918,6 +918,15 @@ export default function Profile() {
           </div>
         </section>
 
+        <section className="px-1">
+          <h1 className="font-['Fraunces'] text-[clamp(1.85rem,4.8vw,2.3rem)] font-black leading-[1.05] tracking-tight text-slate-900">
+            My{" "}
+            <span className="bg-gradient-to-r from-blue-700 to-emerald-600 bg-clip-text italic text-transparent">
+              Profile.
+            </span>
+          </h1>
+        </section>
+
         <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,23,42,0.10)]">
           <div className="relative h-36 overflow-hidden border-b border-slate-200">
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_20%,rgba(29,78,216,0.24),transparent_45%),radial-gradient(circle_at_82%_18%,rgba(34,197,94,0.18),transparent_42%),linear-gradient(120deg,#eef4ff,#f8fbff)]" />
@@ -1103,7 +1112,7 @@ export default function Profile() {
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-xl font-bold tracking-tight text-slate-900">My Circles</h2>
-            <Link to="/groups/mine" className="inline-flex items-center gap-1 text-sm font-semibold text-blue-700 hover:text-blue-900">
+            <Link to="/groups" className="inline-flex items-center gap-1 text-sm font-semibold text-blue-700 hover:text-blue-900">
               View All
               <ChevronRight className="h-4 w-4" />
             </Link>

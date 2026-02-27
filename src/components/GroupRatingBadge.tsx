@@ -22,7 +22,8 @@ export function GroupRatingBadge({
   if (rating.kind === "new") {
     return (
       <span
-        className={`inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 ${className}`.trim()}
+        title="Not enough ratings yet"
+        className={`inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-700 ${className}`.trim()}
       >
         {rating.label}
       </span>
@@ -32,13 +33,13 @@ export function GroupRatingBadge({
   if (rating.kind === "low_confidence") {
     return (
       <span
-        title="Low confidence"
+        title="Low confidence rating"
         className={`inline-flex items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-800 ${className}`.trim()}
       >
         <span aria-hidden="true">★</span>
         <span>{rating.scoreText}</span>
-        <span className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700">
-          {rating.confidenceLabel}
+        <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-blue-700">
+          {rating.label}
         </span>
       </span>
     );

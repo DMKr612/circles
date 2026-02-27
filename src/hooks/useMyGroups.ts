@@ -29,6 +29,7 @@ export function useMyGroups({ category, search }: Args) {
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [allowedByCat, setAllowedByCat] = useState<Record<string, string[]>>({});
   const groupIdsRef = useRef<string[]>([]);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   const modeJoined = true;
   const modeCreated = true;
@@ -350,13 +351,56 @@ export function useMyGroups({ category, search }: Args) {
   useEffect(() => {
     if (!me) return;
     loadPage(0, true);
-  }, [me, category, search, allowedByCat, loadPage]);
+  }, [me, category, search, allowedByCat, loadPage, refreshTick]);
 
   const loadMore = useCallback(async () => {
     if (!me || paging) return;
     const next = page + 1;
     await loadPage(next, false);
   }, [me, page, paging, loadPage]);
+
+  useEffect(() => {
+    if (!me) return;
+
+    let timer: number | null = null;
+    const queueRefresh = () => {
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        setRefreshTick((value) => value + 1);
+      }, 350);
+    };
+
+    const channel = supabase
+      .channel(`my-groups-live:${me}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "group_members" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, queueRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "group_polls" }, queueRefresh)
+      .subscribe();
+
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      supabase.removeChannel(channel);
+    };
+  }, [me]);
+
+  useEffect(() => {
+    if (!me) return;
+    const triggerRefresh = () => setRefreshTick((value) => value + 1);
+    const onFocus = () => triggerRefresh();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") triggerRefresh();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const timer = window.setInterval(triggerRefresh, 45_000);
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.clearInterval(timer);
+    };
+  }, [me]);
 
   return {
     me,

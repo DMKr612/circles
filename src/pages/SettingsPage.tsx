@@ -8,6 +8,7 @@ import {
   CalendarDays,
   Check,
   Copy,
+  HelpCircle,
   Lock,
   Link2,
   LogOut,
@@ -1843,8 +1844,9 @@ export default function SettingsPage() {
             </div>
 
             <div className="settings-inline-actions">
-              <a href="mailto:support@meincircles.com?subject=Report%20a%20problem" className="settings-soft-btn">
-                {tx("Report a problem", "Problem melden", "گزارش مشکل")}
+              <a href="mailto:support@meincircles.com?subject=Help%20with%20Circles%20App" className="settings-soft-btn">
+                <HelpCircle size={13} />
+                {tx("Contact support", "Support kontaktieren", "تماس با پشتیبانی")}
               </a>
               <button type="button" className="settings-soft-btn" onClick={() => navigate("/legal")}>
                 {tx("Community guidelines", "Community-Richtlinien", "قوانین جامعه")}

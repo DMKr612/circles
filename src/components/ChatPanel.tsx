@@ -44,6 +44,12 @@ const randomName = (file: File) => {
 };
 
 const MAX_MENTIONS_PER_MESSAGE = 5;
+const ACTIVE_MEMBER_STATUSES = new Set(["active", "accepted"]);
+
+function isActiveMemberStatus(status: string | null | undefined): boolean {
+  const normalized = String(status ?? "active").trim().toLowerCase();
+  return ACTIVE_MEMBER_STATUSES.has(normalized);
+}
 
 type ChatPanelProps = {
   groupId: string;
@@ -331,19 +337,20 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
       const { data, error } = await supabase
         .from("group_members")
         .select("user_id, status, profiles(name,public_id,avatar_url)")
-        .eq("group_id", groupId)
-        .or("status.is.null,status.eq.active,status.eq.accepted,status.eq.invited");
+        .eq("group_id", groupId);
       if (error) { console.warn("[members] load error", error); return; }
       if (cancelled) return;
-      const baseList: Member[] = (data || []).map((r: any) => {
-        const profile = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
-        return {
-          user_id: r.user_id,
-          name: profile?.name ?? null,
-          public_id: profile?.public_id ?? null,
-          avatar_url: profile?.avatar_url ?? null,
-        };
-      });
+      const baseList: Member[] = (data || [])
+        .filter((r: any) => isActiveMemberStatus(r?.status))
+        .map((r: any) => {
+          const profile = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
+          return {
+            user_id: r.user_id,
+            name: profile?.name ?? null,
+            public_id: profile?.public_id ?? null,
+            avatar_url: profile?.avatar_url ?? null,
+          };
+        });
 
       const missingPublicIdUserIds = Array.from(
         new Set(
@@ -412,13 +419,19 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     return () => { cancelled = true; supabase.removeChannel(ch); };
   }, [groupId]);
 
-  const mentionableMembers = useMemo(
-    () =>
-      members
-        .filter((m) => !!normalizePublicId(m.public_id))
-        .sort((a, b) => normalizePublicId(a.public_id).localeCompare(normalizePublicId(b.public_id))),
-    [members]
-  );
+  const mentionableMembers = useMemo(() => {
+    const byPublicId = new Map<string, Member>();
+    members.forEach((member) => {
+      const publicId = normalizePublicId(member.public_id);
+      if (!publicId) return;
+      if (!byPublicId.has(publicId)) {
+        byPublicId.set(publicId, member);
+      }
+    });
+    return Array.from(byPublicId.values()).sort((a, b) =>
+      normalizePublicId(a.public_id).localeCompare(normalizePublicId(b.public_id))
+    );
+  }, [members]);
 
   const mentionPublicIdSet = useMemo(
     () => new Set(mentionableMembers.map((m) => normalizePublicId(m.public_id))),
@@ -668,10 +681,35 @@ export default function ChatPanel({ groupId, onClose }: ChatPanelProps) {
     if (!uid || !memberReady) return;
     if ((!text && files.length === 0) || sending || uploading) return;
 
-    const hasAllMention = /(^|\s)@all\b/i.test(text);
-    const rawCandidates = extractMentionCandidates(text).filter((token) => token !== "all");
-    const allowedPublicIds = mentionableMembers.map((m) => normalizePublicId(m.public_id));
     let finalText = text;
+    const showPollCommand = text.match(/^@(showpoll|showpull)\b(?:\s+(.+))?$/i);
+    if (showPollCommand) {
+      const customTitle = String(showPollCommand[2] || "").trim();
+      const { data: openPoll, error: openPollError } = await supabase
+        .from("group_polls")
+        .select("id,title,status")
+        .eq("group_id", groupId)
+        .eq("status", "open")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (openPollError) {
+        setComposerError(openPollError.message || "Could not load the current vote.");
+        return;
+      }
+      if (!openPoll?.id) {
+        setComposerError("No open vote right now in this circle.");
+        return;
+      }
+
+      const pollTitle = customTitle || String(openPoll.title || "Vote now").trim() || "Vote now";
+      finalText = `[POLL:${openPoll.id}] ${pollTitle}`;
+    }
+
+    const hasAllMention = /(^|\s)@all\b/i.test(finalText);
+    const rawCandidates = extractMentionCandidates(finalText).filter((token) => token !== "all");
+    const allowedPublicIds = mentionableMembers.map((m) => normalizePublicId(m.public_id));
     const resolvedPublicIds = new Set<string>();
 
     for (const candidate of rawCandidates) {

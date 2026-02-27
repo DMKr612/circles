@@ -134,7 +134,7 @@ function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
       description: formatActivityDateTime(startsAt),
       startsAt,
       actionLabel: needsConfirm ? "Confirm" : "View",
-      actionTo: draft.groupId ? `/group/${draft.groupId}` : "/groups/mine",
+      actionTo: draft.groupId ? `/group/${draft.groupId}` : "/groups",
     };
   }
 
@@ -151,7 +151,7 @@ function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
       title: `New vote in ${groupTitle}`,
       description: cleanActivityText(draft.text || "Vote for the next meetup time.", 120) || "Vote for the next meetup time.",
       actionLabel: canVoteNow ? "Vote" : "View",
-      actionTo: draft.groupId ? `/group/${draft.groupId}#poll` : "/groups/mine",
+      actionTo: draft.groupId ? `/group/${draft.groupId}#poll` : "/groups",
     };
   }
 
@@ -178,7 +178,7 @@ function formatActivityEntry(draft: ActivityDraft): ActivityEntry {
       ? routeToEventRating(draft.eventId, draft.groupId || undefined)
       : draft.groupId
         ? `/group/${draft.groupId}`
-        : "/groups/mine",
+        : "/groups",
   };
 }
 
@@ -1507,7 +1507,7 @@ export default function NotificationsPage() {
       <main className="activity-shell">
         <div className="activity-head">
           <h1>
-            Your <em>Activity</em>
+            My <em>Activities.</em>
           </h1>
           <div className="activity-head-actions">
             <button

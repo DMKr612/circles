@@ -18,7 +18,6 @@ import {
 } from "react-router-dom";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
-import { HelpCircle } from "lucide-react"; // Modern icons
 import Layout from "@/components/Layout";
 import { useProfile } from "@/hooks/useProfile";
 import LoadingScreen from "@/components/LoadingScreen";
@@ -34,7 +33,6 @@ const Profile = lazy(() => import("./pages/Profile"));
 const UserProfileView = lazy(() => import("./pages/UserProfileView"));
 const ProfileCreation = lazy(() => import("./pages/ProfileCreation"));
 const GroupsByGame = lazy(() => import("./pages/groups/GroupsByGame"));
-const MyGroups = lazy(() => import("./pages/groups/MyGroups"));
 const Landing = lazy(() => import("./pages/Landing"));
 const AuthEntry = lazy(() => import("./pages/AuthEntry"));
 const JoinByCode = lazy(() => import("./pages/JoinByCode"));
@@ -185,10 +183,6 @@ export default function App() {
   }, []);
 
   const loc = useLocation();
-  const hideSupportButton =
-    loc.pathname.startsWith("/chats") ||
-    loc.pathname.startsWith("/auth") ||
-    loc.pathname.startsWith("/settings");
   useEffect(() => {
     const scrollToTop = () => window.scrollTo({ top: 0, left: 0, behavior: "auto" });
     scrollToTop();
@@ -200,19 +194,6 @@ export default function App() {
     // Added 'pb-20' to ensure content clears the bottom nav
     <div id="page-root" className="min-h-dvh flow-root flex flex-col">
       <AuthProvider>
-          {/* Support Button - Styled cleaner */}
-          {!hideSupportButton && (
-            <button
-              onClick={() => window.open("mailto:support@meincircles.com?subject=Help%20with%20Circles%20App", "_blank")}
-              className="fixed top-4 right-4 z-50 grid h-11 w-11 place-items-center rounded-full bg-gradient-to-br from-indigo-500 via-purple-500 to-teal-400 text-white shadow-lg shadow-indigo-500/30 ring-1 ring-white/40 transition-all duration-200 hover:-translate-y-0.5 hover:scale-105"
-              title="Support"
-              aria-label="Support"
-            >
-              <HelpCircle className="h-6 w-6" />
-            </button>
-          )}
-
-          
           <AppErrorBoundary>
             <Suspense
               fallback={<LoadingScreen />}
@@ -249,7 +230,7 @@ export default function App() {
                   <Route path="/create" element={<CreateGroup />} />
                   <Route path="/group/:id" element={<GroupDetail />} />
                   <Route path="/groups/game/:game" element={<GroupsByGame />} />
-                  <Route path="/groups/mine" element={<MyGroups />} />
+                  <Route path="/groups/mine" element={<Navigate to="/groups" replace />} />
                   <Route path="/chats" element={<Chats />} />
                   <Route path="/events/:eventId/rate" element={<EventRatingPage />} />
                   <Route path="/admin/dashboard" element={<AdminDashboard />} />

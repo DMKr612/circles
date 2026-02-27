@@ -165,7 +165,7 @@ export default function Chats() {
   const [dmLoading, setDmLoading] = useState(false);
   const [dmError, setDmError] = useState<string | null>(null);
   const dmListRef = useRef<HTMLDivElement>(null);
-  const dmInputRef = useRef<HTMLInputElement>(null);
+  const dmInputRef = useRef<HTMLTextAreaElement>(null);
   const dmDraftsRef = useRef<Record<string, string>>({});
   const dmTypingChannelRef = useRef<any>(null);
   const dmTypingIdleRef = useRef<number | null>(null);
@@ -177,12 +177,26 @@ export default function Chats() {
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [search, setSearch] = useState("");
   const shellStyle: CSSProperties & Record<`--${string}`, string> = {
-    "--chat-surface": "rgba(255, 255, 255, 0.78)",
-    "--chat-surface-strong": "rgba(255, 255, 255, 0.96)",
-    "--chat-border": "rgba(148, 163, 184, 0.35)",
-    "--chat-accent": "#0f766e",
-    "--chat-accent-strong": "#0d9488",
-    "--chat-accent-wash": "rgba(13, 148, 136, 0.16)",
+    "--bg": "#f7fafc",
+    "--surface": "rgba(255,255,255,.75)",
+    "--panel": "rgba(255,255,255,.85)",
+    "--card": "rgba(255,255,255,.9)",
+    "--border": "rgba(15,23,42,.10)",
+    "--border2": "rgba(15,23,42,.16)",
+    "--text": "#0f172a",
+    "--sub": "rgba(15,23,42,.65)",
+    "--dim": "rgba(15,23,42,.40)",
+    "--blue": "#2563eb",
+    "--blue2": "#60a5fa",
+    "--emerald": "#10b981",
+    "--emerald2": "#34d399",
+    "--shadow": "0 24px 70px rgba(15,23,42,.10)",
+
+    "--chat-surface": "rgba(255,255,255,.75)",
+    "--chat-surface-strong": "rgba(255,255,255,.85)",
+    "--chat-card": "rgba(255,255,255,.9)",
+    "--chat-border": "rgba(15,23,42,.10)",
+    "--chat-border-strong": "rgba(15,23,42,.16)",
   };
   const listItemStagger = (index: number): CSSProperties => ({
     animationDelay: `${Math.min(index, 10) * 40}ms`,
@@ -195,6 +209,14 @@ export default function Chats() {
     const el = dmInputRef.current;
     if (!el) return;
     requestAnimationFrame(() => el.focus({ preventScroll: true }));
+  };
+  const resizeDmInput = () => {
+    const el = dmInputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 120);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > 120 ? "auto" : "hidden";
   };
   const scrollDmToBottom = () => {
     const el = dmListRef.current;
@@ -837,6 +859,17 @@ export default function Chats() {
     writePersistedSelection({ type: selected.type, id: selected.id });
   }, [selected?.id, selected?.type]);
 
+  // Auto-open the first thread on desktop when no deep-link/persisted selection is active.
+  useEffect(() => {
+    if (loading || selected || list.length === 0) return;
+    if (typeof window === "undefined" || !window.matchMedia("(min-width: 768px)").matches) return;
+    const params = new URLSearchParams(location.search);
+    if (params.get("chatId") || params.get("chatType") || params.get("groupId")) return;
+    const openDmId = (location.state as { openDmId?: string } | null)?.openDmId;
+    if (openDmId) return;
+    setSelected(list[0]);
+  }, [loading, list, selected, location.search, location.state]);
+
   // Toggle Favorite Handler
   const toggleFavorite = (id: string) => {
     const favs = new Set(JSON.parse(localStorage.getItem("chat_favorites") || "[]"));
@@ -935,7 +968,12 @@ export default function Chats() {
     markDmSeen(selectedDmId);
     setMetaPatch(`dm:${selectedDmId}`, { unreadCount: 0 });
     focusDmInput();
+    requestAnimationFrame(() => resizeDmInput());
   }, [selectedDmId]);
+
+  useEffect(() => {
+    resizeDmInput();
+  }, [dmInput, selectedDmId]);
 
   // 2. Load DM Messages when a Friend is selected
   useEffect(() => {
@@ -1116,9 +1154,9 @@ export default function Chats() {
       onClick={() => setFilter(id)}
       className={`
         whitespace-nowrap px-3.5 py-1.5 rounded-full text-xs font-semibold tracking-wide transition-all border inline-flex items-center gap-1.5
-        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30
+        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/30
         ${filter === id
-          ? "bg-gradient-to-r from-neutral-900 via-neutral-800 to-emerald-700 text-white border-transparent shadow-[0_10px_25px_rgba(5,150,105,0.25)]"
+          ? "bg-gradient-to-r from-blue-700 via-blue-600 to-emerald-500 text-white border-transparent shadow-[0_10px_25px_rgba(37,99,235,0.28)]"
           : "bg-white/70 text-neutral-600 border-[color:var(--chat-border)] hover:bg-white hover:text-neutral-900"}
       `}
     >
@@ -1128,7 +1166,7 @@ export default function Chats() {
           className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${
             filter === id
               ? "bg-white/20 text-white"
-              : "bg-emerald-100 text-emerald-700"
+              : "bg-blue-100 text-blue-700"
           }`}
         >
           {count > 99 ? "99+" : count}
@@ -1143,7 +1181,7 @@ export default function Chats() {
       <div className="p-5 pt-6 pb-4 border-b border-[color:var(--chat-border)] bg-[color:var(--chat-surface-strong)] backdrop-blur-xl sticky top-0 z-20 md:rounded-t-[28px]">
         <div className="flex items-center justify-between mb-3">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-emerald-700/70">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-700/75">
               Inbox ({unreadThreadCount})
             </p>
             <h1 className="text-2xl font-bold text-neutral-900 tracking-tight">Chats</h1>
@@ -1153,25 +1191,25 @@ export default function Chats() {
           </div>
           <div className="flex items-center gap-2">
             {totalUnreadCount > 0 && (
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-bold text-emerald-700">
+              <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[11px] font-bold text-blue-700">
                 {totalUnreadCount > 99 ? "99+" : totalUnreadCount} unread
               </span>
             )}
             {loading && (
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-emerald-500/20 border-t-emerald-600" />
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-500/20 border-t-blue-600" />
             )}
           </div>
         </div>
 
         <div className="relative mb-4 group">
-          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400 group-focus-within:text-emerald-600 transition-colors">
+          <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-neutral-400 group-focus-within:text-blue-600 transition-colors">
             <SearchIcon className="h-4 w-4" />
           </div>
           <input
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search conversations..."
-            className="block w-full pl-10 pr-3 py-2.5 border border-[color:var(--chat-border)] rounded-2xl leading-5 bg-white/70 placeholder-neutral-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all text-sm font-medium shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
+            className="block w-full pl-10 pr-3 py-2.5 border border-[color:var(--chat-border)] rounded-2xl leading-5 bg-white/70 placeholder-neutral-400 focus:outline-none focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-sm font-medium shadow-[inset_0_0_0_1px_rgba(255,255,255,0.35)]"
           />
         </div>
 
@@ -1227,19 +1265,19 @@ export default function Chats() {
                       className={`
                         relative w-full flex items-center gap-3 p-3.5 rounded-2xl text-left transition-all duration-200 border
                         ${active
-                          ? "border-emerald-200/90 bg-gradient-to-r from-emerald-50/90 via-white to-teal-50/80 shadow-[0_18px_34px_rgba(16,185,129,0.14)]"
+                          ? "border-blue-200/90 bg-gradient-to-r from-blue-50/90 via-white to-emerald-50/70 shadow-[0_18px_34px_rgba(37,99,235,0.14)]"
                           : meetupSoon
-                            ? "border-emerald-100/70 bg-white/55 hover:bg-white/85 hover:border-emerald-200 hover:-translate-y-0.5 hover:shadow-[0_16px_32px_rgba(15,23,42,0.1)]"
+                            ? "border-blue-100/70 bg-white/55 hover:bg-white/85 hover:border-blue-200 hover:-translate-y-0.5 hover:shadow-[0_16px_32px_rgba(15,23,42,0.1)]"
                             : "border-transparent bg-white/45 hover:bg-white/85 hover:border-white/80 hover:-translate-y-0.5 hover:shadow-[0_14px_28px_rgba(15,23,42,0.09)]"}
                       `}
                     >
                       <div className={`
                         relative h-12 w-12 rounded-2xl flex items-center justify-center text-lg font-bold shrink-0 shadow-sm ring-1 ring-white/70
-                        ${unread > 0 ? "shadow-[0_0_0_3px_rgba(16,185,129,0.18)]" : ""}
+                        ${unread > 0 ? "shadow-[0_0_0_3px_rgba(37,99,235,0.2)]" : ""}
                         ${item.type === 'announcement'
-                          ? 'bg-gradient-to-br from-amber-100 to-amber-200 text-amber-700'
+                          ? 'bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700'
                           : item.type === 'group'
-                            ? 'bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700'
+                            ? 'bg-gradient-to-br from-blue-100 to-blue-200 text-blue-700'
                             : 'bg-gradient-to-br from-neutral-100 to-neutral-200 text-neutral-600'}
                       `}>
                         {item.type === 'dm' ? (
@@ -1258,14 +1296,14 @@ export default function Chats() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
-                          <div className={`truncate text-[15px] font-semibold ${active ? 'text-emerald-950' : 'text-neutral-900'}`}>
+                          <div className={`truncate text-[15px] font-semibold ${active ? 'text-blue-950' : 'text-neutral-900'}`}>
                             {item.name}
                           </div>
                           <div className="shrink-0 text-[11px] font-medium text-neutral-400">
                             {lastLabel || ""}
                           </div>
                         </div>
-                        <div className={`text-xs truncate mt-0.5 ${isTyping ? "text-emerald-700 font-semibold" : "text-neutral-500"}`}>
+                        <div className={`text-xs truncate mt-0.5 ${isTyping ? "text-blue-700 font-semibold" : "text-neutral-500"}`}>
                           {item.type === "dm" && item.public_id ? `@${item.public_id} · ` : ""}
                           {preview}
                         </div>
@@ -1277,7 +1315,7 @@ export default function Chats() {
                               </span>
                             )}
                             {unread > 0 && (
-                              <span className="rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-bold text-white shadow-[0_4px_14px_rgba(16,185,129,0.4)]">
+                              <span className="rounded-full bg-gradient-to-r from-blue-600 to-emerald-500 px-2 py-0.5 text-[10px] font-bold text-white shadow-[0_4px_14px_rgba(37,99,235,0.35)]">
                                 {unread > 99 ? "99+" : unread} unread
                               </span>
                             )}
@@ -1292,8 +1330,8 @@ export default function Chats() {
                         absolute right-2 top-2 p-1.5 rounded-full transition-all duration-200
                         bg-white/85 shadow-sm ring-1 ring-white/70
                         ${item.isFavorite
-                          ? 'opacity-100 text-rose-500'
-                          : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 text-neutral-300 hover:text-rose-400'}
+                          ? 'opacity-100 text-blue-600'
+                          : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 text-neutral-300 hover:text-blue-500'}
                       `}
                       title={item.isFavorite ? "Remove from Favorites" : "Add to Favorites"}
                     >
@@ -1319,10 +1357,10 @@ export default function Chats() {
       return (
         <div className="hidden md:flex flex-1 items-center justify-center">
           <div className="relative flex max-w-lg flex-col items-center gap-5 rounded-[30px] border border-[color:var(--chat-border)] bg-[color:var(--chat-surface)] p-10 text-center shadow-[0_30px_80px_rgba(15,23,42,0.12)] backdrop-blur-xl">
-            <div className="absolute inset-0 rounded-[30px] bg-[radial-gradient(circle_at_50%_25%,rgba(16,185,129,0.16),transparent_60%)] pointer-events-none" />
+            <div className="absolute inset-0 rounded-[30px] bg-[radial-gradient(circle_at_50%_25%,rgba(37,99,235,0.16),transparent_60%)] pointer-events-none" />
             <div className="relative flex h-20 w-20 items-center justify-center rounded-[24px] bg-white shadow-md ring-1 ring-white/70 animate-pulse">
-              <MessageSquare className="h-9 w-9 text-emerald-500/80" />
-              <Sparkles className="absolute -right-2 -top-2 h-4 w-4 text-emerald-500/70" />
+              <MessageSquare className="h-9 w-9 text-blue-600/80" />
+              <Sparkles className="absolute -right-2 -top-2 h-4 w-4 text-emerald-500/75" />
             </div>
             <div className="relative">
               <h3 className="text-3xl font-semibold text-neutral-900 leading-tight">Start a real conversation.</h3>
@@ -1330,7 +1368,7 @@ export default function Chats() {
             </div>
             <button
               onClick={() => navigate(ROUTES.BROWSE)}
-              className="relative rounded-full bg-gradient-to-r from-emerald-600 to-teal-500 px-8 py-3 text-base font-semibold text-white shadow-[0_18px_30px_rgba(16,185,129,0.3)] hover:brightness-105 active:scale-[0.99] transition-all"
+              className="relative rounded-full bg-gradient-to-r from-blue-600 to-emerald-500 px-8 py-3 text-base font-semibold text-white shadow-[0_18px_30px_rgba(37,99,235,0.3)] hover:brightness-105 active:scale-[0.99] transition-all"
             >
               Find your circle
             </button>
@@ -1364,7 +1402,7 @@ export default function Chats() {
       <div className="fixed inset-0 z-50 md:static md:inset-auto md:flex-1 flex h-full min-h-0 flex-col bg-[color:var(--chat-surface-strong)] pb-[calc(96px+env(safe-area-inset-bottom))] md:bg-[color:var(--chat-surface)] md:pb-0 md:backdrop-blur-xl md:border md:border-[color:var(--chat-border)] md:rounded-[28px] md:shadow-[0_35px_90px_rgba(15,23,42,0.14)] overflow-hidden">
         {/* Header */}
         <div className="relative h-[76px] border-b border-[color:var(--chat-border)] flex items-center px-4 gap-4 bg-[color:var(--chat-surface-strong)] backdrop-blur-xl shrink-0 z-20 md:rounded-t-[28px]">
-          <div className="absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent via-emerald-400/40 to-transparent" />
+          <div className="absolute inset-x-6 bottom-0 h-px bg-gradient-to-r from-transparent via-blue-400/40 to-transparent" />
           <button onClick={closeActiveChat} className="md:hidden p-2 -ml-2 rounded-full hover:bg-white/80 transition-colors">
             <ArrowLeft className="h-5 w-5 text-neutral-600" />
           </button>
@@ -1376,9 +1414,9 @@ export default function Chats() {
           >
             <div className={`h-11 w-11 rounded-2xl flex items-center justify-center text-sm font-bold shadow-sm ring-1 ring-white/70 ${
               selected.type === 'group'
-                ? 'bg-sky-100 text-sky-700'
+                ? 'bg-blue-100 text-blue-700'
                 : selected.type === 'announcement'
-                  ? 'bg-amber-100 text-amber-700'
+                  ? 'bg-blue-100 text-blue-700'
                   : 'bg-neutral-100 text-neutral-600'
             }`}>
               {selected.type === 'dm' ? (
@@ -1401,15 +1439,15 @@ export default function Chats() {
               <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-neutral-500 flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full shadow-sm ${
                   selected.type === 'group'
-                    ? 'bg-sky-500'
+                    ? 'bg-blue-500'
                     : selected.type === 'announcement'
-                      ? 'bg-amber-500'
+                      ? 'bg-blue-400'
                       : selectedOnline
                         ? 'bg-emerald-500'
                         : 'bg-neutral-300'
                 }`}></span>
                 {selected.type === 'group' ? 'Group Chat' : selected.type === 'announcement' ? 'Announcement Chat' : 'Direct Message'}
-                <span className={`normal-case tracking-normal font-medium ${selectedTyping ? "text-emerald-600" : "text-neutral-500"}`}>
+                <span className={`normal-case tracking-normal font-medium ${selectedTyping ? "text-blue-600" : "text-neutral-500"}`}>
                   · {selectedActivityLabel}
                 </span>
                 {selectedMeetup && selected.type !== "dm" && (
@@ -1423,11 +1461,11 @@ export default function Chats() {
 
           <button
             onClick={() => toggleFavorite(selected.id)}
-            className="rounded-xl border border-neutral-200 bg-white p-2 text-neutral-500 shadow-sm hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
+            className="rounded-xl border border-neutral-200 bg-white p-2 text-neutral-500 shadow-sm hover:bg-neutral-50 focus:outline-none focus:ring-2 focus:ring-blue-200"
             title={selected.isFavorite ? "Remove from Favorites" : "Add to Favorites"}
           >
             <Heart
-              className={`h-5 w-5 transition-colors ${selected.isFavorite ? 'fill-rose-500 text-rose-500' : 'text-neutral-400'}`}
+              className={`h-5 w-5 transition-colors ${selected.isFavorite ? 'fill-blue-500 text-blue-500' : 'text-neutral-400'}`}
             />
           </button>
         </div>
@@ -1437,12 +1475,12 @@ export default function Chats() {
           className="flex-1 min-h-0 overflow-hidden relative"
           style={{
             background:
-              "radial-gradient(circle at 20% 20%, rgba(16,185,129,0.08), transparent 55%), radial-gradient(circle at 85% 0%, rgba(14,116,144,0.08), transparent 50%)",
+              "radial-gradient(circle at 20% 20%, rgba(37,99,235,0.1), transparent 55%), radial-gradient(circle at 85% 0%, rgba(16,185,129,0.08), transparent 50%)",
           }}
         >
           <div className="absolute inset-0 pointer-events-none">
-            <div className="absolute -top-24 right-[-8rem] h-56 w-56 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.18),transparent_70%)] blur-2xl" />
-            <div className="absolute bottom-[-6rem] left-[-4rem] h-56 w-56 rounded-full bg-[radial-gradient(circle_at_center,rgba(251,191,36,0.2),transparent_70%)] blur-2xl" />
+            <div className="absolute -top-24 right-[-8rem] h-56 w-56 rounded-full bg-[radial-gradient(circle_at_center,rgba(37,99,235,0.2),transparent_70%)] blur-2xl" />
+            <div className="absolute bottom-[-6rem] left-[-4rem] h-56 w-56 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.2),transparent_70%)] blur-2xl" />
           </div>
           <div
             className="absolute inset-0 opacity-[0.04] pointer-events-none"
@@ -1479,7 +1517,7 @@ export default function Chats() {
                     {!dmLoading && dmMessages.length === 0 && (
                       <div className="flex flex-col items-center justify-center h-full text-neutral-400 space-y-4 text-center py-6">
                         <div className="w-16 h-16 bg-white/90 rounded-2xl shadow-md flex items-center justify-center ring-1 ring-white/70">
-                          <MessageSquare className="h-8 w-8 text-emerald-200" />
+                          <MessageSquare className="h-8 w-8 text-blue-200" />
                         </div>
                         <div>
                           <div className="text-sm font-semibold text-neutral-700">No messages yet. Break the ice.</div>
@@ -1494,7 +1532,7 @@ export default function Chats() {
                             <button
                               key={msg}
                               onClick={() => sendDM(msg)}
-                              className="rounded-full border border-white/70 bg-white/80 px-3 py-1.5 text-xs font-semibold text-neutral-700 shadow-sm hover:border-emerald-200 hover:text-emerald-700"
+                              className="rounded-full border border-white/70 bg-white/80 px-3 py-1.5 text-xs font-semibold text-neutral-700 shadow-sm hover:border-blue-200 hover:text-blue-700"
                             >
                               {msg}
                             </button>
@@ -1526,11 +1564,11 @@ export default function Chats() {
                             <div className={`
                               px-4 py-2.5 text-sm shadow-sm relative
                               ${isMine
-                                ? 'bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 text-white rounded-[20px] rounded-tr-sm shadow-[0_12px_30px_rgba(16,185,129,0.25)]'
+                                ? 'bg-gradient-to-br from-blue-600 via-blue-500 to-emerald-500 text-white rounded-[20px] rounded-tr-sm shadow-[0_12px_30px_rgba(37,99,235,0.28)]'
                                 : 'bg-white text-neutral-800 border border-neutral-200 rounded-[20px] rounded-tl-sm shadow-[0_8px_20px_rgba(15,23,42,0.08)]'}
                             `}>
                               {m.content}
-                              <div className={`text-[10px] mt-1 text-right font-semibold tracking-wide opacity-70 ${isMine ? 'text-emerald-50' : 'text-neutral-400'}`}>
+                              <div className={`text-[10px] mt-1 text-right font-semibold tracking-wide opacity-70 ${isMine ? 'text-blue-50' : 'text-neutral-400'}`}>
                                 {new Date(m.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                               </div>
                             </div>
@@ -1548,20 +1586,24 @@ export default function Chats() {
                       {dmError}
                     </div>
                   )}
-                  <div className="mx-auto flex max-w-2xl items-center gap-2 rounded-full border border-neutral-200 bg-white px-2 py-2 shadow-sm transition-all focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-500/20">
-                    <input
+                  <div className="mx-auto flex max-w-2xl items-end gap-2 rounded-[20px] border border-neutral-200 bg-white px-2 py-2 shadow-sm transition-all focus-within:border-blue-400 focus-within:ring-2 focus-within:ring-blue-500/20">
+                    <textarea
                       ref={dmInputRef}
                       value={dmInput}
+                      rows={1}
                       onChange={(e) => {
                         const next = e.target.value;
                         setDmInput(next);
                         if (selectedDmId) dmDraftsRef.current[selectedDmId] = next;
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') void sendDM();
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void sendDM();
+                        }
                       }}
                       placeholder="Type a message..."
-                      className="flex-1 bg-transparent border-0 px-4 py-1 text-sm focus:ring-0 text-neutral-900 placeholder-neutral-400 outline-none"
+                      className="max-h-[120px] min-h-[42px] flex-1 resize-none bg-transparent border-0 px-4 py-1.5 text-sm leading-5 focus:ring-0 text-neutral-900 placeholder-neutral-400 outline-none"
                     />
                     <button
                       onClick={() => { void sendDM(); }}
@@ -1569,7 +1611,7 @@ export default function Chats() {
                       className={`
                         p-2.5 rounded-full transition-all duration-200 flex items-center justify-center shadow-sm
                         ${dmInput.trim()
-                          ? 'bg-gradient-to-r from-emerald-600 to-teal-500 text-white hover:brightness-105 hover:scale-105 active:scale-95 shadow-[0_12px_24px_rgba(16,185,129,0.3)]'
+                          ? 'bg-gradient-to-r from-blue-600 to-emerald-500 text-white hover:brightness-105 hover:scale-105 active:scale-95 shadow-[0_12px_24px_rgba(37,99,235,0.3)]'
                           : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'}
                       `}
                     >
@@ -1592,9 +1634,9 @@ export default function Chats() {
       style={shellStyle}
     >
       <div className="pointer-events-none absolute inset-0">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_18%,rgba(148,163,184,0.2),transparent_42%),radial-gradient(circle_at_75%_20%,rgba(16,185,129,0.15),transparent_45%),radial-gradient(circle_at_35%_90%,rgba(14,165,233,0.14),transparent_40%)]" />
-        <div className="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.16),transparent_70%)] blur-3xl" />
-        <div className="absolute bottom-[-10rem] right-[-6rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,rgba(14,116,144,0.16),transparent_70%)] blur-3xl" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_16%,rgba(37,99,235,0.16),transparent_44%),radial-gradient(circle_at_78%_16%,rgba(16,185,129,0.14),transparent_46%),radial-gradient(circle_at_34%_92%,rgba(96,165,250,0.12),transparent_42%)]" />
+        <div className="absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-[radial-gradient(circle_at_center,rgba(37,99,235,0.16),transparent_70%)] blur-3xl" />
+        <div className="absolute bottom-[-10rem] right-[-6rem] h-72 w-72 rounded-full bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.16),transparent_70%)] blur-3xl" />
       </div>
       <div className="relative flex w-full h-full min-h-0 gap-0 md:gap-4 lg:gap-6 px-0 md:px-4 lg:px-5 py-0 md:py-5 page-transition">
         {renderChatList()}

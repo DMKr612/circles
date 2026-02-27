@@ -379,8 +379,44 @@ export default function GroupDetail() {
   }, [location.hash]);
 
   useEffect(() => {
+    const refresh = () => setMembersRefreshTick((v) => v + 1);
+    const onFocus = () => refresh();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const timer = window.setInterval(refresh, 45_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!membersOpen) setMemberActionTarget(null);
   }, [membersOpen]);
+
+  useEffect(() => {
+    if (!id) return;
+    const channel = supabase
+      .channel(`group-detail-live:${id}`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "group_members", filter: `group_id=eq.${id}` },
+        () => setMembersRefreshTick((v) => v + 1)
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "profiles" },
+        () => setMembersRefreshTick((v) => v + 1)
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [id]);
 
   useEffect(() => {
     let ignore = false;

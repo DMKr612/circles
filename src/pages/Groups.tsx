@@ -348,7 +348,7 @@ export default function GroupsPage() {
           <section className="circles-list fade-up delay-3">
             <div className="sec-label-row">
               <span>Your Circles</span>
-              <Link to="/groups/mine">View all →</Link>
+              <span>{visibleRows.length} shown</span>
             </div>
 
             {loading && groups.length === 0 ? (
